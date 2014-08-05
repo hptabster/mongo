@@ -134,10 +134,17 @@ namespace repl {
         log() << "replset setting syncSourceFeedback to " << hostName << rsLog;
         _connection.reset(new DBClientConnection(false, 0, OplogReader::tcp_timeout));
         string errmsg;
-        if (!_connection->connect(hostName.c_str(), errmsg) ||
-            (getGlobalAuthorizationManager()->isAuthEnabled() && !replAuthenticate())) {
+        try {
+            if (!_connection->connect(hostName.c_str(), errmsg) ||
+                (getGlobalAuthorizationManager()->isAuthEnabled() && !replAuthenticate())) {
+                _resetConnection();
+                log() << "repl: " << errmsg << endl;
+                return false;
+            }
+        }
+        catch (const DBException& e) {
+            log() << "Error connecting to " << hostName << ": " << e.what();
             _resetConnection();
-            log() << "repl: " << errmsg << endl;
             return false;
         }
 
@@ -202,30 +209,20 @@ namespace repl {
         Client::initThread("SyncSourceFeedbackThread");
         OperationContextImpl txn;
 
-        bool sleepNeeded = false;
         bool positionChanged = false;
         bool handshakeNeeded = false;
         ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
         while (!inShutdown()) { // TODO(spencer): Remove once legacy repl coordinator is gone.
             {
                 boost::unique_lock<boost::mutex> lock(_mtx);
+                while (!_positionChanged && !_handshakeNeeded && !_shutdownSignaled) {
+                    _cond.wait(lock);
+                }
+
                 if (_shutdownSignaled) {
                     break;
                 }
-            }
-            if (replCoord->getReplicationMode() != ReplicationCoordinator::modeReplSet) {
-                sleepsecs(1);
-                continue;
-            }
-            if (sleepNeeded) {
-                sleepmillis(500);
-                sleepNeeded = false;
-            }
-            {
-                boost::unique_lock<boost::mutex> lock(_mtx);
-                while (!_positionChanged && !_handshakeNeeded) {
-                    _cond.wait(lock);
-                }
+
                 positionChanged = _positionChanged;
                 handshakeNeeded = _handshakeNeeded;
                 _positionChanged = false;
@@ -244,11 +241,11 @@ namespace repl {
             if (!hasConnection()) {
                 // fix connection if need be
                 if (!target) {
-                    sleepNeeded = true;
+                    sleepmillis(500);
                     continue;
                 }
                 if (!_connect(&txn, target->fullName())) {
-                    sleepNeeded = true;
+                    sleepmillis(500);
                     continue;
                 }
             }

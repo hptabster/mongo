@@ -144,7 +144,13 @@ namespace repl {
         virtual void relinquishPrimary(OperationContext* txn) = 0;
 
         // called with new config; notifies all on change
-        virtual void updateConfig(const ReplicaSetConfig& newConfig, int selfIndex, Date_t now) = 0;
+        virtual void updateConfig(const ReplicationExecutor::CallbackData& cbData,
+                                  const ReplicaSetConfig& newConfig,
+                                  int selfIndex,
+                                  Date_t now) = 0;
+
+        // Record a "ping" based on the round-trip time of the heartbeat for the member
+        virtual void recordPing(const HostAndPort& host, const int elapsedMillis) = 0;
 
     protected:
         TopologyCoordinator() {}
