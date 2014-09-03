@@ -57,7 +57,7 @@ namespace mongo {
 
         class DurableInterface : boost::noncopyable {
         public:
-            virtual ~DurableInterface() { log() << "ERROR warning ~DurableInterface not intended to be called" << std::endl; }
+            virtual ~DurableInterface();
 
             /** Declare that a file has been created
                 Normally writes are applied only after journaling, for safety.  But here the file
@@ -133,9 +133,6 @@ namespace mongo {
             */
             virtual bool commitIfNeeded(OperationContext* txn, bool force=false) = 0;
 
-            /** @return true if time to commit but does NOT do a commit */
-            virtual bool isCommitNeeded() const = 0;
-
             /** Declare write intent for an int */
             inline int& writingInt(int& d) { return *static_cast<int*>(writingPtr( &d, sizeof(d))); }
 
@@ -191,7 +188,6 @@ namespace mongo {
             bool awaitCommit() { return false; }
             bool commitNow(OperationContext* txn);
             bool commitIfNeeded(OperationContext* txn, bool force);
-            bool isCommitNeeded() const { return false; }
             void syncDataAndTruncateJournal(OperationContext* txn) {}
             bool isDurable() const { return false; }
         };
@@ -205,7 +201,6 @@ namespace mongo {
             void createdFile(const std::string& filename, unsigned long long len);
             bool awaitCommit();
             bool commitNow(OperationContext* txn);
-            bool isCommitNeeded() const;
             bool commitIfNeeded(OperationContext* txn, bool force);
             void syncDataAndTruncateJournal(OperationContext* txn);
             bool isDurable() const { return true; }

@@ -40,9 +40,7 @@ namespace repl {
             _settings(settings) {}
     ReplicationCoordinatorMock::~ReplicationCoordinatorMock() {}
 
-    void ReplicationCoordinatorMock::startReplication(
-            TopologyCoordinator* topCoord,
-            ReplicationExecutor::NetworkInterface* network) {
+    void ReplicationCoordinatorMock::startReplication(OperationContext* txn) {
         // TODO
     }
 
@@ -55,7 +53,7 @@ namespace repl {
     }
 
     bool ReplicationCoordinatorMock::isReplEnabled() const {
-        return false;
+        return _settings.usingReplSets() || _settings.master || _settings.slave;
     }
 
     ReplicationCoordinator::Mode ReplicationCoordinatorMock::getReplicationMode() const {
@@ -122,16 +120,19 @@ namespace repl {
     Status ReplicationCoordinatorMock::setLastOptime(OperationContext* txn,
                                                      const OID& rid,
                                                      const OpTime& ts) {
-        // TODO
         return Status::OK();
     }
     
+    Status ReplicationCoordinatorMock::setMyLastOptime(OperationContext* txn, const OpTime& ts) {
+        return Status::OK();
+    }
+
     OID ReplicationCoordinatorMock::getElectionId() {
         // TODO
         return OID();
     }
 
-    OID ReplicationCoordinatorMock::getMyRID(OperationContext* txn) {
+    OID ReplicationCoordinatorMock::getMyRID() {
         return OID();
     }
 
@@ -156,7 +157,7 @@ namespace repl {
         return false;
     }
 
-    Status ReplicationCoordinatorMock::processReplSetSyncFrom(const std::string& target,
+    Status ReplicationCoordinatorMock::processReplSetSyncFrom(const HostAndPort& target,
                                                               BSONObjBuilder* resultObj) {
         // TODO
         return Status::OK();
@@ -208,24 +209,15 @@ namespace repl {
         return Status::OK();
     }
 
-    Status ReplicationCoordinatorMock::processReplSetUpdatePosition(OperationContext* txn,
-                                                                    const BSONArray& updates,
-                                                                    BSONObjBuilder* resultObj) {
-        // TODO
-        return Status::OK();
-    }
-
-    Status ReplicationCoordinatorMock::processReplSetUpdatePositionHandshake(
-            const OperationContext* txn,
-            const BSONObj& handshake,
-            BSONObjBuilder* resultObj) {
+    Status ReplicationCoordinatorMock::processReplSetUpdatePosition(
+            OperationContext* txn,
+            const UpdatePositionArgs& updates) {
         // TODO
         return Status::OK();
     }
 
     Status ReplicationCoordinatorMock::processHandshake(const OperationContext* txn,
-                                                        const OID& remoteID,
-                                                        const BSONObj& handshake) {
+                                                        const HandshakeArgs& handshake) {
         return Status::OK();
     }
 

@@ -46,8 +46,7 @@ namespace repl {
         ReplicationCoordinatorMock(const ReplSettings& settings);
         virtual ~ReplicationCoordinatorMock();
 
-        virtual void startReplication(TopologyCoordinator* topCoord,
-                                      ReplicationExecutor::NetworkInterface* network);
+        virtual void startReplication(OperationContext* txn);
 
         virtual void shutdown();
 
@@ -93,9 +92,11 @@ namespace repl {
 
         virtual Status setLastOptime(OperationContext* txn, const OID& rid, const OpTime& ts);
 
+        virtual Status setMyLastOptime(OperationContext* txn, const OpTime& ts);
+
         virtual OID getElectionId();
 
-        virtual OID getMyRID(OperationContext* txn);
+        virtual OID getMyRID();
 
         virtual void prepareReplSetUpdatePositionCommand(OperationContext* txn,
                                                          BSONObjBuilder* cmdBuilder);
@@ -114,7 +115,7 @@ namespace repl {
                                                  bool activate,
                                                  BSONObjBuilder* resultObj);
 
-        virtual Status processReplSetSyncFrom(const std::string& target,
+        virtual Status processReplSetSyncFrom(const HostAndPort& target,
                                               BSONObjBuilder* resultObj);
 
         virtual Status processReplSetFreeze(int secs, BSONObjBuilder* resultObj);
@@ -141,16 +142,10 @@ namespace repl {
                                            BSONObjBuilder* resultObj);
 
         virtual Status processReplSetUpdatePosition(OperationContext* txn,
-                                                    const BSONArray& updates,
-                                                    BSONObjBuilder* resultObj);
-
-        virtual Status processReplSetUpdatePositionHandshake(const OperationContext* txn,
-                                                             const BSONObj& handshake,
-                                                             BSONObjBuilder* resultObj);
+                                                    const UpdatePositionArgs& updates);
 
         virtual Status processHandshake(const OperationContext* txn,
-                                        const OID& remoteID,
-                                        const BSONObj& handshake);
+                                        const HandshakeArgs& handshake);
 
         virtual void waitUpToOneSecondForOptimeChange(const OpTime& ot);
 

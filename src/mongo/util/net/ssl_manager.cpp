@@ -25,6 +25,8 @@
  *    then also delete it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetworking
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/util/net/ssl_manager.h"
@@ -38,6 +40,7 @@
 #include <vector>
 
 #include "mongo/base/init.h"
+#include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/exit.h"
@@ -57,8 +60,6 @@
 using std::endl;
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kNetworking);
 
     SSLGlobalParams sslGlobalParams;
 
@@ -201,12 +202,8 @@ namespace mongo {
 
             virtual void cleanupThreadLocals();
 
-            virtual std::string getServerSubjectName() {
-                return _serverSubjectName;
-            }
-
-            virtual std::string getClientSubjectName() {
-                return _clientSubjectName;
+            virtual const SSLConfiguration& getSSLConfiguration() const {
+                return _sslConfiguration;
             }
 
             virtual std::string getSSLErrorMessage(int code);
@@ -229,12 +226,10 @@ namespace mongo {
             SSL_CTX* _serverContext;  // SSL context for incoming connections
             SSL_CTX* _clientContext;  // SSL context for outgoing connections
             std::string _password;
-            bool _validateCertificates;
             bool _weakValidation;
             bool _allowInvalidCertificates;
             bool _allowInvalidHostnames;
-            std::string _serverSubjectName;
-            std::string _clientSubjectName;
+            SSLConfiguration _sslConfiguration;
 
             /**
              * creates an SSL object to be used for this file descriptor.
@@ -263,6 +258,11 @@ namespace mongo {
              * Parse and store x509 subject name from the PEM keyfile.
              * For server instances check that PEM certificate is not expired
              * and extract server certificate notAfter date.
+             * @param keyFile referencing the PEM file to be read.
+             * @param subjectName as a pointer to the subject name variable being set.
+             * @param serverNotAfter a Date_t object pointer that is valued if the
+             * date is to be checked (as for a server certificate) and null otherwise.
+             * @return bool showing if the function was successful.
              */
             bool _parseAndValidateCertificate(const std::string& keyFile,
                                               std::string* subjectName,
@@ -402,10 +402,22 @@ namespace mongo {
         }
     }
 
+    BSONObj SSLConfiguration::getServerStatusBSON() const {
+        BSONObjBuilder security;
+        security.append("SSLServerSubjectName",
+                        serverSubjectName);
+        security.appendBool("SSLServerHasCertificateAuthority",
+                            hasCA);
+        security.appendDate("SSLServerCertificateExpirationDate",
+                            serverCertificateExpirationDate);
+        return security.obj();
+    }
+
     SSLManagerInterface::~SSLManagerInterface() {}
 
     SSLManager::SSLManager(const Params& params, bool isServer) :
-        _validateCertificates(false),
+        _serverContext(NULL),
+        _clientContext(NULL),
         _weakValidation(params.weakCertificateValidation),
         _allowInvalidCertificates(params.allowInvalidCertificates),
         _allowInvalidHostnames(params.allowInvalidHostnames) {
@@ -433,39 +445,38 @@ namespace mongo {
             uasserted(16768, "ssl initialization problem"); 
         }
 
-        // SSL client specific initialization
-        if (!isServer) {
-            _serverContext = NULL;
+        // pick the certificate for use in outgoing connections,
+        std::string clientPEM;
+        if (!isServer || params.clusterfile.empty()) {
+            // We are either a client, or a server without a cluster key,
+            // so use the PEM key file, if specified
+            clientPEM = params.pemfile;
+        }
+        else {
+            // We are a server with a cluster key, so use the cluster key file
+            clientPEM = params.clusterfile;
+        }
 
-            if (!params.pemfile.empty()) {
-                if (!_parseAndValidateCertificate(params.pemfile, &_clientSubjectName, NULL)) {
-                    uasserted(16941, "ssl initialization problem"); 
-                }
+        if (!clientPEM.empty()) {
+            if (!_parseAndValidateCertificate(clientPEM,
+                                              &_sslConfiguration.clientSubjectName, NULL)) {
+                uasserted(16941, "ssl initialization problem");
             }
         }
         // SSL server specific initialization
         if (isServer) {
             if (!_initSSLContext(&_serverContext, params)) {
-                uasserted(16562, "ssl initialization problem"); 
+                uasserted(16562, "ssl initialization problem");
             }
 
-            Date_t notAfter = Date_t();
-            if (!_parseAndValidateCertificate(params.pemfile, &_serverSubjectName, &notAfter)) {
-                uasserted(16942, "ssl initialization problem"); 
+            if (!_parseAndValidateCertificate(params.pemfile,
+                                              &_sslConfiguration.serverSubjectName,
+                                              &_sslConfiguration.serverCertificateExpirationDate)) {
+                uasserted(16942, "ssl initialization problem");
             }
 
-            static CertificateExpirationMonitor task = CertificateExpirationMonitor(notAfter);
-            // use the cluster certificate for outgoing connections if specified
-            if (!params.clusterfile.empty()) {
-                if (!_parseAndValidateCertificate(params.clusterfile, &_clientSubjectName, NULL)) {
-                    uasserted(16943, "ssl initialization problem"); 
-                }
-            }
-            else { 
-                if (!_parseAndValidateCertificate(params.pemfile, &_clientSubjectName, NULL)) {
-                    uasserted(16944, "ssl initialization problem"); 
-                }
-            }
+            static CertificateExpirationMonitor task =
+                CertificateExpirationMonitor(_sslConfiguration.serverCertificateExpirationDate);
         }
     }
 
@@ -656,7 +667,7 @@ namespace mongo {
 
     bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile, 
                                                   std::string* subjectName,
-                                                  Date_t* serverNotAfter) {
+                                                  Date_t* serverCertificateExpirationDate) {
         BIO *inBIO = BIO_new(BIO_s_file_internal());
         if (inBIO == NULL) {
             error() << "failed to allocate BIO object: "
@@ -680,7 +691,7 @@ namespace mongo {
         ON_BLOCK_EXIT(X509_free, x509);
 
         *subjectName = getCertificateSubjectName(x509);
-        if (serverNotAfter != NULL) {
+        if (serverCertificateExpirationDate != NULL) {
 
             unsigned long long notBeforeMillis = _convertASN1ToMillis(X509_get_notBefore(x509));
             if (notBeforeMillis == 0) {
@@ -700,7 +711,7 @@ namespace mongo {
                        "The provided SSL certificate is expired or not yet valid.");
             }
 
-            *serverNotAfter = Date_t(notAfterMillis);
+            *serverCertificateExpirationDate = Date_t(notAfterMillis);
         }
 
         return true;
@@ -759,7 +770,7 @@ namespace mongo {
         // Set SSL to require peer (client) certificate verification
         // if a certificate is presented
         SSL_CTX_set_verify(context, SSL_VERIFY_PEER, &SSLManager::verify_cb);
-        _validateCertificates = true;
+        _sslConfiguration.hasCA = true;
         return true;
     }
 
@@ -905,7 +916,7 @@ namespace mongo {
     std::string SSLManager::parseAndValidatePeerCertificate(const SSLConnection* conn, 
                                                     const std::string& remoteHost) {
         // only set if a CA cert has been provided
-        if (!_validateCertificates) return "";
+        if (!_sslConfiguration.hasCA) return "";
 
         X509* peerCert = SSL_get_peer_certificate(conn->ssl);
 

@@ -27,6 +27,8 @@
  *    then also delete it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetworking
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/bson/util/bson_extract.h"
@@ -47,8 +49,6 @@
 #include "mongo/util/password_digest.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kNetworking);
 
     AtomicInt64 DBClientBase::ConnectionIdSequence;
 
@@ -646,8 +646,8 @@ namespace mongo {
             uassert(ErrorCodes::AuthenticationFailed,
                     "Username \"" + user + 
                     "\" does not match the provided client certificate user \"" +
-                    getSSLManager()->getClientSubjectName() + "\"",
-                    user ==  getSSLManager()->getClientSubjectName());
+                    getSSLManager()->getSSLConfiguration().clientSubjectName + "\"",
+                    user ==  getSSLManager()->getSSLConfiguration().clientSubjectName);
 
             BSONObj result;
             uassert(result["code"].Int(),
@@ -906,8 +906,15 @@ namespace mongo {
 
         }
 
+        // SERVER-14951 filter for old version fallback needs to db qualify the 'name' element
+        BSONObjBuilder fallbackFilter;
+        if ( filter.hasField( "name" ) && filter["name"].type() == String ) {
+            fallbackFilter.append( "name", db + "." + filter["name"].str() );
+        }
+        fallbackFilter.appendElementsUnique( filter );
+
         string ns = db + ".system.namespaces";
-        auto_ptr<DBClientCursor> c = query( ns.c_str(), filter );
+        auto_ptr<DBClientCursor> c = query( ns.c_str(), fallbackFilter.obj() );
         while ( c->more() ) {
             BSONObj obj = c->nextSafe();
             string ns = obj["name"].valuestr();

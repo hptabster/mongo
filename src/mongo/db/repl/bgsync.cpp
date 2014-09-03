@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/client.h"
@@ -37,14 +39,13 @@
 #include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/db/repl/rs_sync.h"
 #include "mongo/db/repl/rs.h"
+#include "mongo/db/repl/rslog.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/base/counter.h"
 #include "mongo/db/stats/timer_stats.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kReplication);
 
 namespace repl {
 
@@ -113,11 +114,6 @@ namespace repl {
     }
 
     void BackgroundSync::notify() {
-        OperationContextImpl txn;
-
-        ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
-        replCoord->setLastOptime(&txn, replCoord->getMyRID(&txn), theReplSet->lastOpTimeWritten);
-
         {
             boost::unique_lock<boost::mutex> lock(s_instance->_mutex);
 
@@ -397,7 +393,7 @@ namespace repl {
         while ((target = theReplSet->getMemberToSyncTo()) != NULL) {
             string current = target->fullName();
 
-            if (!r.connect(current)) {
+            if (!r.connect(target->h())) {
                 LOG(2) << "replSet can't connect to " << current << " to read operations" << rsLog;
                 r.resetConnection();
                 theReplSet->veto(current);

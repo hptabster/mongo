@@ -29,17 +29,8 @@
 #include "mongo/db/storage/heap1/heap1_database_catalog_entry.h"
 
 #include "mongo/db/catalog/collection_options.h"
-#include "mongo/db/index/2d_access_method.h"
-#include "mongo/db/index/btree_access_method.h"
-#include "mongo/db/index/fts_access_method.h"
-#include "mongo/db/index/hash_access_method.h"
-#include "mongo/db/index/haystack_access_method.h"
-#include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
-#include "mongo/db/index/s2_access_method.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/operation_context.h"
-#include "mongo/db/storage/heap1/heap1_btree_impl.h"
 #include "mongo/db/storage/heap1/heap1_recovery_unit.h"
 #include "mongo/db/storage/heap1/record_store_heap.h"
 
@@ -137,63 +128,6 @@ namespace mongo {
         return Status::OK();
     }
 
-
-    IndexAccessMethod* Heap1DatabaseCatalogEntry::getIndex( OperationContext* txn,
-                                                            const CollectionCatalogEntry* collection,
-                                                            IndexCatalogEntry* index ) {
-        const Entry* entry = dynamic_cast<const Entry*>( collection );
-
-        Entry::Indexes::const_iterator i = entry->indexes.find( index->descriptor()->indexName() );
-        if ( i == entry->indexes.end() ) {
-            // index doesn't exist
-            return NULL;
-        }
-
-        const string& type = index->descriptor()->getAccessMethodName();
-
-#if 1 // Toggle to use Btree on HeapRecordStore
-
-        // Need the Head to be non-Null to avoid asserts. TODO remove the asserts.
-        index->headManager()->setHead(txn, DiskLoc(0xDEAD, 0xBEAF));
-
-        // When is a btree not a Btree? When it is a Heap1BtreeImpl!
-        std::auto_ptr<SortedDataInterface> btree(getHeap1BtreeImpl(index, &i->second->data));
-#else
-
-        if (!i->second->rs)
-            i->second->rs.reset(new HeapRecordStore( index->descriptor()->indexName() ));
-
-        std::auto_ptr<SortedDataInterface> btree(
-            SortedDataInterface::getInterface(index->headManager(),
-                                         i->second->rs,
-                                         index->ordering(),
-                                         index->descriptor()->indexNamespace(),
-                                         index->descriptor()->version(),
-                                         &BtreeBasedAccessMethod::invalidateCursors));
-#endif
-
-        if ("" == type)
-            return new BtreeAccessMethod( index, btree.release() );
-
-        if (IndexNames::HASHED == type)
-            return new HashAccessMethod( index, btree.release() );
-
-        if (IndexNames::GEO_2DSPHERE == type)
-            return new S2AccessMethod( index, btree.release() );
-
-        if (IndexNames::TEXT == type)
-            return new FTSAccessMethod( index, btree.release() );
-
-        if (IndexNames::GEO_HAYSTACK == type)
-            return new HaystackAccessMethod( index, btree.release() );
-
-        if (IndexNames::GEO_2D == type)
-            return new TwoDAccessMethod( index, btree.release() );
-
-        log() << "Can't find index for keyPattern " << index->descriptor()->keyPattern();
-        fassertFailed(18518);
-    }
-
     Status Heap1DatabaseCatalogEntry::renameCollection( OperationContext* txn,
                                                         const StringData& fromNS,
                                                         const StringData& toNS,
@@ -232,11 +166,11 @@ namespace mongo {
         indexes.clear();
     }
 
-    int Heap1DatabaseCatalogEntry::Entry::getTotalIndexCount() const {
+    int Heap1DatabaseCatalogEntry::Entry::getTotalIndexCount( OperationContext* txn ) const {
         return static_cast<int>( indexes.size() );
     }
 
-    int Heap1DatabaseCatalogEntry::Entry::getCompletedIndexCount() const {
+    int Heap1DatabaseCatalogEntry::Entry::getCompletedIndexCount( OperationContext* txn ) const {
         int ready = 0;
         for ( Indexes::const_iterator i = indexes.begin(); i != indexes.end(); ++i )
             if ( i->second->ready )
@@ -244,18 +178,21 @@ namespace mongo {
         return ready;
     }
 
-    void Heap1DatabaseCatalogEntry::Entry::getAllIndexes( std::vector<std::string>* names ) const {
+    void Heap1DatabaseCatalogEntry::Entry::getAllIndexes( OperationContext* txn,
+                                                          std::vector<std::string>* names ) const {
         for ( Indexes::const_iterator i = indexes.begin(); i != indexes.end(); ++i )
             names->push_back( i->second->name );
     }
 
-    BSONObj Heap1DatabaseCatalogEntry::Entry::getIndexSpec( const StringData& idxName ) const {
+    BSONObj Heap1DatabaseCatalogEntry::Entry::getIndexSpec( OperationContext* txn,
+                                                            const StringData& idxName ) const {
         Indexes::const_iterator i = indexes.find( idxName.toString() );
         invariant( i != indexes.end() );
         return i->second->spec; 
     }
 
-    bool Heap1DatabaseCatalogEntry::Entry::isIndexMultikey( const StringData& idxName) const {
+    bool Heap1DatabaseCatalogEntry::Entry::isIndexMultikey( OperationContext* txn,
+                                                            const StringData& idxName) const {
         Indexes::const_iterator i = indexes.find( idxName.toString() );
         invariant( i != indexes.end() );
         return i->second->isMultikey;
@@ -273,7 +210,8 @@ namespace mongo {
         return true;
     }
 
-    DiskLoc Heap1DatabaseCatalogEntry::Entry::getIndexHead( const StringData& idxName ) const {
+    DiskLoc Heap1DatabaseCatalogEntry::Entry::getIndexHead( OperationContext* txn,
+                                                            const StringData& idxName ) const {
         Indexes::const_iterator i = indexes.find( idxName.toString() );
         invariant( i != indexes.end() );
         return i->second->head;
@@ -287,7 +225,8 @@ namespace mongo {
         i->second->head = newHead;
     }
 
-    bool Heap1DatabaseCatalogEntry::Entry::isIndexReady( const StringData& idxName ) const {
+    bool Heap1DatabaseCatalogEntry::Entry::isIndexReady( OperationContext* txn,
+                                                         const StringData& idxName ) const {
         Indexes::const_iterator i = indexes.find( idxName.toString() );
         invariant( i != indexes.end() );
         return i->second->ready;

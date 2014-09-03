@@ -38,6 +38,7 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -114,15 +115,24 @@ namespace mongo {
         PlanExecutor* rawExec;
         if (_canonicalQuery.get()) {
             // This is the non-idhack branch.
-            uassertStatusOK(getExecutorDelete(_request->getOpCtx(), collection,
-                                              _canonicalQuery.release(), _request->isMulti(),
-                                              _request->shouldCallLogOp(), &rawExec));
+            uassertStatusOK(getExecutorDelete(_request->getOpCtx(),
+                                              collection,
+                                              _canonicalQuery.release(),
+                                              _request->isMulti(),
+                                              _request->shouldCallLogOp(),
+                                              _request->isFromMigrate(),
+                                              &rawExec));
         }
         else {
             // This is the idhack branch.
-            uassertStatusOK(getExecutorDelete(_request->getOpCtx(), collection, ns.ns(),
-                                              _request->getQuery(), _request->isMulti(),
-                                              _request->shouldCallLogOp(), &rawExec));
+            uassertStatusOK(getExecutorDelete(_request->getOpCtx(),
+                                              collection,
+                                              ns.ns(),
+                                              _request->getQuery(),
+                                              _request->isMulti(),
+                                              _request->shouldCallLogOp(),
+                                              _request->isFromMigrate(),
+                                              &rawExec));
         }
         scoped_ptr<PlanExecutor> exec(rawExec);
 

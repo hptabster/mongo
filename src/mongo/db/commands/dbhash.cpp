@@ -35,6 +35,7 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/query/internal_plans.h"
+#include "mongo/util/log.h"
 #include "mongo/util/md5.hpp"
 #include "mongo/util/timer.h"
 
@@ -80,7 +81,7 @@ namespace mongo {
         if ( !collection )
             return "";
 
-        IndexDescriptor* desc = collection->getIndexCatalog()->findIdIndex();
+        IndexDescriptor* desc = collection->getIndexCatalog()->findIdIndex( opCtx );
 
         auto_ptr<PlanExecutor> exec;
         if ( desc ) {

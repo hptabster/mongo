@@ -32,6 +32,7 @@
 #include "mongo/util/net/message_port.h"
 #include "mongo/util/net/message_server.h"
 #include "mongo/util/fail_point_service.h"
+#include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/timer.h"
 #include "mongo/unittest/unittest.h"
@@ -82,6 +83,10 @@ namespace mongo {
         }
 
         ::_exit(rc);
+    }
+
+    void exitCleanly(ExitCode rc, OperationContext* txn) {
+        dbexit(rc, "");
     }
 
     bool haveLocalShardingInfo(const string& ns) {

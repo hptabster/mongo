@@ -32,6 +32,7 @@
 #include "mongo/db/storage/mmap_v1/extent.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
 #include "mongo/db/storage/mmap_v1/record_store_v1_simple.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -186,7 +187,7 @@ namespace mongo {
     }
 
     RecordData RecordStoreV1RepairIterator::dataFor(const DiskLoc& loc) const {
-        return _recordStore->dataFor( loc );
+        return _recordStore->dataFor( _txn, loc );
     }
 
 }  // namespace mongo

@@ -28,6 +28,8 @@
 *    then also delete it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommands
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/init.h"
@@ -55,6 +57,7 @@
 #include "mongo/s/chunk.h"
 #include "mongo/s/config.h"
 #include "mongo/s/cursors.h"
+#include "mongo/s/distlock.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/strategy.h"
 #include "mongo/s/version_manager.h"
@@ -64,8 +67,6 @@
 #include "mongo/util/timer.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kCommands);
 
     namespace dbgrid_pub_cmds {
 

@@ -40,6 +40,7 @@
 #include "mongo/db/query/qlog.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_common.h"
+#include "mongo/util/log.h"
 
 namespace {
 
@@ -90,44 +91,6 @@ namespace mongo {
         return csn;
     }
 
-    // Helper needed for GeoNear until we remove the default 100 limit
-    static MatchExpression* cloneExcludingGeoNear(const MatchExpression* expr) {
-
-        if (MatchExpression::GEO_NEAR == expr->matchType()) {
-            return NULL;
-        }
-
-        auto_ptr<MatchExpression> clone(expr->shallowClone());
-        vector<MatchExpression*> stack;
-        stack.push_back(clone.get());
-
-        while (!stack.empty()) {
-
-            MatchExpression* next = stack.back();
-            stack.pop_back();
-
-            vector<MatchExpression*>* childVector = next->getChildVector();
-            if (!childVector)
-                continue;
-
-            for (vector<MatchExpression*>::iterator it = childVector->begin();
-                it != childVector->end();) {
-
-                MatchExpression* child = *it;
-                if (MatchExpression::GEO_NEAR == child->matchType()) {
-                    it = childVector->erase(it);
-                    delete child;
-                }
-                else {
-                    stack.push_back(child);
-                    ++it;
-                }
-            }
-        }
-
-        return clone.release();
-    }
-
     // static
     QuerySolutionNode* QueryPlannerAccess::makeLeafNode(const CanonicalQuery& query,
                                                         const IndexEntry& index,
@@ -155,24 +118,19 @@ namespace mongo {
             if (indexIs2D) {
                 GeoNear2DNode* ret = new GeoNear2DNode();
                 ret->indexKeyPattern = index.keyPattern;
-                ret->nq = nearExpr->getData();
+                ret->nq = &nearExpr->getData();
                 ret->baseBounds.fields.resize(index.keyPattern.nFields());
                 if (NULL != query.getProj()) {
                     ret->addPointMeta = query.getProj()->wantGeoNearPoint();
                     ret->addDistMeta = query.getProj()->wantGeoNearDistance();
                 }
 
-                ret->numToReturn = query.getParsed().getNumToReturn();
-                if (ret->numToReturn == 0)
-                    ret->numToReturn = 100;
-                ret->fullFilterExcludingNear.reset(cloneExcludingGeoNear(query.root()));
-
                 return ret;
             }
             else {
                 GeoNear2DSphereNode* ret = new GeoNear2DSphereNode();
                 ret->indexKeyPattern = index.keyPattern;
-                ret->nq = nearExpr->getData();
+                ret->nq = &nearExpr->getData();
                 ret->baseBounds.fields.resize(index.keyPattern.nFields());
                 if (NULL != query.getProj()) {
                     ret->addPointMeta = query.getProj()->wantGeoNearPoint();

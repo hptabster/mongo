@@ -37,12 +37,9 @@
 #pragma once
 
 #include "mongo/db/client_basic.h"
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/lasterror.h"
-#include "mongo/db/repl/rs.h"
-#include "mongo/db/stats/top.h"
-#include "mongo/db/storage_options.h"
-#include "mongo/util/concurrency/rwlock.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/util/concurrency/threadlocal.h"
 #include "mongo/util/paths.h"
 
@@ -93,6 +90,7 @@ namespace mongo {
 
         /* report what the last operation was.  used by getlasterror */
         void appendLastOp( BSONObjBuilder& b ) const;
+        void reportState(BSONObjBuilder& builder);
 
         // TODO(spencer): SERVER-10228 SERVER-14779 Remove this/move it fully into OperationContext.
         bool isGod() const { return _god; } /* this is for map/reduce writes */

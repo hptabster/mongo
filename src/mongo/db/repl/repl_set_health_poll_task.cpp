@@ -26,6 +26,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/repl_set_health_poll_task.h"
@@ -37,11 +39,10 @@
 #include "mongo/db/repl/member.h"
 #include "mongo/db/repl/rs.h"
 #include "mongo/db/repl/rs_config.h"
+#include "mongo/db/repl/rslog.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kReplication);
 
 namespace repl {
 

@@ -57,6 +57,7 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/fail_point_service.h"
+#include "mongo/util/log.h"
 #include "mongo/util/md5.hpp"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/ramlog.h"
@@ -303,7 +304,7 @@ namespace mongo {
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
-    bool CmdShutdown::shutdownHelper() {
+    bool CmdShutdown::shutdownHelper(OperationContext* txn) {
         MONGO_FAIL_POINT_BLOCK(crashOnShutdown, crashBlock) {
             const std::string crashHow = crashBlock.getData()["how"].str();
             if (crashHow == "fault") {
@@ -318,9 +319,8 @@ namespace mongo {
 
         log() << "terminating, shutdown command received" << endl;
 
-        dbexit( EXIT_CLEAN , "shutdown called" ); // this never returns
-        verify(0);
-        return true;
+        exitCleanly( EXIT_CLEAN, txn ); // this never returns
+        invariant(false);
     }
 
     /* for testing purposes only */

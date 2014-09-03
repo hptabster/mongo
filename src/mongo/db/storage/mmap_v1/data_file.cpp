@@ -28,17 +28,19 @@
 *    it in the license file.
 */
 
-#include "mongo/pch.h"
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/storage/mmap_v1/data_file.h"
 
 #include <boost/filesystem/operations.hpp>
 
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
-#include "mongo/db/lockstate.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/util/file_allocator.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -113,7 +115,6 @@ namespace mongo {
             }
         }
         data_file_check(_mb);
-        header()->checkUpgrade(txn);
         return Status::OK();
     }
 
@@ -224,8 +225,10 @@ namespace mongo {
         if ( freeListStart == minDiskLoc ) {
             // we are upgrading from 2.4 to 2.6
             invariant( freeListEnd == minDiskLoc ); // both start and end should be (0,0) or real
+            WriteUnitOfWork wunit(txn);
             *txn->recoveryUnit()->writing( &freeListStart ) = DiskLoc();
             *txn->recoveryUnit()->writing( &freeListEnd ) = DiskLoc();
+            wunit.commit();
         }
     }
 

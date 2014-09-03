@@ -29,7 +29,9 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/pch.h"
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommands
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/commands.h"
 
@@ -44,11 +46,15 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/client.h"
+#include "mongo/db/get_status_from_command_result.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
+
+    using logger::LogComponent;
 
     map<string,Command*> * Command::_commandsByBestName;
     map<string,Command*> * Command::_webCommands;
@@ -232,28 +238,7 @@ namespace mongo {
     }
 
     Status Command::getStatusFromCommandResult(const BSONObj& result) {
-        BSONElement okElement = result["ok"];
-        BSONElement codeElement = result["code"];
-        BSONElement errmsgElement = result["errmsg"];
-        if (okElement.eoo()) {
-            return Status(ErrorCodes::CommandResultSchemaViolation,
-                          mongoutils::str::stream() << "No \"ok\" field in command result " <<
-                          result);
-        }
-        if (okElement.trueValue()) {
-            return Status::OK();
-        }
-        int code = codeElement.numberInt();
-        if (0 == code)
-            code = ErrorCodes::UnknownError;
-        std::string errmsg;
-        if (errmsgElement.type() == String) {
-            errmsg = errmsgElement.String();
-        }
-        else if (!errmsgElement.eoo()) {
-            errmsg = errmsgElement.toString();
-        }
-        return Status(ErrorCodes::Error(code), errmsg);
+        return mongo::getStatusFromCommandResult(result);
     }
 
     Status Command::checkAuthForCommand(ClientBasic* client,
@@ -316,7 +301,7 @@ namespace mongo {
         namespace mmb = mutablebson;
         Status status = _checkAuthorizationImpl(c, client, dbname, cmdObj, fromRepl);
         if (!status.isOK()) {
-            log() << status << std::endl;
+            log(LogComponent::kAccessControl) << status << std::endl;
         }
         mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
         c->redactForLogging(&cmdToLog);

@@ -28,15 +28,21 @@
 *    it in the license file.
 */
 
+#include "mongo/platform/basic.h"
+
+#include <string>
+#include <vector>
+
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/operation_context_impl.h"
-#include "mongo/s/d_logic.h"
+#include "mongo/s/d_state.h"
 #include "mongo/s/shard_key_pattern.h"
 
 namespace mongo {
@@ -126,57 +132,44 @@ namespace mongo {
                 }
             }
 
-
-            {
-                // We first take a read lock to see if we need to do anything
-                // as many calls are ensureIndex (and hence no-ops), this is good so its a shared
-                // lock for common calls. We only take write lock if needed.
-                // Note: createIndexes command does not currently respect shard versioning.
-                Client::ReadContext readContext(txn, ns, false /* doVersion */);
-                const Collection* collection = readContext.ctx().db()->getCollection(txn, ns.ns());
-                if ( collection ) {
-                    for ( size_t i = 0; i < specs.size(); i++ ) {
-                        BSONObj spec = specs[i];
-                        StatusWith<BSONObj> statusWithSpec =
-                            collection->getIndexCatalog()->prepareSpecForCreate( txn, spec );
-                        status = statusWithSpec.getStatus();
-                        if ( status.code() == ErrorCodes::IndexAlreadyExists ) {
-                            specs.erase( specs.begin() + i );
-                            i--;
-                            continue;
-                        }
-                        if ( !status.isOK() )
-                            return appendCommandStatus( result, status );
-                    }
-
-                    if ( specs.size() == 0 ) {
-                        result.append( "numIndexesBefore",
-                                       collection->getIndexCatalog()->numIndexesTotal() );
-                        result.append( "note", "all indexes already exist" );
-                        return true;
-                    }
-
-                    // need to create index
-                }
-            }
-
             // now we know we have to create index(es)
             // Note: createIndexes command does not currently respect shard versioning.
-            Client::WriteContext writeContext(txn, ns.ns(), false /* doVersion */ );
-            Database* db = writeContext.ctx().db();
+            Lock::DBWrite lk(txn->lockState(), ns.ns());
+            Client::Context ctx(txn, ns.ns(), false /* doVersion */ );
+            Database* db = ctx.db();
 
             Collection* collection = db->getCollection( txn, ns.ns() );
             result.appendBool( "createdCollectionAutomatically", collection == NULL );
             if ( !collection ) {
+                WriteUnitOfWork wunit(txn);
                 collection = db->createCollection( txn, ns.ns() );
                 invariant( collection );
+                if (!fromRepl) {
+                    repl::logOp(txn, "c", (dbname + ".$cmd").c_str(), BSON("create" << ns.coll()));
+                }
+                wunit.commit();
             }
 
-            result.append( "numIndexesBefore", collection->getIndexCatalog()->numIndexesTotal() );
+            result.append( "numIndexesBefore", collection->getIndexCatalog()->numIndexesTotal(txn) );
+
+            MultiIndexBlock indexer(txn, collection);
+            indexer.allowBackgroundBuilding();
+            indexer.allowInterruption();
+
+            const size_t origSpecsSize = specs.size();
+            indexer.removeExistingIndexes(&specs);
+
+            if (specs.size() == 0) {
+                result.append( "note", "all indexes already exist" );
+                return true;
+            }
+
+            if (specs.size() != origSpecsSize) {
+                result.append( "note", "index already exists" );
+            }
 
             for ( size_t i = 0; i < specs.size(); i++ ) {
-                BSONObj spec = specs[i];
-
+                const BSONObj& spec = specs[i];
                 if ( spec["unique"].trueValue() ) {
                     status = checkUniqueIndexConstraints(txn, ns.ns(), spec["key"].Obj());
 
@@ -185,28 +178,28 @@ namespace mongo {
                         return false;
                     }
                 }
-
-                status = collection->getIndexCatalog()->createIndex(txn, spec, true);
-                if ( status.code() == ErrorCodes::IndexAlreadyExists ) {
-                    if ( !result.hasField( "note" ) )
-                        result.append( "note", "index already exists" );
-                    continue;
-                }
-
-                if ( !status.isOK() ) {
-                    appendCommandStatus( result, status );
-                    return false;
-                }
-
-                if ( !fromRepl ) {
-                    std::string systemIndexes = ns.getSystemIndexesCollection();
-                    repl::logOp(txn, "i", systemIndexes.c_str(), spec);
-                }
             }
 
-            result.append( "numIndexesAfter", collection->getIndexCatalog()->numIndexesTotal() );
+            uassertStatusOK(indexer.init(specs));
+            uassertStatusOK(indexer.insertAllDocumentsInCollection());
 
-            writeContext.commit();
+            {
+                WriteUnitOfWork wunit(txn);
+
+                indexer.commit();
+
+                if ( !fromRepl ) {
+                    for ( size_t i = 0; i < specs.size(); i++ ) {
+                        std::string systemIndexes = ns.getSystemIndexesCollection();
+                        repl::logOp(txn, "i", systemIndexes.c_str(), specs[i]);
+                    }
+                }
+
+                wunit.commit();
+            }
+
+            result.append( "numIndexesAfter", collection->getIndexCatalog()->numIndexesTotal(txn) );
+
             return true;
         }
 

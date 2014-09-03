@@ -28,6 +28,8 @@
  */
 
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetworking
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/client/parallel.h"
@@ -45,8 +47,6 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kNetworking);
 
     LabeledLevel pc( "pcursor", 2 );
 
@@ -121,11 +121,13 @@ namespace mongo {
         string cursorType;
         BSONObj indexBounds;
         BSONObj oldPlan;
-        
+
         long long millis = 0;
         double numExplains = 0;
 
-        map<string,long long> counters;
+        long long nReturned = 0;
+        long long keysExamined = 0;
+        long long docsExamined = 0;
 
         map<string,list<BSONObj> > out;
         {
@@ -151,31 +153,34 @@ namespace mongo {
 
                     y.append( temp );
 
-                    BSONObjIterator k( temp );
-                    while ( k.more() ) {
-                        BSONElement z = k.next();
-                        if ( z.fieldName()[0] != 'n' )
-                            continue;
-                        long long& c = counters[z.fieldName()];
-                        c += z.numberLong();
+                    if (temp.hasField("executionStats")) {
+                        // Here we assume that the shard gave us back explain 2.0 style output.
+                        BSONObj execStats = temp["executionStats"].Obj();
+                        if (execStats.hasField("nReturned")) {
+                            nReturned += execStats["nReturned"].numberLong();
+                        }
+                        if (execStats.hasField("totalKeysExamined")) {
+                            keysExamined += execStats["totalKeysExamined"].numberLong();
+                        }
+                        if (execStats.hasField("totalDocsExamined")) {
+                            docsExamined += execStats["totalDocsExamined"].numberLong();
+                        }
+                    }
+                    else {
+                        // Here we assume that the shard gave us back explain 1.0 style output.
+                        if (temp.hasField("n")) {
+                            nReturned += temp["n"].numberLong();
+                        }
+                        if (temp.hasField("nscanned")) {
+                            keysExamined += temp["nscanned"].numberLong();
+                        }
+                        if (temp.hasField("nscannedObjects")) {
+                            docsExamined += temp["nscannedObjects"].numberLong();
+                        }
                     }
 
-                    millis += temp["millis"].numberLong();
+                    millis += temp["executionStats"]["executionTimeMillis"].numberLong();
                     numExplains++;
-
-                    if ( temp["cursor"].type() == String ) { 
-                        if ( cursorType.size() == 0 )
-                            cursorType = temp["cursor"].String();
-                        else if ( cursorType != temp["cursor"].String() )
-                            cursorType = "multiple";
-                    }
-
-                    if ( temp["indexBounds"].type() == Object )
-                        indexBounds = temp["indexBounds"].Obj();
-
-                    if ( temp["oldPlan"].type() == Object )
-                        oldPlan = temp["oldPlan"].Obj();
-
                 }
                 y.done();
             }
@@ -183,8 +188,10 @@ namespace mongo {
         }
 
         b.append( "cursor" , cursorType );
-        for ( map<string,long long>::iterator i=counters.begin(); i!=counters.end(); ++i )
-            b.appendNumber( i->first , i->second );
+
+        b.appendNumber( "nReturned" , nReturned );
+        b.appendNumber( "totalKeysExamined" , keysExamined );
+        b.appendNumber( "totalDocsExamined" , docsExamined );
 
         b.appendNumber( "millisShardTotal" , millis );
         b.append( "millisShardAvg" , 
@@ -205,72 +212,6 @@ namespace mongo {
             // TODO: this is lame...
         }
 
-    }
-
-    // --------  FilteringClientCursor -----------
-    FilteringClientCursor::FilteringClientCursor()
-        : _pcmData( NULL ), _done( true ) {
-    }
-
-    FilteringClientCursor::~FilteringClientCursor() {
-        // Don't use _pcmData
-        _pcmData = NULL;
-    }
-
-    void FilteringClientCursor::reset( auto_ptr<DBClientCursor> cursor ) {
-        _cursor = cursor;
-        _next = BSONObj();
-        _done = _cursor.get() == 0;
-        _pcmData = NULL;
-    }
-
-    void FilteringClientCursor::reset( DBClientCursor* cursor, ParallelConnectionMetadata* pcmData ) {
-        _cursor.reset( cursor );
-        _pcmData = pcmData;
-        _next = BSONObj();
-        _done = cursor == 0;
-    }
-
-
-    bool FilteringClientCursor::more() {
-        if ( ! _next.isEmpty() )
-            return true;
-
-        if ( _done )
-            return false;
-
-        _advance();
-        return ! _next.isEmpty();
-    }
-
-    BSONObj FilteringClientCursor::next() {
-        verify( ! _next.isEmpty() );
-        verify( ! _done );
-
-        BSONObj ret = _next;
-        _next = BSONObj();
-        return ret;
-    }
-
-    BSONObj FilteringClientCursor::peek() {
-        if ( _next.isEmpty() )
-            _advance();
-        return _next;
-    }
-
-    void FilteringClientCursor::_advance() {
-        verify( _next.isEmpty() );
-        if ( ! _cursor.get() || _done )
-            return;
-
-        while ( _cursor->more() ) {
-            _next = _cursor->next();
-            if (!_cursor->moreInCurrentBatch()) {
-                _next = _next.getOwned();
-            }
-            return;
-        }
-        _done = true;
     }
 
     // --------  ParallelSortClusteredCursor -----------
@@ -409,9 +350,7 @@ namespace mongo {
         if( ! retryNext && pcState ){
 
             if( errored && pcState->conn ){
-                // Don't return this conn to the pool if it's bad
-                pcState->conn->kill();
-                pcState->conn.reset();
+                // Connection will cleanup for itself. Do nothing.
             }
             else if( initialized ){
 
@@ -1105,7 +1044,7 @@ namespace mongo {
 
         // LEGACY STUFF NOW
 
-        _cursors = new FilteringClientCursor[ _cursorMap.size() ];
+        _cursors = new DBClientCursorHolder[ _cursorMap.size() ];
 
         // Put the cursors in the legacy format
         int index = 0;
@@ -1204,7 +1143,7 @@ namespace mongo {
 
         // make sure we're not already initialized
         verify( ! _cursors );
-        _cursors = new FilteringClientCursor[_numServers];
+        _cursors = new DBClientCursorHolder[_numServers];
 
         bool returnPartial = ( _options & QueryOption_PartialResults );
 
@@ -1292,27 +1231,27 @@ namespace mongo {
                 LOG(5) << "ParallelSortClusteredCursor::init server:" << sq._server << " ns:" << _ns
                        << " query:" << q << " _fields:" << _fields << " options: " << _options  << endl;
 
-                if( ! _cursors[i].raw() )
+                if( ! _cursors[i].get() )
                     _cursors[i].reset( new DBClientCursor( conns[i]->get() , _ns , q ,
                                                             0 , // nToReturn
                                                             0 , // nToSkip
                                                             _fields.isEmpty() ? 0 : &_fields , // fieldsToReturn
                                                             _options ,
                                                             _batchSize == 0 ? 0 : _batchSize + _needToSkip // batchSize
-                                                            ) );
+                                                            ), NULL );
 
                 try{
-                    _cursors[i].raw()->initLazy( ! firstPass );
+                    _cursors[i].get()->initLazy( ! firstPass );
                 }
                 catch( SocketException& e ){
                     socketExs.push_back( e.what() + errLoc );
-                    _cursors[i].reset( NULL );
+                    _cursors[i].reset( NULL, NULL );
                     conns[i]->done();
                     if( ! returnPartial ) break;
                 }
                 catch( std::exception& e){
                     otherExs.push_back( e.what() + errLoc );
-                    _cursors[i].reset( NULL );
+                    _cursors[i].reset( NULL, NULL );
                     conns[i]->done();
                     break;
                 }
@@ -1328,7 +1267,7 @@ namespace mongo {
                 // log() << "Finishing query for " << cons[i].get()->getHost() << endl;
                 string errLoc = " @ " + queries[i]._server;
 
-                if( ! _cursors[i].raw() || ( ! firstPass && retryQueries.find( i ) == retryQueries.end() ) ){
+                if( ! _cursors[i].get() || ( ! firstPass && retryQueries.find( i ) == retryQueries.end() ) ){
                     if( conns[i] ) conns[i].get()->done();
                     continue;
                 }
@@ -1340,10 +1279,10 @@ namespace mongo {
 
                 try {
 
-                    if( ! _cursors[i].raw()->initLazyFinish( retry ) ) {
+                    if( ! _cursors[i].get()->initLazyFinish( retry ) ) {
 
                         warning() << "invalid result from " << conns[i]->getHost() << ( retry ? ", retrying" : "" ) << endl;
-                        _cursors[i].reset( NULL );
+                        _cursors[i].reset( NULL, NULL );
 
                         if( ! retry ){
                             socketExs.push_back( str::stream() << "error querying server: " << servers[i] );
@@ -1362,26 +1301,26 @@ namespace mongo {
                     allConfigStale = true;
 
                     staleConfigExs.push_back( (string)"stale config detected when receiving response for " + e.what() + errLoc );
-                    _cursors[i].reset( NULL );
+                    _cursors[i].reset( NULL, NULL );
                     conns[i]->done();
                     continue;
                 }
                 catch ( SocketException& e ) {
                     socketExs.push_back( e.what() + errLoc );
-                    _cursors[i].reset( NULL );
+                    _cursors[i].reset( NULL, NULL );
                     conns[i]->done();
                     continue;
                 }
                 catch( std::exception& e ){
                     otherExs.push_back( e.what() + errLoc );
-                    _cursors[i].reset( NULL );
+                    _cursors[i].reset( NULL, NULL );
                     conns[i]->done();
                     continue;
                 }
 
                 try {
-                    _cursors[i].raw()->attach( conns[i].get() ); // this calls done on conn
-                    _checkCursor( _cursors[i].raw() );
+                    _cursors[i].get()->attach( conns[i].get() ); // this calls done on conn
+                    _checkCursor( _cursors[i].get() );
 
                     finishedQueries++;
                 }
@@ -1392,13 +1331,13 @@ namespace mongo {
                     allConfigStale = true;
 
                     staleConfigExs.push_back( (string)"stale config detected for " + e.what() + errLoc );
-                    _cursors[i].reset( NULL );
+                    _cursors[i].reset( NULL, NULL );
                     conns[i]->done();
                     continue;
                 }
                 catch( std::exception& e ){
                     otherExs.push_back( e.what() + errLoc );
-                    _cursors[i].reset( NULL );
+                    _cursors[i].reset( NULL, NULL );
                     conns[i]->done();
                     continue;
                 }
@@ -1484,7 +1423,7 @@ namespace mongo {
             _needToSkip = 0;
 
             while ( n > 0 && more() ) {
-                BSONObj x = next();
+                next();
                 n--;
             }
 
@@ -1492,7 +1431,7 @@ namespace mongo {
         }
 
         for ( int i=0; i<_numServers; i++ ) {
-            if ( _cursors[i].more() )
+            if (_cursors[i].get() && _cursors[i].get()->more())
                 return true;
         }
         return false;
@@ -1509,21 +1448,25 @@ namespace mongo {
 
             int i = ( j + _lastFrom + 1 ) % _numServers;
 
-            if ( ! _cursors[i].more() ){
-                if( _cursors[i].rawMData() )
-                    _cursors[i].rawMData()->pcState->done = true;
+            // Check to see if the cursor is finished
+            if (!_cursors[i].get() || !_cursors[i].get()->more()) {
+                if (_cursors[i].getMData())
+                    _cursors[i].getMData()->pcState->done = true;
                 continue;
             }
 
-            BSONObj me = _cursors[i].peek();
+            // We know we have at least one result in this cursor
+            BSONObj me = _cursors[i].get()->peekFirst();
 
-            if ( best.isEmpty() ) {
+            // If this is the first non-empty cursor, save the result as best
+            if (bestFrom < 0) {
                 best = me;
                 bestFrom = i;
                 if( _sortKey.isEmpty() ) break;
                 continue;
             }
 
+            // Otherwise compare the result to the current best result
             int comp = best.woSortOrder( me , _sortKey , true );
             if ( comp < 0 )
                 continue;
@@ -1534,11 +1477,16 @@ namespace mongo {
 
         _lastFrom = bestFrom;
 
-        uassert( 10019 ,  "no more elements" , ! best.isEmpty() );
-        _cursors[bestFrom].next();
+        uassert(10019, "no more elements", bestFrom >= 0);
+        _cursors[bestFrom].get()->next();
 
-        if( _cursors[bestFrom].rawMData() )
-            _cursors[bestFrom].rawMData()->pcState->count++;
+        // Make sure the result data won't go away after the next call to more()
+        if (!_cursors[bestFrom].get()->moreInCurrentBatch()) {
+            best = best.getOwned();
+        }
+
+        if (_cursors[bestFrom].getMData())
+            _cursors[bestFrom].getMData()->pcState->count++;
 
         return best;
     }

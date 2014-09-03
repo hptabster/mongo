@@ -28,6 +28,8 @@
 *    then also delete it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/s/version_manager.h"
@@ -38,12 +40,9 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/shard.h"
 #include "mongo/s/stale_exception.h" // for SendStaleConfigException
-#include "mongo/s/writeback_listener.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kSharding);
 
     // Global version manager
     VersionManager versionManager;
@@ -117,8 +116,6 @@ namespace mongo {
     extern OID serverID;
 
     bool VersionManager::initShardVersionCB( DBClientBase * conn_in, BSONObj& result ){
-
-        WriteBackListener::init( *conn_in );
 
         bool ok;
         DBClientBase* conn = NULL;
@@ -204,8 +201,6 @@ namespace mongo {
      */
     bool checkShardVersion( DBClientBase * conn_in , const string& ns , ChunkManagerPtr refManager, bool authoritative , int tryNumber ) {
         // TODO: cache, optimize, etc...
-
-        WriteBackListener::init( *conn_in );
 
         DBConfigPtr conf = grid.getDBConfig( ns );
         if ( ! conf )

@@ -40,6 +40,7 @@
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/util/log.h"
 #include "mongo/util/touch_pages.h"
 
 namespace mongo {
@@ -83,11 +84,7 @@ namespace mongo {
             }
 
             virtual void inserted( const RecordData& recData, const DiskLoc& newLocation ) {
-                InsertDeleteOptions options;
-                options.logIfError = false;
-                options.dupsAllowed = true; // in compact we should be doing no checking
-
-                _multiIndexBlock->insert( recData.toBson(), newLocation, options );
+                _multiIndexBlock->insert( recData.toBson(), newLocation );
             }
 
         private:
@@ -107,7 +104,7 @@ namespace mongo {
                                              "cannot compact collection with record store: " <<
                                              _recordStore->name() );
 
-        if ( _indexCatalog.numIndexesInProgress() )
+        if ( _indexCatalog.numIndexesInProgress( txn ) )
             return StatusWith<CompactStats>( ErrorCodes::BadValue,
                                              "cannot compact when indexes in progress" );
 
@@ -117,7 +114,7 @@ namespace mongo {
 
         vector<BSONObj> indexSpecs;
         {
-            IndexCatalog::IndexIterator ii( _indexCatalog.getIndexIterator( false ) );
+            IndexCatalog::IndexIterator ii( _indexCatalog.getIndexIterator( txn, false ) );
             while ( ii.more() ) {
                 IndexDescriptor* descriptor = ii.next();
 
@@ -135,31 +132,45 @@ namespace mongo {
             }
         }
 
-        // note that the drop indexes call also invalidates all clientcursors for the namespace,
-        // which is important and wanted here
-        log() << "compact dropping indexes" << endl;
-        Status status = _indexCatalog.dropAllIndexes(txn, true);
-        if ( !status.isOK() ) {
-            return StatusWith<CompactStats>( status );
-        }
-
+        // Give a chance to be interrupted *before* we drop all indexes.
         txn->checkForInterrupt();
+
+        {
+            // note that the drop indexes call also invalidates all clientcursors for the namespace,
+            // which is important and wanted here
+            WriteUnitOfWork wunit(txn);
+            log() << "compact dropping indexes" << endl;
+            Status status = _indexCatalog.dropAllIndexes(txn, true);
+            if ( !status.isOK() ) {
+                return StatusWith<CompactStats>( status );
+            }
+            wunit.commit();
+        }
 
         CompactStats stats;
 
-        MultiIndexBlock multiIndexBlock(txn, this);
-        status = multiIndexBlock.init( indexSpecs );
+        MultiIndexBlock indexer(txn, this);
+        indexer.allowInterruption();
+        indexer.ignoreUniqueConstraint(); // in compact we should be doing no checking
+
+        Status status = indexer.init( indexSpecs );
         if ( !status.isOK() )
             return StatusWith<CompactStats>( status );
 
-        MyCompactAdaptor adaptor(this, &multiIndexBlock);
+        MyCompactAdaptor adaptor(this, &indexer);
 
         _recordStore->compact( txn, &adaptor, compactOptions, &stats );
 
         log() << "starting index commits";
-        status = multiIndexBlock.commit();
+        status = indexer.doneInserting();
         if ( !status.isOK() )
             return StatusWith<CompactStats>( status );
+
+        {
+            WriteUnitOfWork wunit(txn);
+            indexer.commit();
+            wunit.commit();
+        }
 
         return StatusWith<CompactStats>( stats );
     }

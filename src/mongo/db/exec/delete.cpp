@@ -34,6 +34,7 @@
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -90,7 +91,7 @@ namespace mongo {
 
             BSONObj deletedDoc;
 
-            WriteUnitOfWork wunit(_txn->recoveryUnit());
+            WriteUnitOfWork wunit(_txn);
 
             // TODO: Do we want to buffer docs and delete them in a group rather than
             // saving/restoring state repeatedly?
@@ -111,13 +112,11 @@ namespace mongo {
                 else {
                     bool replJustOne = true;
                     repl::logOp(_txn, "d", _collection->ns().ns().c_str(), deletedDoc, 0,
-                                &replJustOne);
+                                &replJustOne, _params.fromMigrate);
                 }
             }
 
             wunit.commit();
-
-            _txn->recoveryUnit()->commitIfNeeded();
 
             ++_commonStats.needTime;
             return PlanStage::NEED_TIME;

@@ -25,8 +25,6 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
- 
-#include "mongo/platform/basic.h"
 
 #include "mongo/platform/basic.h"
 
@@ -34,17 +32,26 @@
 
 #include <string>
 
+#include "mongo/base/status_with.h"
 #include "mongo/bson/oid.h"
 #include "mongo/db/client.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/operation_context_impl.h"
+#include "mongo/db/repl/connections.h"
 #include "mongo/db/repl/isself.h"
 #include "mongo/util/net/hostandport.h"
+#include "mongo/util/net/message_port.h"
 #include "mongo/util/net/sock.h"
 
 namespace mongo {
 namespace repl {
+
+namespace {
+    // TODO: Change this to local.system.replset when we remove disable the hybrid coordinator.
+    const char configCollectionName[] = "local.new.replset";
+    const char meCollectionName[] = "local.me";
+}  // namespace
 
     ReplicationCoordinatorExternalStateImpl::ReplicationCoordinatorExternalStateImpl() {}
     ReplicationCoordinatorExternalStateImpl::~ReplicationCoordinatorExternalStateImpl() {}
@@ -65,35 +72,63 @@ namespace repl {
         _syncSourceFeedback.forwardSlaveProgress();
     }
 
-    OID ReplicationCoordinatorExternalStateImpl::ensureMe() {
+    OID ReplicationCoordinatorExternalStateImpl::ensureMe(OperationContext* txn) {
         std::string myname = getHostName();
         OID myRID;
         {
-            OperationContextImpl txn;
-            Client::WriteContext ctx(&txn, "local");
+            Lock::DBWrite lock(txn->lockState(), meCollectionName);
 
             BSONObj me;
             // local.me is an identifier for a server for getLastError w:2+
-            if (!Helpers::getSingleton(&txn, "local.me", me) ||
+            if (!Helpers::getSingleton(txn, meCollectionName, me) ||
                     !me.hasField("host") ||
                     me["host"].String() != myname) {
 
                 myRID = OID::gen();
 
                 // clean out local.me
-                Helpers::emptyCollection(&txn, "local.me");
+                Helpers::emptyCollection(txn, meCollectionName);
 
                 // repopulate
                 BSONObjBuilder b;
                 b.append("_id", myRID);
                 b.append("host", myname);
-                Helpers::putSingleton(&txn, "local.me", b.done());
+                Helpers::putSingleton(txn, meCollectionName, b.done());
             } else {
                 myRID = me["_id"].OID();
             }
-            ctx.commit();
         }
         return myRID;
+    }
+
+    StatusWith<BSONObj> ReplicationCoordinatorExternalStateImpl::loadLocalConfigDocument(
+            OperationContext* txn) {
+        try {
+            BSONObj config;
+            Lock::DBRead dbReadLock(txn->lockState(), configCollectionName);
+            if (!Helpers::getSingleton(txn, configCollectionName, config)) {
+                return StatusWith<BSONObj>(
+                        ErrorCodes::NoMatchingDocument,
+                        "Did not find replica set configuration document in local.system.replset");
+            }
+            return StatusWith<BSONObj>(config);
+        }
+        catch (const DBException& ex) {
+            return StatusWith<BSONObj>(ex.toStatus());
+        }
+    }
+
+    Status ReplicationCoordinatorExternalStateImpl::storeLocalConfigDocument(
+            OperationContext* txn,
+            const BSONObj& config) {
+        try {
+            Lock::DBWrite dbWriteLock(txn->lockState(), configCollectionName);
+            Helpers::putSingleton(txn, configCollectionName, config);
+            return Status::OK();
+        }
+        catch (const DBException& ex) {
+            return ex.toStatus();
+        }
     }
 
     bool ReplicationCoordinatorExternalStateImpl::isSelf(const HostAndPort& host) {
@@ -106,5 +141,8 @@ namespace repl {
         return HostAndPort(txn->getClient()->clientAddress(true));
     }
 
+    void ReplicationCoordinatorExternalStateImpl::closeClientConnections() {
+        MessagingPort::closeAllSockets(ScopedConn::keepOpen);
+    }
 } // namespace repl
 } // namespace mongo

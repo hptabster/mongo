@@ -37,6 +37,7 @@
 #include <fstream>
 
 #include "mongo/client/dbclientinterface.h"
+#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/db.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/json.h"
@@ -56,10 +57,12 @@
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/storage_options.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/s/d_logic.h"
+#include "mongo/s/d_state.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using logger::LogComponent;
 
     const BSONObj reverseNaturalObj = BSON( "$natural" << -1 );
 
@@ -75,10 +78,18 @@ namespace mongo {
         b.appendBool("unique", unique);
         BSONObj o = b.done();
 
-        Status status = collection->getIndexCatalog()->createIndex(txn, o, false);
+        MultiIndexBlock indexer(txn, collection);
+
+        Status status = indexer.init(o);
         if ( status.code() == ErrorCodes::IndexAlreadyExists )
             return;
         uassertStatusOK( status );
+
+        uassertStatusOK(indexer.insertAllDocumentsInCollection());
+
+        WriteUnitOfWork wunit(txn);
+        indexer.commit();
+        wunit.commit();
     }
 
     /* fetch a single object from collection ns that matches query
@@ -92,7 +103,7 @@ namespace mongo {
         DiskLoc loc = findOne( txn, collection, query, requireIndex );
         if ( loc.isNull() )
             return false;
-        result = collection->docFor(loc);
+        result = collection->docFor(txn, loc);
         return true;
     }
 
@@ -145,7 +156,7 @@ namespace mongo {
             *nsFound = true;
 
         IndexCatalog* catalog = collection->getIndexCatalog();
-        const IndexDescriptor* desc = catalog->findIdIndex();
+        const IndexDescriptor* desc = catalog->findIdIndex( txn );
 
         if ( !desc )
             return false;
@@ -160,7 +171,7 @@ namespace mongo {
         DiskLoc loc = accessMethod->findSingle( txn, query["_id"].wrap() );
         if ( loc.isNull() )
             return false;
-        result = collection->docFor( loc );
+        result = collection->docFor( txn, loc );
         return true;
     }
 
@@ -169,7 +180,7 @@ namespace mongo {
                               const BSONObj& idquery) {
         verify(collection);
         IndexCatalog* catalog = collection->getIndexCatalog();
-        const IndexDescriptor* desc = catalog->findIdIndex();
+        const IndexDescriptor* desc = catalog->findIdIndex( txn );
         uassert(13430, "no _id index", desc);
         // See SERVER-12397.  This may not always be true.
         BtreeBasedAccessMethod* accessMethod =
@@ -293,7 +304,8 @@ namespace mongo {
         // Therefore, any multi-key index prefixed by shard key cannot be multikey over
         // the shard key fields.
         const IndexDescriptor* idx =
-            collection->getIndexCatalog()->findIndexByPrefix(shardKeyPattern,
+            collection->getIndexCatalog()->findIndexByPrefix(txn,
+                                                             shardKeyPattern,
                                                              false /* allow multi key */);
 
         if ( idx == NULL )
@@ -310,8 +322,6 @@ namespace mongo {
                                     bool fromMigrate,
                                     bool onlyRemoveOrphanedDocs )
     {
-        MONGO_LOG_DEFAULT_COMPONENT_LOCAL(::mongo::logger::LogComponent::kSharding);
-
         Timer rangeRemoveTimer;
         const string& ns = range.ns;
 
@@ -323,7 +333,7 @@ namespace mongo {
                                         range.keyPattern,
                                         &indexKeyPatternDoc ) )
         {
-            warning() << "no index found to clean data over range of type "
+            warning(LogComponent::kSharding) << "no index found to clean data over range of type "
                       << range.keyPattern << " in " << ns << endl;
             return -1;
         }
@@ -341,7 +351,8 @@ namespace mongo {
         const BSONObj& max =
                 Helpers::toKeyFormat( indexKeyPattern.extendRangeBound(range.maxKey,maxInclusive));
 
-        LOG(1) << "begin removal of " << min << " to " << max << " in " << ns
+        MONGO_LOG_COMPONENT(1, LogComponent::kSharding)
+               << "begin removal of " << min << " to " << max << " in " << ns
                << " with write concern: " << writeConcern.toBSON() << endl;
 
         Client& c = cc();
@@ -359,7 +370,8 @@ namespace mongo {
                     break;
 
                 IndexDescriptor* desc =
-                    collection->getIndexCatalog()->findIndexByKeyPattern( indexKeyPattern.toBSON() );
+                    collection->getIndexCatalog()->findIndexByKeyPattern( txn,
+                                                                          indexKeyPattern.toBSON() );
 
                 auto_ptr<PlanExecutor> exec(InternalPlanner::indexScan(txn, collection, desc,
                                                                        min, max,
@@ -376,14 +388,14 @@ namespace mongo {
                 if (PlanExecutor::IS_EOF == state) { break; }
 
                 if (PlanExecutor::DEAD == state) {
-                    warning() << "cursor died: aborting deletion for "
+                    warning(LogComponent::kSharding) << "cursor died: aborting deletion for "
                               << min << " to " << max << " in " << ns
                               << endl;
                     break;
                 }
 
                 if (PlanExecutor::EXEC_ERROR == state) {
-                    warning() << "cursor error while trying to delete "
+                    warning(LogComponent::kSharding) << "cursor error while trying to delete "
                               << min << " to " << max
                               << " in " << ns << ": "
                               << WorkingSetCommon::toStatusString(obj) << endl;
@@ -407,7 +419,7 @@ namespace mongo {
                     bool docIsOrphan;
                     if ( metadataNow ) {
                         KeyPattern kp( metadataNow->getKeyPattern() );
-                        BSONObj key = kp.extractSingleKey( obj );
+                        BSONObj key = kp.extractShardKeyFromDoc(obj);
                         docIsOrphan = !metadataNow->keyBelongsToMe( key )
                             && !metadataNow->keyIsPending( key );
                     }
@@ -416,7 +428,8 @@ namespace mongo {
                     }
 
                     if ( !docIsOrphan ) {
-                        warning() << "aborting migration cleanup for chunk " << min << " to " << max
+                        warning(LogComponent::kSharding)
+                                  << "aborting migration cleanup for chunk " << min << " to " << max
                                   << ( metadataNow ? (string) " at document " + obj.toString() : "" )
                                   << ", collection " << ns << " has changed " << endl;
                         break;
@@ -442,7 +455,8 @@ namespace mongo {
                                                                                   c.getLastOp(),
                                                                                   writeConcern);
                 if (replStatus.status.code() == ErrorCodes::ExceededTimeLimit) {
-                    warning() << "replication to secondaries for removeRange at "
+                    warning(LogComponent::kSharding)
+                            << "replication to secondaries for removeRange at "
                                  "least 60 seconds behind";
                 }
                 else {
@@ -453,10 +467,12 @@ namespace mongo {
         }
         
         if (writeConcern.shouldWaitForOtherNodes())
-            log() << "Helpers::removeRangeUnlocked time spent waiting for replication: "  
+            log(LogComponent::kSharding)
+                  << "Helpers::removeRangeUnlocked time spent waiting for replication: "
                   << millisWaitingForReplication << "ms" << endl;
         
-        LOG(1) << "end removal of " << min << " to " << max << " in " << ns
+        MONGO_LOG_COMPONENT(1, LogComponent::kSharding)
+               << "end removal of " << min << " to " << max << " in " << ns
                << " (took " << rangeRemoveTimer.millis() << "ms)" << endl;
 
         return numDeleted;
@@ -484,7 +500,7 @@ namespace mongo {
 
         // Require single key
         IndexDescriptor *idx =
-            collection->getIndexCatalog()->findIndexByPrefix( range.keyPattern, true );
+            collection->getIndexCatalog()->findIndexByPrefix( txn, range.keyPattern, true );
 
         if ( idx == NULL ) {
             return Status( ErrorCodes::IndexNotFound, range.keyPattern.toString() );
@@ -496,10 +512,10 @@ namespace mongo {
         // sizes will vary
         long long avgDocsWhenFull;
         long long avgDocSizeBytes;
-        const long long totalDocsInNS = collection->numRecords();
+        const long long totalDocsInNS = collection->numRecords( txn );
         if ( totalDocsInNS > 0 ) {
             // TODO: Figure out what's up here
-            avgDocSizeBytes = collection->dataSize() / totalDocsInNS;
+            avgDocSizeBytes = collection->dataSize( txn ) / totalDocsInNS;
             avgDocsWhenFull = maxChunkSizeBytes / avgDocSizeBytes;
             avgDocsWhenFull = std::min( kMaxDocsPerChunk + 1,
                                         130 * avgDocsWhenFull / 100 /* slack */);

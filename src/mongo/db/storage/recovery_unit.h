@@ -87,11 +87,6 @@ namespace mongo {
         virtual bool commitIfNeeded(bool force = false) = 0;
 
         /**
-         * Returns true if a global commit of the journal is needed but does not commit.
-         */
-        virtual bool isCommitNeeded() const = 0;
-
-        /**
          * A Change is an action that is registerChange()'d while a WriteUnitOfWork exists. The
          * change is either rollback()'d or commit()'d when the WriteUnitOfWork goes out of scope.
          *
@@ -164,17 +159,6 @@ namespace mongo {
 
     protected:
         RecoveryUnit() { }
-    };
-
-    class WriteUnitOfWork {
-        MONGO_DISALLOW_COPYING(WriteUnitOfWork);
-    public:
-        WriteUnitOfWork(RecoveryUnit* ru) : _ru(ru) { _ru->beginUnitOfWork(); }
-        ~WriteUnitOfWork(){ _ru->endUnitOfWork(); }
-
-        void commit() { _ru->commitUnitOfWork(); }
-
-        RecoveryUnit* const _ru;
     };
 
 }  // namespace mongo

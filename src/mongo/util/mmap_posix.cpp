@@ -36,8 +36,9 @@
 #include <sys/types.h>
 
 #include "mongo/platform/atomic_word.h"
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/util/file_allocator.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mmap.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/processinfo.h"
@@ -251,9 +252,14 @@ namespace mongo {
     void MemoryMappedFile::flush(bool sync) {
         if ( views.empty() || fd == 0 )
             return;
-        if ( msync(viewForFlushing(), len, sync ? MS_SYNC : MS_ASYNC) ) {
+
+        bool useFsync = sync && !ProcessInfo::preferMsyncOverFSync();
+
+        if ( useFsync ?
+            fsync(fd) != 0 :
+            msync(viewForFlushing(), len, sync ? MS_SYNC : MS_ASYNC) ) {
             // msync failed, this is very bad
-            log() << "msync failed: " << errnoWithDescription()
+            log() << (useFsync ? "fsync failed: " : "msync failed: ") << errnoWithDescription()
                   << " file: " << filename() << endl;
             dataSyncFailedHandler();
         }
@@ -269,8 +275,11 @@ namespace mongo {
             if ( _view == NULL || _fd == 0 )
                 return;
 
-            if ( msync(_view, _len, MS_SYNC ) == 0 )
+            if ( ProcessInfo::preferMsyncOverFSync() ?
+                msync(_view, _len, MS_SYNC ) == 0 :
+                fsync(_fd) == 0 ) {
                 return;
+            }
 
             if ( errno == EBADF ) {
                 // ok, we were unlocked, so this file was closed

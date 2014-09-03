@@ -28,6 +28,8 @@
 
 // strategy_sharded.cpp
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/status.h"
@@ -55,12 +57,11 @@
 #include "mongo/s/write_ops/batch_upconvert.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/timer.h"
 
 // error codes 8010-8040
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kSharding);
 
     static bool _isSystemIndexes( const char* ns ) {
         return nsToCollectionSubstring(ns) == "system.indexes";
@@ -104,8 +105,8 @@ namespace mongo {
         uassert( 10200 , "mongos: error calling db", ok );
 
         {
-            QueryResult *qr = (QueryResult *) response.singleData();
-            if ( qr->resultFlags() & ResultFlag_ShardConfigStale ) {
+            QueryResult::View qr = response.singleData().view2ptr();
+            if ( qr.getResultFlags() & ResultFlag_ShardConfigStale ) {
                 dbcon.done();
                 // Version is zero b/c this is deprecated codepath
                 throw RecvStaleConfigException( r.getns(),
@@ -170,7 +171,7 @@ namespace mongo {
             if ( qSpec.isExplain() ) {
                 BSONObjBuilder explain_builder;
                 cursor->explain( explain_builder );
-                explain_builder.appendNumber( "millis",
+                explain_builder.appendNumber( "executionTimeMillis",
                                               static_cast<long long>(queryTimer.millis()) );
                 BSONObj b = explain_builder.obj();
 
@@ -497,7 +498,7 @@ namespace mongo {
             bool ok = conn->callRead( r.m() , response);
             uassert( 10204 , "dbgrid: getmore: error calling db", ok);
 
-            bool hasMore = (response.singleData()->getCursor() != 0);
+            bool hasMore = (response.singleData().getCursor() != 0);
 
             if ( !hasMore ) {
                 cursorCache.removeRef( id );

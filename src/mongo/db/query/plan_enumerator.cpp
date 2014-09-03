@@ -33,6 +33,7 @@
 #include "mongo/db/query/indexability.h"
 #include "mongo/db/query/index_tag.h"
 #include "mongo/db/query/qlog.h"
+#include "mongo/util/log.h"
 
 namespace {
 
@@ -1226,6 +1227,17 @@ namespace mongo {
         }
         else if (NULL != assign->andAssignment) {
             AndAssignment* aa = assign->andAssignment.get();
+
+            // One of our subnodes might have to move on to its next enumeration state.
+            const AndEnumerableState& aes = aa->choices[aa->counter];
+            for (size_t i = 0; i < aes.subnodesToIndex.size(); ++i) {
+                if (!nextMemo(aes.subnodesToIndex[i])) {
+                    return false;
+                }
+            }
+
+            // None of the subnodes had another enumeration state, so we move on to the
+            // next top-level choice.
             ++aa->counter;
             if (aa->counter < aa->choices.size()) {
                 return false;

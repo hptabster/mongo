@@ -26,7 +26,9 @@
 *    it in the license file.
 */
 
-#include "mongo/pch.h"
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/health.h"
 
@@ -43,8 +45,8 @@
 #include "mongo/util/background.h"
 #include "mongo/util/concurrency/task.h"
 #include "mongo/util/goodies.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/html.h"
-#include "mongo/util/ramlog.h"
 
 namespace mongo {
 namespace repl {
@@ -53,9 +55,6 @@ namespace repl {
     mutex ScopedConn::mapMutex("ScopedConn::mapMutex");
 
     using namespace html;
-
-    static RamLog * _rsLog = RamLog::get("rs");
-    Tee* rsLog = _rsLog;
 
     string ago(time_t t) {
         if( t == 0 ) return "";
@@ -141,7 +140,7 @@ namespace repl {
         /** todo fix we might want an so timeout here */
         OplogReader reader;
 
-        if (reader.connect(m->fullName()) == false) {
+        if (reader.connect(m->h()) == false) {
             ss << "couldn't connect to " << m->fullName();
             return;
         }
@@ -293,11 +292,6 @@ namespace repl {
         for( map<int,string>::const_iterator i = mp.begin(); i != mp.end(); i++ )
             s << i->second;
         s << _table();
-    }
-
-
-    void fillRsLog(stringstream& s) {
-        _rsLog->toHTML( s );
     }
 
     const Member* ReplSetImpl::findById(unsigned id) const {
@@ -458,7 +452,7 @@ namespace repl {
         const Member *syncTarget = BackgroundSync::get()->getSyncTarget();
         if ( syncTarget &&
             (myState != MemberState::RS_PRIMARY) &&
-            (myState != MemberState::RS_SHUNNED) ) {
+            (myState != MemberState::RS_REMOVED) ) {
             b.append("syncingTo", syncTarget->fullName());
         }
         b.append("members", v);

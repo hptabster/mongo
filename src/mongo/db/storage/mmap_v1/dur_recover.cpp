@@ -28,17 +28,21 @@
 *    it in the license file.
 */
 
-#include "mongo/pch.h"
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kJournaling
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/storage/mmap_v1/dur_recover.h"
 
 #include <boost/filesystem/operations.hpp>
 #include <fcntl.h>
+#include <iomanip>
 #include <sys/stat.h>
 
 #include "mongo/db/curop.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/db.h"
+#include "mongo/db/operation_context_impl.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/mmap_v1/catalog/namespace.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
@@ -52,7 +56,7 @@
 #include "mongo/util/bufreader.h"
 #include "mongo/util/checksum.h"
 #include "mongo/util/compress.h"
-#include "mongo/util/concurrency/race.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/startup_test.h"
 
@@ -225,7 +229,7 @@ namespace mongo {
         }
 
         void RecoveryJob::_close() {
-            globalStorageEngine->flushAllFiles(true);
+            MongoFile::flushAll(true);
             _mmfs.clear();
         }
 
@@ -369,7 +373,6 @@ namespace mongo {
         void RecoveryJob::processSection(const JSectHeader *h, const void *p, unsigned len, const JSectFooter *f) {
             LockMongoFilesShared lkFiles; // for RecoveryJob::Last
             scoped_lock lk(_mx);
-            RACECHECK
 
             /** todo: we should really verify the checksum to see that seqNumber is ok?
                       that is expensive maybe there is some sort of checksum of just the header 
@@ -578,18 +581,16 @@ namespace mongo {
             called during startup
             throws on error
         */
-        void recover(OperationContext* txn) {
+        void replayJournalFilesAtStartup() {
             // we use a lock so that exitCleanly will wait for us
             // to finish (or at least to notice what is up and stop)
-            Lock::GlobalWrite lk(txn->lockState());
+            OperationContextImpl txn;
+            Lock::GlobalWrite lk(txn.lockState());
 
-            // this is so the mutexdebugger doesn't get confused.  we are actually single threaded 
-            // at this point in the program so it wouldn't have been a true problem (I think)
-            
-            // can't lock groupCommitMutex here as 
+            // can't lock groupCommitMutex here as
             //   DurableMappedFile::close()->closingFileNotication()->groupCommit() will lock it
             //   and that would be recursive.
-            //   
+            //
             // SimpleMutex::scoped_lock lk2(commitJob.groupCommitMutex);
 
             _recover(); // throws on interruption

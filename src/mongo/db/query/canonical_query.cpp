@@ -29,8 +29,10 @@
 #include "mongo/db/query/canonical_query.h"
 
 #include "mongo/db/jsobj.h"
+#include "mongo/db/matcher/expression_array.h"
 #include "mongo/db/matcher/expression_geo.h"
 #include "mongo/db/query/query_planner_common.h"
+#include "mongo/util/log.h"
 
 
 namespace {
@@ -151,13 +153,13 @@ namespace {
      * - CRS (flat or spherical)
      */
     void encodeGeoMatchExpression(const GeoMatchExpression* tree, mongoutils::str::stream* os) {
-        const GeoQuery& geoQuery = tree->getGeoQuery();
+        const GeoExpression& geoQuery = tree->getGeoExpression();
 
         // Type of geo query.
         switch (geoQuery.getPred()) {
-        case GeoQuery::WITHIN: *os << "wi"; break;
-        case GeoQuery::INTERSECT: *os << "in"; break;
-        case GeoQuery::INVALID: *os << "id"; break;
+        case GeoExpression::WITHIN: *os << "wi"; break;
+        case GeoExpression::INTERSECT: *os << "in"; break;
+        case GeoExpression::INVALID: *os << "id"; break;
         }
 
         // Geometry type.
@@ -170,6 +172,9 @@ namespace {
         }
         else if (SPHERE == geoQuery.getGeometry().getNativeCRS()) {
             *os << "sp";
+        }
+        else if (STRICT_SPHERE == geoQuery.getGeometry().getNativeCRS()) {
+            *os << "ss";
         }
         else {
             error() << "unknown CRS type " << (int)geoQuery.getGeometry().getNativeCRS()
@@ -186,17 +191,18 @@ namespace {
      */
     void encodeGeoNearMatchExpression(const GeoNearMatchExpression* tree,
                                       mongoutils::str::stream* os) {
-        const NearQuery& nearQuery = tree->getData();
+        const GeoNearExpression& nearQuery = tree->getData();
 
         // isNearSphere
         *os << (nearQuery.isNearSphere ? "ns" : "nr");
 
-        // CRS (flat or spherical)
-        switch (nearQuery.centroid.crs) {
+        // CRS (flat or spherical or strict-winding spherical)
+        switch (nearQuery.centroid->crs) {
         case FLAT: *os << "fl"; break;
         case SPHERE: *os << "sp"; break;
+        case STRICT_SPHERE: *os << "ss"; break;
         case UNSET:
-            error() << "unknown CRS type " << (int)nearQuery.centroid.crs
+            error() << "unknown CRS type " << (int)nearQuery.centroid->crs
                     << " in point geometry for near query";
             invariant(false);
             break;
@@ -623,6 +629,12 @@ namespace mongo {
             // normalizeTree(...) takes ownership of 'child', and then
             // transfers ownership of its return value to 'nme'.
             nme->resetChild(normalizeTree(child));
+        }
+        else if (MatchExpression::ELEM_MATCH_VALUE == root->matchType()) {
+            // Just normalize our children.
+            for (size_t i = 0; i < root->getChildVector()->size(); ++i) {
+                (*root->getChildVector())[i] = normalizeTree(root->getChild(i));
+            }
         }
 
         return root;

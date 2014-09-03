@@ -47,6 +47,9 @@
 #include "mongo/util/time_support.h"
 
 namespace mongo {
+
+    class OperationContext;
+
 namespace repl {
 
     /**
@@ -145,6 +148,11 @@ namespace repl {
          * Destroys an executor.
          */
         ~ReplicationExecutor();
+
+        /**
+         * Gets the current time as reported by the network interface.
+         */
+        Date_t now();
 
         /**
          * Executes the run loop.  May be called up to one time.
@@ -267,6 +275,14 @@ namespace repl {
          */
         void wait(const CallbackHandle& cbHandle);
 
+        /**
+         * Wakes up ReplicationExecutor::run() if it is blocked in getWork().
+         *
+         * Only useful for testing.  Do not call except from mock implementations
+         * of NetworkInterface.
+         */
+        void signalWorkForTest();
+
     private:
         struct Event;
         struct WorkItem;
@@ -339,11 +355,13 @@ namespace repl {
 
         /**
          * Executes the callback referenced by "cbHandle", and moves the underlying
-         * WorkQueue::iterator into the _freeQueue.
+         * WorkQueue::iterator into the _freeQueue.  "txn" is a pointer to the OperationContext
+         * owning the global exclusive lock.
          *
          * Serializes execution of "cbHandle" with the execution of other callbacks.
          */
-        void doOperationWithGlobalExclusiveLock(const CallbackHandle& cbHandle);
+        void doOperationWithGlobalExclusiveLock(OperationContext* txn,
+                                                const CallbackHandle& cbHandle);
 
         boost::scoped_ptr<NetworkInterface> _networkInterface;
         boost::mutex _mutex;
@@ -400,6 +418,8 @@ namespace repl {
     public:
         CallbackHandle() : _generation(0) {}
 
+        bool isValid() const { return _finishedEvent.isValid(); }
+
         bool operator==(const CallbackHandle &other) const {
             return (_finishedEvent == other._finishedEvent);
         }
@@ -419,11 +439,13 @@ namespace repl {
     struct ReplicationExecutor::CallbackData {
         CallbackData(ReplicationExecutor* theExecutor,
                      const CallbackHandle& theHandle,
-                     const Status& theStatus);
+                     const Status& theStatus,
+                     OperationContext* txn = NULL);
 
         ReplicationExecutor* executor;
         CallbackHandle myHandle;
         Status status;
+        OperationContext* txn;
     };
 
     /**
@@ -436,22 +458,13 @@ namespace repl {
                              const BSONObj& theCmdObj,
                              const Milliseconds timeoutMillis = kNoTimeout);
 
+        std::string toString() const;
+
         HostAndPort target;
         std::string dbname;
         BSONObj cmdObj;
-        Date_t expirationDate;
-    };
-
-    struct ReplicationExecutor::RemoteCommandCallbackData {
-        RemoteCommandCallbackData(ReplicationExecutor* theExecutor,
-                                  const CallbackHandle& theHandle,
-                                  const RemoteCommandRequest& theRequest,
-                                  const StatusWith<BSONObj>& theResponse);
-
-        ReplicationExecutor* executor;
-        CallbackHandle myHandle;
-        RemoteCommandRequest request;
-        StatusWith<BSONObj> response;
+        Milliseconds timeout;
+        Date_t expirationDate;  // Set by scheduleRemoteCommand.
     };
 
     /**
@@ -460,7 +473,22 @@ namespace repl {
     class ReplicationExecutor::NetworkInterface {
         MONGO_DISALLOW_COPYING(NetworkInterface);
     public:
+        struct Response {
+            Response() : data(), elapsedMillis(Milliseconds(0)) {}
+            Response(BSONObj obj, Milliseconds millis)
+                        : data(obj),
+                          elapsedMillis(millis) {}
+            BSONObj data;
+            Milliseconds elapsedMillis;
+        };
+
         virtual ~NetworkInterface();
+
+        /**
+         * Called by the ReplicationExecutor when it takes ownership of a
+         * NetworkInterface; useful for testing.
+         */
+        virtual void setExecutor(ReplicationExecutor* executor);
 
         /**
          * Returns the current time.
@@ -470,17 +498,32 @@ namespace repl {
         /**
          * Runs the command described by "request" synchronously.
          */
-        virtual StatusWith<BSONObj> runCommand(
+        virtual StatusWith<Response> runCommand(
                 const RemoteCommandRequest& request) = 0;
 
         /**
          * Runs the given callback while holding the global exclusive lock.
          */
         virtual void runCallbackWithGlobalExclusiveLock(
-                const stdx::function<void ()>& callback) = 0;
+                const stdx::function<void (OperationContext*)>& callback) = 0;
 
     protected:
         NetworkInterface();
+    };
+
+    typedef StatusWith<ReplicationExecutor::NetworkInterface::Response> ResponseStatus;
+
+    // Must be after NetworkInterface class
+    struct ReplicationExecutor::RemoteCommandCallbackData {
+        RemoteCommandCallbackData(ReplicationExecutor* theExecutor,
+                                  const CallbackHandle& theHandle,
+                                  const RemoteCommandRequest& theRequest,
+                                  const ResponseStatus& theResponse);
+
+        ReplicationExecutor* executor;
+        CallbackHandle myHandle;
+        RemoteCommandRequest request;
+        ResponseStatus response;
     };
 
     /**

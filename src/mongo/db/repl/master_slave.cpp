@@ -36,6 +36,8 @@
    local.pair.sync       - [deprecated] { initialsynccomplete: 1 }
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/master_slave.h"
@@ -62,8 +64,6 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kReplication);
 
 namespace repl {
 
@@ -344,7 +344,8 @@ namespace repl {
             invariant(txn->lockState()->isW());
             Lock::TempRelease tempRelease(txn->lockState());
 
-            if (!oplogReader.connect(hostName, getGlobalReplicationCoordinator()->getMyRID(txn))) {
+            if (!oplogReader.connect(HostAndPort(hostName), 
+                                     getGlobalReplicationCoordinator()->getMyRID())) {
                 msgassertedNoTrace( 14051 , "unable to connect to resync");
             }
             /* todo use getDatabaseNames() method here */
@@ -987,8 +988,6 @@ namespace repl {
                         break;
                     }
                     op = oplogReader.next();
-
-                    getDur().commitIfNeeded(txn);
                 }
             }
         }
@@ -1022,7 +1021,8 @@ namespace repl {
             return -1;
         }
 
-        if ( !oplogReader.connect(hostName, getGlobalReplicationCoordinator()->getMyRID(txn)) ) {
+        if ( !oplogReader.connect(HostAndPort(hostName), 
+                                  getGlobalReplicationCoordinator()->getMyRID()) ) {
             LOG(4) << "repl:  can't connect to sync source" << endl;
             return -1;
         }
@@ -1031,6 +1031,8 @@ namespace repl {
     }
 
     /* --------------------------------------------------------------*/
+
+    static bool _replMainStarted = false;
 
     /*
     TODO:
@@ -1049,7 +1051,7 @@ namespace repl {
             ReplSource::loadAll(txn, sources);
 
             // only need this param for initial reset
-            getGlobalReplicationCoordinator()->getSettings().fastsync = false;
+            _replMainStarted = true;
         }
 
         if ( sources.empty() ) {
@@ -1241,7 +1243,7 @@ namespace repl {
 
         oldRepl();
 
-        ReplSettings& replSettings = getGlobalReplicationCoordinator()->getSettings();
+        const ReplSettings& replSettings = getGlobalReplicationCoordinator()->getSettings();
         if( !replSettings.slave && !replSettings.master )
             return;
 
@@ -1262,13 +1264,14 @@ namespace repl {
 
         if ( replSettings.master ) {
             LOG(1) << "master=true" << endl;
-            replSettings.master = true;
             createOplog(&txn);
             boost::thread t(replMasterThread);
         }
 
-        while( replSettings.fastsync ) // don't allow writes until we've set up from log
-            sleepmillis( 50 );
+        if (replSettings.fastsync) {
+            while(!_replMainStarted) // don't allow writes until we've set up from log
+                sleepmillis( 50 );
+        }
     }
     int _dummy_z;
 

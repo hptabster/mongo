@@ -33,6 +33,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/server_options.h"
+#include "mongo/util/log.h"
 #include "mongo/util/options_parser/startup_options.h"
 
 namespace mongo {
@@ -235,6 +236,7 @@ namespace mongo {
             sslGlobalParams.sslFIPSMode = params["net.ssl.FIPSMode"].as<bool>();
         }
 
+        int clusterAuthMode = serverGlobalParams.clusterAuthMode.load();
         if (sslGlobalParams.sslMode.load() != SSLGlobalParams::SSLMode_disabled) {
             if (sslGlobalParams.sslPEMKeyFile.size() == 0) {
                 return Status(ErrorCodes::BadValue,
@@ -249,9 +251,15 @@ namespace mongo {
                 sslGlobalParams.sslCAFile.empty()) {
                 return Status(ErrorCodes::BadValue, "need sslCAFile with sslCRLFile");
             }
+            std::string sslCANotFoundError("No SSL certificate validation can be performed since"
+                                          " no CA file has been provided; please specify an"
+                                          " sslCAFile parameter");
+
             if (sslGlobalParams.sslCAFile.empty()) {
-                warning() << "No SSL certificate validation can be performed since no CA file "
-                             "has been provided; please specify an sslCAFile parameter";
+                if (clusterAuthMode == ServerGlobalParams::ClusterAuthMode_x509) {
+                    return Status(ErrorCodes::BadValue, sslCANotFoundError);
+                }
+                warning() << sslCANotFoundError;
             }
         }
         else if (sslGlobalParams.sslPEMKeyFile.size() ||
@@ -266,7 +274,6 @@ namespace mongo {
                           "need to enable SSL via the sslMode flag when "
                           "using SSL configuration parameters");
         }
-        int clusterAuthMode = serverGlobalParams.clusterAuthMode.load(); 
         if (clusterAuthMode == ServerGlobalParams::ClusterAuthMode_sendKeyFile ||
             clusterAuthMode == ServerGlobalParams::ClusterAuthMode_sendX509 ||
             clusterAuthMode == ServerGlobalParams::ClusterAuthMode_x509) {

@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/query/get_executor.h"
@@ -42,6 +44,7 @@
 #include "mongo/db/exec/projection.h"
 #include "mongo/db/exec/shard_filter.h"
 #include "mongo/db/exec/subplan.h"
+#include "mongo/db/exec/update.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/query/query_settings.h"
@@ -59,12 +62,10 @@
 #include "mongo/db/index_names.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
-#include "mongo/s/d_logic.h"
+#include "mongo/s/d_state.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kQuery);
 
     // static
     void filterAllowedIndexEntries(const AllowedIndices& allowedIndices,
@@ -99,16 +100,18 @@ namespace mongo {
     }  // namespace
 
 
-    void fillOutPlannerParams(Collection* collection,
+    void fillOutPlannerParams(OperationContext* txn,
+                              Collection* collection,
                               CanonicalQuery* canonicalQuery,
                               QueryPlannerParams* plannerParams) {
         // If it's not NULL, we may have indices.  Access the catalog and fill out IndexEntry(s)
-        IndexCatalog::IndexIterator ii = collection->getIndexCatalog()->getIndexIterator(false);
+        IndexCatalog::IndexIterator ii = collection->getIndexCatalog()->getIndexIterator(txn,
+                                                                                         false);
         while (ii.more()) {
             const IndexDescriptor* desc = ii.next();
             plannerParams->indices.push_back(IndexEntry(desc->keyPattern(),
                                                         desc->getAccessMethodName(),
-                                                        desc->isMultikey(),
+                                                        desc->isMultikey(txn),
                                                         desc->isSparse(),
                                                         desc->indexName(),
                                                         desc->infoObj()));
@@ -199,11 +202,11 @@ namespace mongo {
             // Fill out the planning params.  We use these for both cached solutions and non-cached.
             QueryPlannerParams plannerParams;
             plannerParams.options = plannerOptions;
-            fillOutPlannerParams(collection, canonicalQuery, &plannerParams);
+            fillOutPlannerParams(opCtx, collection, canonicalQuery, &plannerParams);
 
             // If we have an _id index we can use an idhack plan.
             if (IDHackStage::supportsQuery(*canonicalQuery) &&
-                collection->getIndexCatalog()->findIdIndex()) {
+                collection->getIndexCatalog()->findIdIndex(opCtx)) {
 
                 LOG(2) << "Using idhack: " << canonicalQuery->toStringShort();
 
@@ -365,7 +368,7 @@ namespace mongo {
             else {
                 // Many solutions. Create a MultiPlanStage to pick the best, update the cache,
                 // and so on. The working set will be shared by all candidate plans.
-                MultiPlanStage* multiPlanStage = new MultiPlanStage(collection, canonicalQuery);
+                MultiPlanStage* multiPlanStage = new MultiPlanStage(opCtx, collection, canonicalQuery);
 
                 for (size_t ix = 0; ix < solutions.size(); ++ix) {
                     if (solutions[ix]->cacheData.get()) {
@@ -430,7 +433,7 @@ namespace mongo {
         }
 
         if (!CanonicalQuery::isSimpleIdQuery(unparsedQuery) ||
-            !collection->getIndexCatalog()->findIdIndex()) {
+            !collection->getIndexCatalog()->findIdIndex(txn)) {
 
             const WhereCallbackReal whereCallback(txn, collection->ns().db());
             CanonicalQuery* cq;
@@ -458,11 +461,16 @@ namespace mongo {
         return Status::OK();
     }
 
+    //
+    // Delete
+    //
+
     Status getExecutorDelete(OperationContext* txn,
                              Collection* collection,
                              CanonicalQuery* rawCanonicalQuery,
                              bool isMulti,
                              bool shouldCallLogOp,
+                             bool fromMigrate,
                              PlanExecutor** out) {
         auto_ptr<CanonicalQuery> canonicalQuery(rawCanonicalQuery);
         auto_ptr<WorkingSet> ws(new WorkingSet());
@@ -477,6 +485,7 @@ namespace mongo {
         DeleteStageParams deleteStageParams;
         deleteStageParams.isMulti = isMulti;
         deleteStageParams.shouldCallLogOp = shouldCallLogOp;
+        deleteStageParams.fromMigrate = fromMigrate;
         root = new DeleteStage(txn, deleteStageParams, ws.get(), collection, root);
         // We must have a tree of stages in order to have a valid plan executor, but the query
         // solution may be null.
@@ -491,11 +500,13 @@ namespace mongo {
                              const BSONObj& unparsedQuery,
                              bool isMulti,
                              bool shouldCallLogOp,
+                             bool fromMigrate,
                              PlanExecutor** out) {
         auto_ptr<WorkingSet> ws(new WorkingSet());
         DeleteStageParams deleteStageParams;
         deleteStageParams.isMulti = isMulti;
         deleteStageParams.shouldCallLogOp = shouldCallLogOp;
+        deleteStageParams.fromMigrate = fromMigrate;
         if (!collection) {
             LOG(2) << "Collection " << ns << " does not exist."
                    << " Using EOF stage: " << unparsedQuery.toString();
@@ -506,7 +517,7 @@ namespace mongo {
         }
 
         if (CanonicalQuery::isSimpleIdQuery(unparsedQuery) &&
-            collection->getIndexCatalog()->findIdIndex()) {
+            collection->getIndexCatalog()->findIdIndex(txn)) {
             LOG(2) << "Using idhack: " << unparsedQuery.toString();
 
             PlanStage* idHackStage = new IDHackStage(txn, collection, unparsedQuery["_id"].wrap(),
@@ -525,7 +536,86 @@ namespace mongo {
             return status;
 
         // Takes ownership of 'cq'.
-        return getExecutorDelete(txn, collection, cq, isMulti, shouldCallLogOp, out);
+        return getExecutorDelete(txn, collection, cq, isMulti,
+                                 shouldCallLogOp, fromMigrate, out);
+    }
+
+    //
+    // Update
+    //
+
+    Status getExecutorUpdate(OperationContext* txn,
+                             Database* db,
+                             CanonicalQuery* rawCanonicalQuery,
+                             const UpdateRequest* request,
+                             UpdateDriver* driver,
+                             OpDebug* opDebug,
+                             PlanExecutor** execOut) {
+        auto_ptr<CanonicalQuery> canonicalQuery(rawCanonicalQuery);
+        auto_ptr<WorkingSet> ws(new WorkingSet());
+        Collection* collection = db->getCollection(request->getOpCtx(),
+                                                   request->getNamespaceString().ns());
+
+        PlanStage* root;
+        QuerySolution* querySolution;
+        Status status = prepareExecution(txn, collection, ws.get(), canonicalQuery.get(), 0, &root,
+                                         &querySolution);
+        if (!status.isOK()) {
+            return status;
+        }
+        invariant(root);
+        UpdateStageParams updateStageParams(request, driver, opDebug);
+        updateStageParams.canonicalQuery = rawCanonicalQuery;
+        root = new UpdateStage(updateStageParams, ws.get(), db, root);
+        // We must have a tree of stages in order to have a valid plan executor, but the query
+        // solution may be null. Takes ownership of all args other than 'collection'.
+        *execOut = new PlanExecutor(ws.release(), root, querySolution, canonicalQuery.release(),
+                                    collection);
+        return Status::OK();
+    }
+
+    Status getExecutorUpdate(OperationContext* txn,
+                             Database* db,
+                             const std::string& ns,
+                             const UpdateRequest* request,
+                             UpdateDriver* driver,
+                             OpDebug* opDebug,
+                             PlanExecutor** execOut) {
+        auto_ptr<WorkingSet> ws(new WorkingSet());
+        Collection* collection = db->getCollection(request->getOpCtx(),
+                                                   request->getNamespaceString().ns());
+        const BSONObj& unparsedQuery = request->getQuery();
+
+        UpdateStageParams updateStageParams(request, driver, opDebug);
+        if (!collection) {
+            LOG(2) << "Collection " << ns << " does not exist."
+                   << " Using EOF stage: " << unparsedQuery.toString();
+            UpdateStage* updateStage = new UpdateStage(updateStageParams, ws.get(), db,
+                                                       new EOFStage());
+            *execOut = new PlanExecutor(ws.release(), updateStage, ns);
+            return Status::OK();
+        }
+
+        if (CanonicalQuery::isSimpleIdQuery(unparsedQuery) &&
+            collection->getIndexCatalog()->findIdIndex(txn)) {
+            LOG(2) << "Using idhack: " << unparsedQuery.toString();
+
+            PlanStage* idHackStage = new IDHackStage(txn, collection, unparsedQuery["_id"].wrap(),
+                                                     ws.get());
+            UpdateStage* root = new UpdateStage(updateStageParams, ws.get(), db, idHackStage);
+            *execOut = new PlanExecutor(ws.release(), root, collection);
+            return Status::OK();
+        }
+
+        const WhereCallbackReal whereCallback(txn, collection->ns().db());
+        CanonicalQuery* cq;
+        Status status = CanonicalQuery::canonicalize(collection->ns(), unparsedQuery, &cq,
+                                                     whereCallback);
+        if (!status.isOK())
+            return status;
+
+        // Takes ownership of 'cq'.
+        return getExecutorUpdate(txn, db, cq, request, driver, opDebug, execOut);
     }
 
     //
@@ -803,7 +893,7 @@ namespace mongo {
         QueryPlannerParams plannerParams;
         plannerParams.options = QueryPlannerParams::NO_TABLE_SCAN;
 
-        IndexCatalog::IndexIterator ii = collection->getIndexCatalog()->getIndexIterator(false);
+        IndexCatalog::IndexIterator ii = collection->getIndexCatalog()->getIndexIterator(txn,false);
         while (ii.more()) {
             const IndexDescriptor* desc = ii.next();
             // The distinct hack can work if any field is in the index but it's not always clear
@@ -811,7 +901,7 @@ namespace mongo {
             if (desc->keyPattern().firstElement().fieldName() == field) {
                 plannerParams.indices.push_back(IndexEntry(desc->keyPattern(),
                                                            desc->getAccessMethodName(),
-                                                           desc->isMultikey(),
+                                                           desc->isMultikey(txn),
                                                            desc->isSparse(),
                                                            desc->indexName(),
                                                            desc->infoObj()));

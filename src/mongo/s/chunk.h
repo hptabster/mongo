@@ -33,11 +33,11 @@
 #include "mongo/base/string_data.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/s/chunk_version.h"
-#include "mongo/s/distlock.h"
 #include "mongo/s/shard.h"
 #include "mongo/s/shardkey.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/db/query/query_solution.h"
+
 
 namespace mongo {
 
@@ -137,7 +137,7 @@ namespace mongo {
          *
          * @throws UserException
          */
-        Status split( bool atMedian, size_t* resultingSplits ) const;
+        Status split(bool atMedian, size_t* resultingSplits, BSONObj* res) const;
 
         /**
          * Splits this chunk at the given key (or keys)
@@ -147,7 +147,7 @@ namespace mongo {
          *
          * @throws UserException
          */
-        Status multiSplit( const std::vector<BSONObj>& splitPoints ) const;
+        Status multiSplit(const std::vector<BSONObj>& splitPoints, BSONObj* res) const;
 
         /**
          * Asks the mongod holding this chunk to find a key that approximately divides this chunk in two
@@ -460,7 +460,7 @@ namespace mongo {
         //   =>  { a: (0, 1), (2, 3), b: (0, 1), (2, 3) }
         static IndexBounds collapseQuerySolution( const QuerySolutionNode* node );
 
-        ChunkMap getChunkMap() const { return _chunkMap; }
+        const ChunkMap& getChunkMap() const { return _chunkMap; }
 
         /**
          * Returns true if, for this shard, the chunks are identical in both chunk managers

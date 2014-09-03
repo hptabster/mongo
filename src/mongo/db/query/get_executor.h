@@ -31,10 +31,13 @@
 #include "mongo/db/query/query_planner_params.h"
 #include "mongo/db/query/query_settings.h"
 #include "mongo/db/query/query_solution.h"
+#include "mongo/db/ops/update_driver.h"
+#include "mongo/db/ops/update_request.h"
 
 namespace mongo {
 
     class Collection;
+    class Database;
 
     /**
      * Filter indexes retrieved from index catalog by
@@ -49,7 +52,8 @@ namespace mongo {
      * Fill out the provided 'plannerParams' for the 'canonicalQuery' operating on the collection
      * 'collection'.  Exposed for testing.
      */
-    void fillOutPlannerParams(Collection* collection,
+    void fillOutPlannerParams(OperationContext* txn,
+                              Collection* collection,
                               CanonicalQuery* canonicalQuery,
                               QueryPlannerParams* plannerParams);
 
@@ -121,6 +125,10 @@ namespace mongo {
                             const BSONObj& hintObj,
                             PlanExecutor** execOut);
 
+    //
+    // Delete
+    //
+
     /**
      * Get a PlanExecutor for a delete operation.  'rawCanonicalQuery' describes the predicate for
      * the documents to be deleted.  A write lock is required to execute the returned plan.
@@ -137,6 +145,7 @@ namespace mongo {
                              CanonicalQuery* rawCanonicalQuery,
                              bool isMulti,
                              bool shouldCallLogOp,
+                             bool fromMigrate,
                              PlanExecutor** execOut);
 
     /**
@@ -154,6 +163,49 @@ namespace mongo {
                              const BSONObj& unparsedQuery,
                              bool isMulti,
                              bool shouldCallLogOp,
+                             bool fromMigrate,
+                             PlanExecutor** execOut);
+
+    //
+    // Update
+    //
+
+    /**
+     * Get a PlanExecutor for an update operation.  'rawCanonicalQuery' describes the predicate for
+     * the documents to be deleted.  A write lock is required to execute the returned plan.
+     *
+     * Takes ownership of 'rawCanonicalQuery'. Does not take ownership of other args.
+     *
+     * If the query is valid and an executor could be created, returns Status::OK() and populates
+     * *out with the PlanExecutor.
+     *
+     * If the query cannot be executed, returns a Status indicating why.
+     */
+    Status getExecutorUpdate(OperationContext* txn,
+                             Database* db,
+                             CanonicalQuery* rawCanonicalQuery,
+                             const UpdateRequest* request,
+                             UpdateDriver* driver,
+                             OpDebug* opDebug,
+                             PlanExecutor** execOut);
+
+    /**
+     * Overload of getExecutorUpdate() above, for when a canonicalQuery is not available.  Used to
+     * support idhack-powered updates.
+     *
+     * If the query is valid and an executor could be created, returns Status::OK() and populates
+     * *out with the PlanExecutor.
+     *
+     * Does not take ownership of its arguments.
+     *
+     * If the query cannot be executed, returns a Status indicating why.
+     */
+    Status getExecutorUpdate(OperationContext* txn,
+                             Database* db,
+                             const std::string& ns,
+                             const UpdateRequest* request,
+                             UpdateDriver* driver,
+                             OpDebug* opDebug,
                              PlanExecutor** execOut);
 
 }  // namespace mongo

@@ -32,11 +32,11 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/storage/mmap_v1/catalog/index_details.h"
 #include "mongo/db/storage/mmap_v1/catalog/namespace.h"
-#include "mongo/db/storage/mmap_v1/catalog/namespace_index.h"
 
 namespace mongo {
 
     class Collection;
+    class NamespaceIndex;
     class OperationContext;
 
     /* deleted lists -- linked lists of deleted records -- are placed in 'buckets' of various sizes
@@ -201,7 +201,8 @@ namespace mongo {
          *
          * @return > 0 if index name was found, -1 otherwise.
          */
-        int _catalogFindIndexByName(const Collection* coll,
+        int _catalogFindIndexByName(OperationContext* txn,
+                                    const Collection* coll,
                                     const StringData& name, 
                                     bool includeBackgroundInProgress) const;
 

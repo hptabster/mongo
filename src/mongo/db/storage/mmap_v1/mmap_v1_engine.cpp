@@ -28,6 +28,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+
 #include "mongo/db/storage/mmap_v1/mmap_v1_engine.h"
 
 #include <boost/filesystem/path.hpp>
@@ -50,6 +52,7 @@
 #include "mongo/db/storage_options.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/util/file_allocator.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mmap.h"
 
 namespace mongo {
@@ -291,12 +294,11 @@ namespace {
         FileAllocator::get()->start();
 
         MONGO_ASSERT_ON_EXCEPTION_WITH_MSG( clearTmpFiles(), "clear tmp files" );
+    }
 
-        // dur::startup() depends on globalStorageEngine being set before calling.
-        // TODO clean up dur::startup() so this isn't needed.
-        invariant(!globalStorageEngine);
-        globalStorageEngine = this;
-
+    void MMAPV1Engine::finishInit() {
+        // Replays the journal (if needed) and starts the background thread. This requires the
+        // ability to create OperationContexts.
         dur::startup();
     }
 

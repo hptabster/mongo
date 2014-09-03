@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommands
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/commands/write_commands/batch_executor.h"
@@ -40,6 +42,7 @@
 #include "mongo/db/introspect.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/ops/delete_executor.h"
 #include "mongo/db/ops/delete_request.h"
 #include "mongo/db/ops/insert.h"
@@ -55,7 +58,7 @@
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/s/collection_metadata.h"
-#include "mongo/s/d_logic.h"
+#include "mongo/s/d_state.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/write_ops/batched_upsert_detail.h"
 #include "mongo/s/write_ops/write_error_detail.h"
@@ -64,8 +67,6 @@
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kCommands);
 
     namespace {
 
@@ -931,7 +932,7 @@ namespace mongo {
         dassert(database);
         _collection = database->getCollection(txn, request->getTargetingNS());
         if (!_collection) {
-            WriteUnitOfWork wunit (txn->recoveryUnit());
+            WriteUnitOfWork wunit (txn);
             // Implicitly create if it doesn't exist
             _collection = database->createCollection(txn, request->getTargetingNS());
             if (!_collection) {
@@ -941,6 +942,10 @@ namespace mongo {
                                             request->getTargetingNS())));
                 return false;
             }
+            repl::logOp(txn,
+                        "c",
+                        (database->name() + ".$cmd").c_str(),
+                        BSON("create" << nsToCollectionSubstring(request->getTargetingNS())));
             wunit.commit();
         }
         return true;
@@ -974,14 +979,12 @@ namespace mongo {
 
         try {
             if (state->lockAndCheck(result)) {
-                WriteUnitOfWork wunit (state->txn->recoveryUnit());
                 if (!state->request->isInsertIndexRequest()) {
                     singleInsert(state->txn, insertDoc, state->getCollection(), result);
                 }
                 else {
                     singleCreateIndex(state->txn, insertDoc, state->getCollection(), result);
                 }
-                wunit.commit();
             }
         }
         catch (const DBException& ex) {
@@ -1040,6 +1043,7 @@ namespace mongo {
 
         txn->lockState()->assertWriteLocked( insertNS );
 
+        WriteUnitOfWork wunit(txn);
         StatusWith<DiskLoc> status = collection->insertDocument( txn, docToInsert, true );
 
         if ( !status.isOK() ) {
@@ -1047,8 +1051,8 @@ namespace mongo {
         }
         else {
             repl::logOp( txn, "i", insertNS.c_str(), docToInsert );
-            txn->recoveryUnit()->commitIfNeeded();
             result->getStats().n = 1;
+            wunit.commit();
         }
     }
 
@@ -1067,18 +1071,31 @@ namespace mongo {
 
         txn->lockState()->assertWriteLocked( indexNS );
 
-        Status status = collection->getIndexCatalog()->createIndex(txn, indexDesc, true);
+        MultiIndexBlock indexer(txn, collection);
+        indexer.allowBackgroundBuilding();
+        indexer.allowInterruption();
 
+        Status status = indexer.init(indexDesc);
         if ( status.code() == ErrorCodes::IndexAlreadyExists ) {
             result->getStats().n = 0;
+            return; // inserting an existing index is a no-op.
         }
-        else if ( !status.isOK() ) {
+        if (!status.isOK()) {
             result->setError(toWriteError(status));
+            return;
         }
-        else {
-            repl::logOp( txn, "i", indexNS.c_str(), indexDesc );
-            result->getStats().n = 1;
+
+        status = indexer.insertAllDocumentsInCollection();
+        if (!status.isOK()) {
+            result->setError(toWriteError(status));
+            return;
         }
+
+        WriteUnitOfWork wunit(txn);
+        indexer.commit();
+        repl::logOp( txn, "i", indexNS.c_str(), indexDesc );
+        result->getStats().n = 1;
+        wunit.commit();
     }
 
     static void multiUpdate( OperationContext* txn,
@@ -1103,7 +1120,7 @@ namespace mongo {
         }
 
         ///////////////////////////////////////////
-        Lock::DBWrite writeLock(txn->lockState(), nsString.ns(), useExperimentalDocLocking);
+        Lock::DBWrite writeLock(txn->lockState(), nsString.ns());
         ///////////////////////////////////////////
 
         if (!checkShardVersion(txn, &shardingState, *updateItem.getRequest(), result))

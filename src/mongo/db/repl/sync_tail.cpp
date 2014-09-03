@@ -26,6 +26,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/sync_tail.h"
@@ -39,14 +41,13 @@
 #include "mongo/db/prefetch.h"
 #include "mongo/db/repl/bgsync.h"
 #include "mongo/db/repl/oplog.h"
+#include "mongo/db/repl/rslog.h"
 #include "mongo/db/stats/timer_stats.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kReplication);
 
 namespace repl {
 
@@ -111,14 +112,11 @@ namespace repl {
         }
 
         Client::Context ctx(txn, ns);
-        WriteUnitOfWork wunit(txn->recoveryUnit());
         ctx.getClient()->curop()->reset();
         // For non-initial-sync, we convert updates to upserts
         // to suppress errors when replaying oplog entries.
         bool ok = !applyOperation_inlock(txn, ctx.db(), op, true, convertUpdateToUpsert);
         opsAppliedStats.increment();
-        wunit.commit();
-        txn->recoveryUnit()->commitIfNeeded();
 
         return ok;
     }
@@ -488,7 +486,7 @@ namespace repl {
         {
             OperationContextImpl txn; // XXX?
             Lock::DBWrite lk(txn.lockState(), "local");
-            WriteUnitOfWork wunit(txn.recoveryUnit());
+            WriteUnitOfWork wunit(&txn);
 
             while (!ops->empty()) {
                 const BSONObj& op = ops->front();

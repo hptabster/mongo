@@ -37,9 +37,9 @@
 #include "mongo/db/index/btree_index_cursor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/keypattern.h"
-#include "mongo/db/pdfile_private.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/util/log.h"
 #include "mongo/util/progress_meter.h"
 
 
@@ -100,7 +100,7 @@ namespace mongo {
 
             if (ErrorCodes::UniqueIndexViolation == status.code()) {
                 // We ignore it for some reason in BG indexing.
-                if (!_btreeState->isReady()) {
+                if (!_btreeState->isReady(txn)) {
                     DEV log() << "info: key already in index during bg indexing (ok)\n";
                     continue;
                 }
@@ -315,7 +315,7 @@ namespace mongo {
 
     IndexAccessMethod* BtreeBasedAccessMethod::initiateBulk(OperationContext* txn) {
         // If there's already data in the index, don't do anything.
-        if (!_newInterface->isEmpty()) {
+        if (!_newInterface->isEmpty(txn)) {
             return NULL;
         }
 
@@ -327,13 +327,16 @@ namespace mongo {
 
     Status BtreeBasedAccessMethod::commitBulk(IndexAccessMethod* bulkRaw,
                                               bool mayInterrupt,
+                                              bool dupsAllowed,
                                               set<DiskLoc>* dupsToDrop) {
-        if (!_newInterface->isEmpty()) {
+
+        BtreeBasedBulkAccessMethod* bulk = static_cast<BtreeBasedBulkAccessMethod*>(bulkRaw);
+
+        if (!_newInterface->isEmpty(bulk->getOperationContext())) {
             return Status(ErrorCodes::InternalError, "trying to commit but has data already");
         }
 
-        BtreeBasedBulkAccessMethod* bulk = static_cast<BtreeBasedBulkAccessMethod*>(bulkRaw);
-        return bulk->commit(dupsToDrop, mayInterrupt);
+        return bulk->commit(dupsToDrop, mayInterrupt, dupsAllowed);
     }
 
 }  // namespace mongo

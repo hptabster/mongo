@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/query/new_find.h"
@@ -49,7 +51,7 @@
 #include "mongo/db/storage_options.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/s/chunk_version.h"
-#include "mongo/s/d_logic.h"
+#include "mongo/s/d_state.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -88,11 +90,6 @@ namespace {
         return n >= pq.getNumToReturn();
     }
 
-    bool enoughForExplain(const mongo::LiteParsedQuery& pq, long long n) {
-        if (pq.wantMore() || 0 == pq.getNumToReturn()) { return false; }
-        return n >= pq.getNumToReturn();
-    }
-
     /**
      * Returns true if 'me' is a GTE or GE predicate over the "ts" field.
      * Such predicates can be used for the oplog start hack.
@@ -109,8 +106,6 @@ namespace {
 }  // namespace
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kQuery);
 
     // Failpoint for checking whether we've received a getmore.
     MONGO_FP_DECLARE(failReceivedGetmore);
@@ -148,7 +143,7 @@ namespace mongo {
      *        when this method returns an empty result, incrementing pass on each call.  
      *        Thus, pass == 0 indicates this is the first "attempt" before any 'awaiting'.
      */
-    QueryResult* newGetMore(OperationContext* txn,
+    QueryResult::View newGetMore(OperationContext* txn,
                             const char* ns,
                             int ntoreturn,
                             long long cursorid,
@@ -193,9 +188,11 @@ namespace mongo {
         int numResults = 0;
         int startingResult = 0;
 
-        const int InitialBufSize = 512 + sizeof(QueryResult) + MaxBytesToReturnToClientAtOnce;
+        const int InitialBufSize =
+            512 + sizeof(QueryResult::Value) + MaxBytesToReturnToClientAtOnce;
+
         BufBuilder bb(InitialBufSize);
-        bb.skip(sizeof(QueryResult));
+        bb.skip(sizeof(QueryResult::Value));
 
         if (NULL == cc) {
             cursorid = 0;
@@ -345,13 +342,13 @@ namespace mongo {
             }
         }
 
-        QueryResult* qr = reinterpret_cast<QueryResult*>(bb.buf());
-        qr->len = bb.len();
-        qr->setOperation(opReply);
-        qr->_resultFlags() = resultFlags;
-        qr->cursorId = cursorid;
-        qr->startingFrom = startingResult;
-        qr->nReturned = numResults;
+        QueryResult::View qr = bb.buf();
+        qr.msgdata().setLen(bb.len());
+        qr.msgdata().setOperation(opReply);
+        qr.setResultFlags(resultFlags);
+        qr.setCursorId(cursorid);
+        qr.setStartingFrom(startingResult);
+        qr.setNReturned(numResults);
         bb.decouple();
         QLOG() << "getMore returned " << numResults << " results\n";
         return qr;
@@ -461,7 +458,7 @@ namespace mongo {
             curop.markCommand();
 
             BufBuilder bb;
-            bb.skip(sizeof(QueryResult));
+            bb.skip(sizeof(QueryResult::Value));
 
             BSONObjBuilder cmdResBuf;
             if (!runCommands(txn, ns, q.query, curop, bb, cmdResBuf, false, q.queryOptions)) {
@@ -472,16 +469,16 @@ namespace mongo {
             // TODO: Does this get overwritten/do we really need to set this twice?
             curop.debug().query = q.query;
 
-            QueryResult* qr = reinterpret_cast<QueryResult*>(bb.buf());
+            QueryResult::View qr = bb.buf();
             bb.decouple();
-            qr->setResultFlagsToOk();
-            qr->len = bb.len();
+            qr.setResultFlagsToOk();
+            qr.msgdata().setLen(bb.len());
             curop.debug().responseLength = bb.len();
-            qr->setOperation(opReply);
-            qr->cursorId = 0;
-            qr->startingFrom = 0;
-            qr->nReturned = 1;
-            result.setData(qr, true);
+            qr.msgdata().setOperation(opReply);
+            qr.setCursorId(0);
+            qr.setStartingFrom(0);
+            qr.setNReturned(1);
+            result.setData(qr.view2ptr(), true);
             return "";
         }
 
@@ -508,60 +505,6 @@ namespace mongo {
 
         // We use this a lot below.
         const LiteParsedQuery& pq = cq->getParsed();
-
-        // set this outside loop. we will need to use this both within loop and when deciding
-        // to fill in explain information
-        const bool isExplain = pq.isExplain();
-
-        // New-style explains get diverted through a separate path which calls back into the
-        // query planner and query execution mechanisms.
-        //
-        // TODO temporary until find() becomes a real command.
-        if (isExplain && enableNewExplain) {
-            size_t options = QueryPlannerParams::DEFAULT;
-            if (shardingState.needCollectionMetadata(pq.ns())) {
-                options |= QueryPlannerParams::INCLUDE_SHARD_FILTER;
-            }
-
-            BufBuilder bb;
-            bb.skip(sizeof(QueryResult));
-
-            PlanExecutor* rawExec;
-            // Takes ownership of 'cq'.
-            Status execStatus = getExecutor(txn, collection, cq, &rawExec, options);
-            if (!execStatus.isOK()) {
-                uasserted(17510, "Explain error: " + execStatus.reason());
-            }
-
-            scoped_ptr<PlanExecutor> exec(rawExec);
-            BSONObjBuilder explainBob;
-            Status explainStatus = Explain::explainStages(exec.get(), Explain::EXEC_ALL_PLANS,
-                                                          &explainBob);
-            if (!explainStatus.isOK()) {
-                uasserted(18521, "Explain error: " + explainStatus.reason());
-            }
-
-            // Add the resulting object to the return buffer.
-            BSONObj explainObj = explainBob.obj();
-            bb.appendBuf((void*)explainObj.objdata(), explainObj.objsize());
-
-            curop.debug().iscommand = true;
-            // TODO: Does this get overwritten/do we really need to set this twice?
-            curop.debug().query = q.query;
-
-            // Set query result fields.
-            QueryResult* qr = reinterpret_cast<QueryResult*>(bb.buf());
-            bb.decouple();
-            qr->setResultFlagsToOk();
-            qr->len = bb.len();
-            curop.debug().responseLength = bb.len();
-            qr->setOperation(opReply);
-            qr->cursorId = 0;
-            qr->startingFrom = 0;
-            qr->nReturned = 1;
-            result.setData(qr, true);
-            return "";
-        }
 
         // We'll now try to get the query executor that will execute this query for us. There
         // are a few cases in which we know upfront which executor we should get and, therefore,
@@ -604,6 +547,41 @@ namespace mongo {
         verify(NULL != rawExec);
         auto_ptr<PlanExecutor> exec(rawExec);
 
+        // If it's actually an explain, do the explain and return rather than falling through
+        // to the normal query execution loop.
+        if (pq.isExplain()) {
+            BufBuilder bb;
+            bb.skip(sizeof(QueryResult::Value));
+
+            BSONObjBuilder explainBob;
+            Status explainStatus = Explain::explainStages(exec.get(), Explain::EXEC_ALL_PLANS,
+                                                          &explainBob);
+            if (!explainStatus.isOK()) {
+                uasserted(18521, "Explain error: " + explainStatus.reason());
+            }
+
+            // Add the resulting object to the return buffer.
+            BSONObj explainObj = explainBob.obj();
+            bb.appendBuf((void*)explainObj.objdata(), explainObj.objsize());
+
+            curop.debug().iscommand = true;
+            // TODO: Does this get overwritten/do we really need to set this twice?
+            curop.debug().query = q.query;
+
+            // Set query result fields.
+            QueryResult::View qr = bb.buf();
+            bb.decouple();
+            qr.setResultFlagsToOk();
+            qr.msgdata().setLen(bb.len());
+            curop.debug().responseLength = bb.len();
+            qr.msgdata().setOperation(opReply);
+            qr.setCursorId(0);
+            qr.setStartingFrom(0);
+            qr.setNReturned(1);
+            result.setData(qr.view2ptr(), true);
+            return "";
+        }
+
         // We freak out later if this changes before we're done with the query.
         const ChunkVersion shardingVersionAtStart = shardingState.getVersion(cq->ns());
 
@@ -636,7 +614,7 @@ namespace mongo {
         // this buffer should contain either requested documents per query or
         // explain information, but not both
         BufBuilder bb(32768);
-        bb.skip(sizeof(QueryResult));
+        bb.skip(sizeof(QueryResult::Value));
 
         // How many results have we obtained from the executor?
         int numResults = 0;
@@ -660,10 +638,8 @@ namespace mongo {
         curop.debug().planSummary = stats.summaryStr.c_str();
 
         while (PlanExecutor::ADVANCED == (state = exec->getNext(&obj, NULL))) {
-            // Add result to output buffer. This is unnecessary if explain info is requested
-            if (!isExplain) {
-                bb.appendBuf((void*)obj.objdata(), obj.objsize());
-            }
+            // Add result to output buffer.
+            bb.appendBuf((void*)obj.objdata(), obj.objsize());
 
             // Count the result.
             ++numResults;
@@ -679,13 +655,8 @@ namespace mongo {
             // TODO: only one type of 2d search doesn't support this.  We need a way to pull it out
             // of CanonicalQuery. :(
             const bool supportsGetMore = true;
-            if (isExplain) {
-                if (enoughForExplain(pq, numResults)) {
-                    break;
-                }
-            }
-            else if (!supportsGetMore && (enough(pq, numResults)
-                                          || bb.len() >= MaxBytesToReturnToClientAtOnce)) {
+            if (!supportsGetMore && (enough(pq, numResults)
+                                     || bb.len() >= MaxBytesToReturnToClientAtOnce)) {
                 break;
             }
             else if (enoughForFirstBatch(pq, numResults, bb.len())) {
@@ -727,7 +698,7 @@ namespace mongo {
             // collection is empty. Otherwise, the semantics of the tailable cursor is that the
             // client will keep trying to read from it. So we'll keep it around.
             Collection* collection = ctx.ctx().db()->getCollection(txn, cq->ns());
-            if (collection && collection->numRecords() != 0 && pq.getNumToReturn() != 1) {
+            if (collection && collection->numRecords(txn) != 0 && pq.getNumToReturn() != 1) {
                 saveClientCursor = true;
             }
         }
@@ -741,57 +712,31 @@ namespace mongo {
                                            shardingState.getVersion(pq.ns()));
         }
 
-        // Used to fill in explain and to determine if the query is slow enough to be logged.
-        int elapsedMillis = curop.elapsedMillis();
+        // Set debug information for consumption by the profiler.
+        if (ctx.ctx().db()->getProfilingLevel() > 0 ||
+            curop.elapsedMillis() > serverGlobalParams.slowMS) {
+            PlanSummaryStats newStats;
+            Explain::getSummaryStats(exec.get(), &newStats);
 
-        // Get explain information if:
-        // 1) it is needed by an explain query;
-        // 2) profiling is enabled; or
-        // 3) profiling is disabled but we still need explain details to log a "slow" query.
-        // Producing explain information is expensive and should be done only if we are certain
-        // the information will be used.
-        boost::scoped_ptr<TypeExplain> explain(NULL);
-        if (isExplain ||
-            ctx.ctx().db()->getProfilingLevel() > 0 ||
-            elapsedMillis > serverGlobalParams.slowMS) {
-            // Ask the executor to produce explain information.
-            TypeExplain* bareExplain;
-            Status res = Explain::legacyExplain(exec.get(), &bareExplain);
-            if (res.isOK()) {
-                explain.reset(bareExplain);
+            curop.debug().ntoskip = pq.getSkip();
+            curop.debug().nreturned = numResults;
+            curop.debug().scanAndOrder = newStats.hasSortStage;
+            curop.debug().nscanned = newStats.totalKeysExamined;
+            curop.debug().nscannedObjects = newStats.totalDocsExamined;
+            curop.debug().idhack = newStats.isIdhack;
+
+            // Get BSON stats.
+            scoped_ptr<PlanStageStats> execStats(exec->getStats());
+            BSONObjBuilder statsBob;
+            Explain::statsToBSON(*execStats, &statsBob);
+            curop.debug().execStats.set(statsBob.obj());
+
+            // Replace exec stats with plan summary if stats cannot fit into CachedBSONObj.
+            if (curop.debug().execStats.tooBig() && !curop.debug().planSummary.empty()) {
+                BSONObjBuilder bob;
+                bob.append("summary", curop.debug().planSummary.toString());
+                curop.debug().execStats.set(bob.done());
             }
-            else if (isExplain) {
-                error() << "could not produce explain of query '" << pq.getFilter()
-                        << "', error: " << res.reason();
-                // If numResults and the data in bb don't correspond, we'll crash later when rooting
-                // through the reply msg.
-                BSONObj emptyObj;
-                bb.appendBuf((void*)emptyObj.objdata(), emptyObj.objsize());
-                // The explain output is actually a result.
-                numResults = 1;
-                // TODO: we can fill out millis etc. here just fine even if the plan screwed up.
-            }
-        }
-
-        // Fill in the missing run-time fields in explain, starting with propeties of
-        // the process running the query.
-        if (isExplain && NULL != explain.get()) {
-            std::string server = mongoutils::str::stream()
-                << getHostNameCached() << ":" << serverGlobalParams.port;
-            explain->setServer(server);
-
-            // We might have skipped some results due to chunk migration etc. so our count is
-            // correct.
-            explain->setN(numResults);
-
-            // Clock the whole operation.
-            explain->setMillis(elapsedMillis);
-
-            BSONObj explainObj = explain->toBSON();
-            bb.appendBuf((void*)explainObj.objdata(), explainObj.objsize());
-
-            // The explain output is actually a result.
-            numResults = 1;
         }
 
         long long ccId = 0;
@@ -839,51 +784,13 @@ namespace mongo {
         bb.decouple();
 
         // Fill out the output buffer's header.
-        QueryResult* qr = static_cast<QueryResult*>(result.header());
-        qr->cursorId = ccId;
+        QueryResult::View qr = result.header().view2ptr();
+        qr.setCursorId(ccId);
         curop.debug().cursorid = (0 == ccId ? -1 : ccId);
-        qr->setResultFlagsToOk();
-        qr->setOperation(opReply);
-        qr->startingFrom = 0;
-        qr->nReturned = numResults;
-
-        // Set debug information for consumption by the profiler.
-        curop.debug().ntoskip = pq.getSkip();
-        curop.debug().nreturned = numResults;
-        if (NULL != explain.get()) {
-            if (explain->isScanAndOrderSet()) {
-                curop.debug().scanAndOrder = explain->getScanAndOrder();
-            }
-            else {
-                curop.debug().scanAndOrder = false;
-            }
-
-            if (explain->isNScannedSet()) {
-                curop.debug().nscanned = explain->getNScanned();
-            }
-
-            if (explain->isNScannedObjectsSet()) {
-                curop.debug().nscannedObjects = explain->getNScannedObjects();
-            }
-
-            if (explain->isIDHackSet()) {
-                curop.debug().idhack = explain->getIDHack();
-            }
-
-            if (!explain->stats.isEmpty()) {
-                // execStats is a CachedBSONObj because it lives in the race-prone
-                // curop.
-                curop.debug().execStats.set(explain->stats);
-
-                // Replace exec stats with plan summary if stats cannot fit into CachedBSONObj.
-                if (curop.debug().execStats.tooBig() && !curop.debug().planSummary.empty()) {
-                    BSONObjBuilder bob;
-                    bob.append("summary", curop.debug().planSummary.toString());
-                    curop.debug().execStats.set(bob.done());
-                }
-
-            }
-        }
+        qr.setResultFlagsToOk();
+        qr.msgdata().setOperation(opReply);
+        qr.setStartingFrom(0);
+        qr.setNReturned(numResults);
 
         // curop.debug().exhaust is set above.
         return curop.debug().exhaust ? pq.ns() : "";

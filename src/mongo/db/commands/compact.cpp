@@ -39,11 +39,12 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/index_builder.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -144,8 +145,6 @@ namespace mongo {
 
 
             Lock::DBWrite lk(txn->lockState(), ns.ns());
-            //  SERVER-14085: The following will have to go as we push down WOUW
-            WriteUnitOfWork wunit(txn->recoveryUnit());
             BackgroundOperation::assertNoBgOpInProgForNs(ns.ns());
             Client::Context ctx(txn, ns);
 
@@ -174,7 +173,6 @@ namespace mongo {
             log() << "compact " << ns << " end";
 
             IndexBuilder::restoreIndexes(indexesInProg);
-            wunit.commit();
 
             return true;
         }

@@ -28,12 +28,14 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/collection_info_cache.h"
 
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/fts/fts_spec.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_legacy.h"
@@ -43,8 +45,6 @@
 
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kStorage);
 
     CollectionInfoCache::CollectionInfoCache( Collection* collection )
         : _collection( collection ),
@@ -60,10 +60,10 @@ namespace mongo {
         // index filters should persist throughout life of collection
     }
 
-    void CollectionInfoCache::computeIndexKeys() {
+    void CollectionInfoCache::computeIndexKeys( OperationContext* txn ) {
         _indexedPaths.clear();
 
-        IndexCatalog::IndexIterator i = _collection->getIndexCatalog()->getIndexIterator(true);
+        IndexCatalog::IndexIterator i = _collection->getIndexCatalog()->getIndexIterator(txn, true);
         while (i.more()) {
             IndexDescriptor* descriptor = i.next();
 

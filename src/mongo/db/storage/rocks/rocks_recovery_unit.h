@@ -31,15 +31,18 @@
 #pragma once
 
 #include <map>
+#include <stack>
 #include <string>
 
 #include <boost/scoped_ptr.hpp>
+#include <boost/shared_ptr.hpp>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/storage/recovery_unit.h"
 
 namespace rocksdb {
     class DB;
+    class Snapshot;
     class WriteBatch;
 }
 
@@ -60,22 +63,27 @@ namespace mongo {
 
         virtual bool awaitCommit();
 
-        virtual bool isCommitNeeded() const;
-
         virtual void* writingPtr(void* data, size_t len);
 
         virtual void syncDataAndTruncateJournal();
+
+        virtual void registerChange(Change* change);
 
         // local api
 
         rocksdb::WriteBatch* writeBatch();
 
+        const rocksdb::Snapshot* snapshot();
+
     private:
-        rocksdb::DB* _db; // now owned
+        rocksdb::DB* _db; // not owned
         bool _defaultCommit;
 
         boost::scoped_ptr<rocksdb::WriteBatch> _writeBatch; // owned
         int _depth;
+
+        // bare because we need to call ReleaseSnapshot when we're done with this
+        const rocksdb::Snapshot* _snapshot; // owned
     };
 
 }

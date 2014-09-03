@@ -44,6 +44,7 @@
 #include "mongo/logger/log_component.h"
 #include "mongo/logger/message_event_utf8_encoder.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
+#include "mongo/util/log.h"
 #include "mongo/util/map_util.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/listen.h" // For DEFAULT_MAX_CONN
@@ -217,7 +218,7 @@ namespace {
                                   .setSources(moe::SourceAllLegacy);
 
         options->addOptionChaining("systemLog.syslogFacility", "syslogFacility", moe::String,
-                "syslog facility used for monogdb syslog message");
+                "syslog facility used for mongodb syslog message");
 
 #endif // _WIN32
         options->addOptionChaining("systemLog.logAppend", "logappend", moe::Switch,

@@ -35,6 +35,7 @@
 #include "mongo/db/index/btree_based_bulk_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/platform/cstdint.h"
 
@@ -91,6 +92,27 @@ namespace IndexUpdateTests {
             return collection()->getIndexCatalog()->findIndexByName( "a_1" );
         }
 #endif
+
+        bool buildIndexInterrupted(const BSONObj& key, bool allowInterruption) {
+            try {
+                MultiIndexBlock indexer(&_txn, collection());
+                if (allowInterruption)
+                    indexer.allowInterruption();
+
+                uassertStatusOK(indexer.init(key));
+                uassertStatusOK(indexer.insertAllDocumentsInCollection());
+                WriteUnitOfWork wunit(&_txn);
+                indexer.commit();
+                wunit.commit();
+            }
+            catch (const DBException& e) {
+                if (ErrorCodes::isInterruption(ErrorCodes::Error(e.getCode())))
+                    return true;
+
+                throw;
+            }
+            return false;
+        }
 
         OperationContextImpl _txn;
         Client::WriteContext _ctx;
@@ -312,6 +334,108 @@ namespace IndexUpdateTests {
         bool _mayInterrupt;
     };
 #endif
+    /** Index creation ignores unique constraints when told to. */
+    template <bool background>
+    class InsertBuildIgnoreUnique : public IndexBuildBase {
+    public:
+        void run() {
+            // Create a new collection.
+            Database* db = _ctx.ctx().db();
+            db->dropCollection( &_txn, _ns );
+            Collection* coll = db->createCollection( &_txn, _ns );
+
+            coll->insertDocument( &_txn, BSON( "_id" << 1 << "a" << "dup" ), true );
+            coll->insertDocument( &_txn, BSON( "_id" << 2 << "a" << "dup" ), true );
+
+            MultiIndexBlock indexer(&_txn, coll);
+            indexer.allowBackgroundBuilding();
+            indexer.ignoreUniqueConstraint();
+
+            const BSONObj spec = BSON("name" << "a"
+                                   << "ns" << coll->ns().ns()
+                                   << "key" << BSON("a" << 1)
+                                   << "unique" << true
+                                   << "background" << background);
+
+            ASSERT_OK(indexer.init(spec));
+            ASSERT_OK(indexer.insertAllDocumentsInCollection());
+
+            WriteUnitOfWork wunit(&_txn);
+            indexer.commit();
+            wunit.commit();
+        }
+    };
+
+    /** Index creation enforces unique constraints unless told not to. */
+    template <bool background>
+    class InsertBuildEnforceUnique : public IndexBuildBase {
+    public:
+        void run() {
+            // Create a new collection.
+            Database* db = _ctx.ctx().db();
+            db->dropCollection( &_txn, _ns );
+            Collection* coll = db->createCollection( &_txn, _ns );
+
+            coll->insertDocument( &_txn, BSON( "_id" << 1 << "a" << "dup" ), true );
+            coll->insertDocument( &_txn, BSON( "_id" << 2 << "a" << "dup" ), true );
+
+            MultiIndexBlock indexer(&_txn, coll);
+            indexer.allowBackgroundBuilding();
+            // indexer.ignoreUniqueConstraint(); // not calling this
+
+            const BSONObj spec = BSON("name" << "a"
+                                   << "ns" << coll->ns().ns()
+                                   << "key" << BSON("a" << 1)
+                                   << "unique" << true
+                                   << "background" << background);
+
+            ASSERT_OK(indexer.init(spec));
+            const Status status = indexer.insertAllDocumentsInCollection();
+            ASSERT_EQUALS(status.code(), ErrorCodes::DuplicateKey);
+        }
+    };
+
+    /** Index creation fills a passed-in set of dups rather than failing. */
+    template <bool background>
+    class InsertBuildFillDups : public IndexBuildBase {
+    public:
+        void run() {
+            // Create a new collection.
+            Database* db = _ctx.ctx().db();
+            db->dropCollection( &_txn, _ns );
+            Collection* coll = db->createCollection( &_txn, _ns );
+
+            StatusWith<DiskLoc> loc1 = coll->insertDocument(&_txn,
+                                                            BSON("_id" << 1 << "a" << "dup"),
+                                                            true);
+            StatusWith<DiskLoc> loc2 = coll->insertDocument(&_txn,
+                                                            BSON("_id" << 2 << "a" << "dup"),
+                                                            true);
+
+            ASSERT_OK(loc1.getStatus());
+            ASSERT_OK(loc2.getStatus());
+
+
+            MultiIndexBlock indexer(&_txn, coll);
+            indexer.allowBackgroundBuilding();
+            // indexer.ignoreUniqueConstraint(); // not calling this
+
+            const BSONObj spec = BSON("name" << "a"
+                                   << "ns" << coll->ns().ns()
+                                   << "key" << BSON("a" << 1)
+                                   << "unique" << true
+                                   << "background" << background);
+
+            ASSERT_OK(indexer.init(spec));
+
+            std::set<DiskLoc> dups;
+            ASSERT_OK(indexer.insertAllDocumentsInCollection(&dups));
+
+            // either loc1 or loc2 should be in dups but not both.
+            ASSERT_EQUALS(dups.size(), 1U);
+            ASSERT(dups.count(loc1.getValue()) || dups.count(loc2.getValue()));
+        }
+    };
 
     /** Index creation is killed if mayInterrupt is true. */
     class InsertBuildIndexInterrupt : public IndexBuildBase {
@@ -334,12 +458,11 @@ namespace IndexUpdateTests {
             getGlobalEnvironment()->setKillAllOperations();
             BSONObj indexInfo = BSON( "key" << BSON( "a" << 1 ) << "ns" << _ns << "name" << "a_1" );
             // The call is interrupted because mayInterrupt == true.
-            Status status = coll->getIndexCatalog()->createIndex(&_txn, indexInfo, true );
-            ASSERT_NOT_OK( status.code() );
+            ASSERT_TRUE(buildIndexInterrupted(indexInfo, true));
             // only want to interrupt the index build
             getGlobalEnvironment()->unsetKillAllOperations();
             // The new index is not listed in the index catalog because the index build failed.
-            ASSERT( !coll->getIndexCatalog()->findIndexByName( "a_1" ) );
+            ASSERT( !coll->getIndexCatalog()->findIndexByName( &_txn, "a_1" ) );
         }
     };
 
@@ -363,12 +486,11 @@ namespace IndexUpdateTests {
             getGlobalEnvironment()->setKillAllOperations();
             BSONObj indexInfo = BSON( "key" << BSON( "a" << 1 ) << "ns" << _ns << "name" << "a_1" );
             // The call is not interrupted because mayInterrupt == false.
-            Status status = coll->getIndexCatalog()->createIndex(&_txn, indexInfo, false );
-            ASSERT_OK( status.code() );
+            ASSERT_FALSE(buildIndexInterrupted(indexInfo, false));
             // only want to interrupt the index build
             getGlobalEnvironment()->unsetKillAllOperations();
             // The new index is listed in the index catalog because the index build completed.
-            ASSERT( coll->getIndexCatalog()->findIndexByName( "a_1" ) );
+            ASSERT( coll->getIndexCatalog()->findIndexByName( &_txn, "a_1" ) );
         }
     };
 
@@ -397,12 +519,11 @@ namespace IndexUpdateTests {
                                       "ns" << _ns <<
                                       "name" << "_id_" );
             // The call is interrupted because mayInterrupt == true.
-            Status status = coll->getIndexCatalog()->createIndex(&_txn, indexInfo, true );
-            ASSERT_NOT_OK( status.code() );
+            ASSERT_TRUE(buildIndexInterrupted(indexInfo, true));
             // only want to interrupt the index build
             getGlobalEnvironment()->unsetKillAllOperations();
             // The new index is not listed in the index catalog because the index build failed.
-            ASSERT( !coll->getIndexCatalog()->findIndexByName( "_id_" ) );
+            ASSERT( !coll->getIndexCatalog()->findIndexByName( &_txn, "_id_" ) );
         }
     };
 
@@ -431,12 +552,11 @@ namespace IndexUpdateTests {
                                       "ns" << _ns <<
                                       "name" << "_id_" );
             // The call is not interrupted because mayInterrupt == false.
-            Status status = coll->getIndexCatalog()->createIndex(&_txn, indexInfo, false );
-            ASSERT_OK( status.code() );
+            ASSERT_FALSE(buildIndexInterrupted(indexInfo, false));
             // only want to interrupt the index build
             getGlobalEnvironment()->unsetKillAllOperations();
             // The new index is listed in the index catalog because the index build succeeded.
-            ASSERT( coll->getIndexCatalog()->findIndexByName( "_id_" ) );
+            ASSERT( coll->getIndexCatalog()->findIndexByName( &_txn, "_id_" ) );
         }
     };
 
@@ -469,7 +589,7 @@ namespace IndexUpdateTests {
     class HelpersEnsureIndexInterruptDisallowed : public IndexBuildBase {
     public:
         void run() {
-            WriteUnitOfWork wunit (_txn.recoveryUnit());
+            WriteUnitOfWork wunit (&_txn);
             // Insert some documents.
             int32_t nDocs = 1000;
             for( int32_t i = 0; i < nDocs; ++i ) {
@@ -608,7 +728,6 @@ namespace IndexUpdateTests {
                     BSON("name" << "super"
                          << "ns" << _ns
                          << "unique" << 1
-                         << "dropDups" << true
                          << "sparse" << true
                          << "expireAfterSeconds" << 3600
                          << "key" << BSON("superIdx" << "2d")));
@@ -626,7 +745,6 @@ namespace IndexUpdateTests {
                          << "expireAfterSeconds" << 3600
                          << "sparse" << true
                          << "unique" << 1
-                         << "dropDups" << true
                          << "key" << BSON("superIdx" << "2d")));
             ASSERT_EQUALS(_client.getLastError(), "");
         }
@@ -642,7 +760,6 @@ namespace IndexUpdateTests {
                     BSON("name" << "super2"
                          << "ns" << _ns
                          << "unique" << false
-                         << "dropDups" << true
                          << "sparse" << true
                          << "expireAfterSeconds" << 3600
                          << "key" << BSON("superIdx" << "2d")));
@@ -657,7 +774,6 @@ namespace IndexUpdateTests {
                     BSON("name" << "super2"
                          << "ns" << _ns
                          << "unique" << 1
-                         << "dropDups" << true
                          << "sparse" << false
                          << "background" << true
                          << "expireAfterSeconds" << 3600
@@ -673,7 +789,6 @@ namespace IndexUpdateTests {
                     BSON("name" << "super2"
                          << "ns" << _ns
                          << "unique" << 1
-                         << "dropDups" << true
                          << "sparse" << true
                          << "expireAfterSeconds" << 2400
                          << "key" << BSON("superIdx" << "2d")));
@@ -709,6 +824,12 @@ namespace IndexUpdateTests {
             //add<BuildBottomUp>();
             //add<InterruptBuildBottomUp>( false );
             //add<InterruptBuildBottomUp>( true );
+            add<InsertBuildIgnoreUnique<true> >();
+            add<InsertBuildIgnoreUnique<false> >();
+            add<InsertBuildEnforceUnique<true> >();
+            add<InsertBuildEnforceUnique<false> >();
+            add<InsertBuildFillDups<true> >();
+            add<InsertBuildFillDups<false> >();
             add<InsertBuildIndexInterrupt>();
             add<InsertBuildIndexInterruptDisallowed>();
             add<InsertBuildIdIndexInterrupt>();

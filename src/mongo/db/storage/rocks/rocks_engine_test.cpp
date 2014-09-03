@@ -88,13 +88,13 @@ namespace mongo {
             MyOperationContext opCtx( &engine );
             DiskLoc loc;
             {
-                WriteUnitOfWork uow( opCtx.recoveryUnit() );
+                WriteUnitOfWork uow( &opCtx );
                 StatusWith<DiskLoc> res = rs->insertRecord( &opCtx, s.c_str(), s.size() + 1, -1 );
                 ASSERT_OK( res.getStatus() );
                 loc = res.getValue();
             }
 
-            ASSERT_EQUALS( s, rs->dataFor( loc ).data() );
+            ASSERT_EQUALS( s, rs->dataFor( &opCtx, loc ).data() );
         }
     }
 
@@ -196,7 +196,10 @@ namespace mongo {
         {
             RocksCollectionCatalogEntry coll( &engine, "test.foo" );
             coll.createMetaData();
-            ASSERT_EQUALS( 0, coll.getTotalIndexCount() );
+            {
+                MyOperationContext opCtx( &engine );
+                ASSERT_EQUALS( 0, coll.getTotalIndexCount(&opCtx) );
+            }
 
             BSONObj spec = BSON( "key" << BSON( "a" << 1 ) <<
                                  "name" << "silly" <<
@@ -210,32 +213,50 @@ namespace mongo {
                 ASSERT_OK( status );
             }
 
-            ASSERT_EQUALS( 1, coll.getTotalIndexCount() );
-            ASSERT_EQUALS( 0, coll.getCompletedIndexCount() );
-            ASSERT( !coll.isIndexReady( "silly" ) );
+            {
+                MyOperationContext opCtx( &engine );
+                ASSERT_EQUALS( 1, coll.getTotalIndexCount(&opCtx) );
+                ASSERT_EQUALS( 0, coll.getCompletedIndexCount(&opCtx) );
+                ASSERT( !coll.isIndexReady( &opCtx, "silly" ) );
+            }
 
             {
                 MyOperationContext opCtx( &engine );
                 coll.indexBuildSuccess( &opCtx, "silly" );
             }
 
-            ASSERT_EQUALS( 1, coll.getTotalIndexCount() );
-            ASSERT_EQUALS( 1, coll.getCompletedIndexCount() );
-            ASSERT( coll.isIndexReady( "silly" ) );
+            {
+                MyOperationContext opCtx( &engine );
+                ASSERT_EQUALS( 1, coll.getTotalIndexCount(&opCtx) );
+                ASSERT_EQUALS( 1, coll.getCompletedIndexCount(&opCtx) );
+                ASSERT( coll.isIndexReady( &opCtx, "silly" ) );
+            }
 
-            ASSERT_EQUALS( DiskLoc(), coll.getIndexHead( "silly" ) );
+            {
+                MyOperationContext opCtx( &engine );
+                ASSERT_EQUALS( DiskLoc(), coll.getIndexHead( &opCtx, "silly" ) );
+            }
+
             {
                 MyOperationContext opCtx( &engine );
                 coll.setIndexHead( &opCtx, "silly", DiskLoc( 123,321 ) );
             }
-            ASSERT_EQUALS( DiskLoc(123, 321), coll.getIndexHead( "silly" ) );
 
-            ASSERT( !coll.isIndexMultikey( "silly" ) );
+            {
+                MyOperationContext opCtx( &engine );
+                ASSERT_EQUALS( DiskLoc(123, 321), coll.getIndexHead( &opCtx, "silly" ) );
+                ASSERT( !coll.isIndexMultikey( &opCtx, "silly" ) );
+            }
+
             {
                 MyOperationContext opCtx( &engine );
                 coll.setIndexIsMultikey( &opCtx, "silly", true );
             }
-            ASSERT( coll.isIndexMultikey( "silly" ) );
+
+            {
+                MyOperationContext opCtx( &engine );
+                ASSERT( coll.isIndexMultikey( &opCtx, "silly" ) );
+            }
 
         }
     }
@@ -252,10 +273,12 @@ namespace mongo {
 
             {
                 MyOperationContext opCtx( &engine );
+                WriteUnitOfWork uow( &opCtx );
                 Status status = engine.createCollection( &opCtx,
                                                      "test.foo",
                                                      CollectionOptions() );
                 ASSERT_OK( status );
+                uow.commit();
             }
 
             RocksRecordStore* rs = engine.getEntry( "test.foo" )->recordStore.get();
@@ -264,20 +287,22 @@ namespace mongo {
                 MyOperationContext opCtx( &engine );
 
                 {
-                    WriteUnitOfWork uow( opCtx.recoveryUnit() );
+                    WriteUnitOfWork uow( &opCtx );
                     StatusWith<DiskLoc> res = rs->insertRecord( &opCtx, s.c_str(), s.size() + 1, -1 );
                     ASSERT_OK( res.getStatus() );
                     loc = res.getValue();
+                    uow.commit();
                 }
 
-                ASSERT_EQUALS( s, rs->dataFor( loc ).data() );
+                ASSERT_EQUALS( s, rs->dataFor( &opCtx, loc ).data() );
+                engine.cleanShutdown( &opCtx );
             }
         }
 
         {
             RocksEngine engine( path );
             RocksRecordStore* rs = engine.getEntry( "test.foo" )->recordStore.get();
-            ASSERT_EQUALS( s, rs->dataFor( loc ).data() );
+            ASSERT_EQUALS( s, rs->dataFor( NULL, loc ).data() );
         }
 
     }

@@ -1,0 +1,17 @@
+Import("env")
+
+env.Library(
+    target='index_entry_comparison',
+    source=[
+        'index_entry_comparison.cpp',
+        ],
+    LIBDEPS=[]
+    )
+
+env.Library(
+    target='bson_collection_catalog_entry',
+    source=[
+        'bson_collection_catalog_entry.cpp',
+        ],
+    LIBDEPS=[]
+    )

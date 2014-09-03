@@ -28,6 +28,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/auth_index_d.h"
@@ -36,7 +38,7 @@
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/global_environment_experiment.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
@@ -45,8 +47,6 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kStorage);
 
     static DatabaseHolder _dbHolder;
 
@@ -117,12 +117,15 @@ namespace mongo {
         // this locks _m for defensive checks, so we don't want to be locked right here :
         StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
         invariant(storageEngine);
-        DatabaseCatalogEntry* entry = storageEngine->getDatabaseCatalogEntry( txn, dbname );
-        invariant( entry );
-        justCreated = !entry->exists();
-        Database *db = new Database(txn,
-                                    dbname,
-                                    entry );
+        Database *db;
+        {
+            WriteUnitOfWork wunit(txn);
+            DatabaseCatalogEntry* entry = storageEngine->getDatabaseCatalogEntry(txn, dbname);
+            invariant(entry);
+            justCreated = !entry->exists();
+            db = new Database(txn, dbname, entry);
+            wunit.commit();
+        }
 
         {
             SimpleMutex::scoped_lock lk(_m);

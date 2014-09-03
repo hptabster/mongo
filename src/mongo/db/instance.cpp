@@ -28,6 +28,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommands
+
 #include "mongo/platform/basic.h"
 
 #include <boost/thread/thread.hpp>
@@ -41,7 +43,7 @@
 #include "mongo/db/background.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands/fsync.h"
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/dbmessage.h"
@@ -56,6 +58,7 @@
 #include "mongo/db/matcher/matcher.h"
 #include "mongo/db/mongod_options.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/commands/count.h"
 #include "mongo/db/ops/delete_executor.h"
 #include "mongo/db/ops/delete_request.h"
@@ -71,7 +74,7 @@
 #include "mongo/db/storage_options.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/process_id.h"
-#include "mongo/s/d_logic.h"
+#include "mongo/s/d_state.h"
 #include "mongo/s/stale_exception.h" // for SendStaleConfigException
 #include "mongo/scripting/engine.h"
 #include "mongo/util/exit.h"
@@ -84,11 +87,20 @@
 
 namespace mongo {
     
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kCommands);
+    using logger::LogComponent;
 
     // for diaglog
-    inline void opread(Message& m) { if( _diaglog.getLevel() & 2 ) _diaglog.readop((char *) m.singleData(), m.header()->len); }
-    inline void opwrite(Message& m) { if( _diaglog.getLevel() & 1 ) _diaglog.writeop((char *) m.singleData(), m.header()->len); }
+    inline void opread(Message& m) {
+        if (_diaglog.getLevel() & 2) {
+            _diaglog.readop(m.singleData().view2ptr(), m.header().getLen());
+        }
+    }
+
+    inline void opwrite(Message& m) {
+        if (_diaglog.getLevel() & 1) {
+            _diaglog.writeop(m.singleData().view2ptr(), m.header().getLen());
+        }
+    }
 
     void receivedKillCursors(OperationContext* txn, Message& m);
     void receivedUpdate(OperationContext* txn, Message& m, CurOp& op);
@@ -100,7 +112,6 @@ namespace mongo {
 #define LOGWITHRATELIMIT if( ++nloggedsome < 1000 || nloggedsome % 100 == 0 )
 
     string dbExecCommand;
-
 
     MONGO_FP_DECLARE(rsStopGetMore);
 
@@ -150,6 +161,8 @@ namespace mongo {
                     verify( co );
                     if( all || co->displayInCurop() ) {
                         BSONObjBuilder infoBuilder;
+
+                        c->reportState(infoBuilder);
                         co->reportState(&infoBuilder);
 
                         const BSONObj info = infoBuilder.obj();
@@ -227,7 +240,7 @@ namespace mongo {
 
     static bool receivedQuery(OperationContext* txn, Client& c, DbResponse& dbresponse, Message& m ) {
         bool ok = true;
-        MSGID responseTo = m.header()->id;
+        MSGID responseTo = m.header().getId();
 
         DbMessage d(m);
         QueryMessage q(d);
@@ -284,26 +297,26 @@ namespace mongo {
             }
 
             BufBuilder b;
-            b.skip(sizeof(QueryResult));
+            b.skip(sizeof(QueryResult::Value));
             b.appendBuf((void*) errObj.objdata(), errObj.objsize());
 
             // todo: call replyToQuery() from here instead of this!!! see dbmessage.h
-            QueryResult * msgdata = (QueryResult *) b.buf();
+            QueryResult::View msgdata = b.buf();
             b.decouple();
-            QueryResult *qr = msgdata;
-            qr->_resultFlags() = ResultFlag_ErrSet;
-            if( scex ) qr->_resultFlags() |= ResultFlag_ShardConfigStale;
-            qr->len = b.len();
-            qr->setOperation(opReply);
-            qr->cursorId = 0;
-            qr->startingFrom = 0;
-            qr->nReturned = 1;
+            QueryResult::View qr = msgdata;
+            qr.setResultFlags(ResultFlag_ErrSet);
+            if( scex ) qr.setResultFlags(qr.getResultFlags() | ResultFlag_ShardConfigStale);
+            qr.msgdata().setLen(b.len());
+            qr.msgdata().setOperation(opReply);
+            qr.setCursorId(0);
+            qr.setStartingFrom(0);
+            qr.setNReturned(1);
             resp.reset( new Message() );
-            resp->setData( msgdata, true );
+            resp->setData( msgdata.view2ptr(), true );
 
         }
 
-        op.debug().responseLength = resp->header()->dataLen();
+        op.debug().responseLength = resp->header().dataLen();
 
         dbresponse.response = resp.release();
         dbresponse.responseTo = responseTo;
@@ -326,7 +339,6 @@ namespace mongo {
                            Message& m,
                            DbResponse& dbresponse,
                            const HostAndPort& remote ) {
-
         // before we lock...
         int op = m.operation();
         bool isCommand = false;
@@ -419,7 +431,7 @@ namespace mongo {
         bool shouldLog = logger::globalLogDomain()->shouldLog(logger::LogSeverity::Debug(1));
 
         if ( op == dbQuery ) {
-            if ( handlePossibleShardedMessage( m , &dbresponse ) )
+            if (!checkShardVersion(m, &dbresponse))
                 return;
             receivedQuery(txn, c , dbresponse, m );
         }
@@ -433,7 +445,7 @@ namespace mongo {
 
             int len = strlen(p);
             if ( len > 400 )
-                log() << curTimeMillis64() % 10000 <<
+                log(LogComponent::kQuery) << curTimeMillis64() % 10000 <<
                       " long msg received, len:" << len << endl;
 
             Message *resp = new Message();
@@ -443,7 +455,7 @@ namespace mongo {
                 resp->setData( opReply , "i am fine - dbMsg deprecated");
 
             dbresponse.response = resp;
-            dbresponse.responseTo = m.header()->id;
+            dbresponse.responseTo = m.header().getId();
         }
         else {
             try {
@@ -456,13 +468,24 @@ namespace mongo {
                     receivedKillCursors(txn, m);
                 }
                 else if (op != dbInsert && op != dbUpdate && op != dbDelete) {
-                    mongo::log() << "    operation isn't supported: " << op << endl;
+                    log(LogComponent::kQuery) << "    operation isn't supported: " << op << endl;
                     currentOp.done();
                     shouldLog = true;
                 }
                 else {
                     const char* ns = dbmsg.getns();
                     const NamespaceString nsString(ns);
+
+                    if (remote != DBDirectClient::dummyHost) {
+                        const ShardedConnectionInfo* connInfo = ShardedConnectionInfo::get(false);
+                        uassert(18663,
+                                str::stream() << "legacy writeOps not longer supported for "
+                                              << "versioned connections, ns: " << string(ns)
+                                              << ", op: " << opToString(op)
+                                              << ", remote: " << remote.toString()
+                                              << ", serverId: " << connInfo->getID(),
+                                connInfo == NULL);
+                    }
 
                     if (!nsString.isValid()) {
                         uassert(16257, str::stream() << "Invalid ns [" << ns << "]", false);
@@ -483,13 +506,15 @@ namespace mongo {
              }
             catch (const UserException& ue) {
                 setLastError(ue.getCode(), ue.getInfo().msg.c_str());
-                LOG(3) << " Caught Assertion in " << opToString(op) << ", continuing "
+                MONGO_LOG_COMPONENT(3, LogComponent::kQuery)
+                       << " Caught Assertion in " << opToString(op) << ", continuing "
                        << ue.toString() << endl;
                 debug.exceptionInfo = ue.getInfo();
             }
             catch (const AssertionException& e) {
                 setLastError(e.getCode(), e.getInfo().msg.c_str());
-                LOG(3) << " Caught Assertion in " << opToString(op) << ", continuing "
+                MONGO_LOG_COMPONENT(3, LogComponent::kQuery)
+                       << " Caught Assertion in " << opToString(op) << ", continuing "
                        << e.toString() << endl;
                 debug.exceptionInfo = e.getInfo();
                 shouldLog = true;
@@ -502,16 +527,19 @@ namespace mongo {
         logThreshold += currentOp.getExpectedLatencyMs();
 
         if ( shouldLog || debug.executionTime > logThreshold ) {
-            LOG(0) << debug.report( currentOp ) << endl;
+            MONGO_LOG_COMPONENT(0, LogComponent::kQuery)
+                    << debug.report( currentOp ) << endl;
         }
 
         if ( currentOp.shouldDBProfile( debug.executionTime ) ) {
             // performance profiling is on
             if (txn->lockState()->hasAnyReadLock()) {
-                LOG(1) << "note: not profiling because recursive read lock" << endl;
+                MONGO_LOG_COMPONENT(1, LogComponent::kQuery)
+                        << "note: not profiling because recursive read lock" << endl;
             }
             else if ( lockedForWriting() ) {
-                LOG(1) << "note: not profiling because doing fsync+lock" << endl;
+                MONGO_LOG_COMPONENT(1, LogComponent::kQuery)
+                        << "note: not profiling because doing fsync+lock" << endl;
             }
             else {
                 profile(txn, c, op, currentOp);
@@ -535,7 +563,7 @@ namespace mongo {
             verify( n < 30000 );
         }
 
-        const long long* cursorArray = dbmessage.getArray(n);
+        const char* cursorArray = dbmessage.getArray(n);
 
         int found = CollectionCursorCache::eraseCursorGlobalIfAuthorized(txn, n, cursorArray);
 
@@ -554,11 +582,11 @@ namespace mongo {
         BSONObj query = d.nextJsObj();
 
         verify( d.moreJSObjs() );
-        verify( query.objsize() < m.header()->dataLen() );
+        verify( query.objsize() < m.header().dataLen() );
         BSONObj toupdate = d.nextJsObj();
         uassert( 10055 , "update object too large", toupdate.objsize() <= BSONObjMaxUserSize);
-        verify( toupdate.objsize() < m.header()->dataLen() );
-        verify( query.objsize() + toupdate.objsize() < m.header()->dataLen() );
+        verify( toupdate.objsize() < m.header().dataLen() );
+        verify( query.objsize() + toupdate.objsize() < m.header().dataLen() );
         bool upsert = flags & UpdateOption_Upsert;
         bool multi = flags & UpdateOption_Multi;
         bool broadcast = flags & UpdateOption_Broadcast;
@@ -585,13 +613,7 @@ namespace mongo {
         UpdateExecutor executor(&request, &op.debug());
         uassertStatusOK(executor.prepare());
 
-        Lock::DBWrite lk(txn->lockState(), ns.ns(), useExperimentalDocLocking);
-
-        // if this ever moves to outside of lock, need to adjust check
-        // Client::Context::_finishInit
-        if ( ! broadcast && handlePossibleShardedMessage( m , 0 ) )
-            return;
-
+        Lock::DBWrite lk(txn->lockState(), ns.ns());
         Client::Context ctx(txn,  ns );
 
         UpdateResult res = executor.execute(ctx.db());
@@ -608,7 +630,6 @@ namespace mongo {
         op.debug().ns = ns.ns().c_str();
         int flags = d.pullInt();
         bool justOne = flags & RemoveOption_JustOne;
-        bool broadcast = flags & RemoveOption_Broadcast;
         verify( d.moreJSObjs() );
         BSONObj pattern = d.nextJsObj();
 
@@ -625,12 +646,8 @@ namespace mongo {
         request.setUpdateOpLog(true);
         DeleteExecutor executor(&request);
         uassertStatusOK(executor.prepare());
+
         Lock::DBWrite lk(txn->lockState(), ns.ns());
-
-        // if this ever moves to outside of lock, need to adjust check Client::Context::_finishInit
-        if ( ! broadcast && handlePossibleShardedMessage( m , 0 ) )
-            return;
-
         Client::Context ctx(txn, ns);
 
         long long n = executor.execute(ctx.db());
@@ -638,7 +655,7 @@ namespace mongo {
         op.debug().ndeleted = n;
     }
 
-    QueryResult* emptyMoreResult(long long);
+    QueryResult::View emptyMoreResult(long long);
 
     bool receivedGetMore(OperationContext* txn, DbResponse& dbresponse, Message& m, CurOp& curop ) {
         bool ok = true;
@@ -657,7 +674,7 @@ namespace mongo {
         scoped_ptr<Timer> timer;
         int pass = 0;
         bool exhaust = false;
-        QueryResult* msgdata = 0;
+        QueryResult::View msgdata = 0;
         OpTime last;
         while( 1 ) {
             bool isCursorAuthorized = false;
@@ -707,7 +724,7 @@ namespace mongo {
                 break;
             }
             
-            if (msgdata == 0) {
+            if (msgdata.view2ptr() == 0) {
                 // this should only happen with QueryOption_AwaitData
                 exhaust = false;
                 massert(13073, "shutting down", !inShutdown() );
@@ -744,18 +761,18 @@ namespace mongo {
             curop.debug().exceptionInfo = ex->getInfo();
 
             replyToQuery(ResultFlag_ErrSet, m, dbresponse, errObj);
-            curop.debug().responseLength = dbresponse.response->header()->dataLen();
+            curop.debug().responseLength = dbresponse.response->header().dataLen();
             curop.debug().nreturned = 1;
             return ok;
         }
 
         Message *resp = new Message();
-        resp->setData(msgdata, true);
-        curop.debug().responseLength = resp->header()->dataLen();
-        curop.debug().nreturned = msgdata->nReturned;
+        resp->setData(msgdata.view2ptr(), true);
+        curop.debug().responseLength = resp->header().dataLen();
+        curop.debug().nreturned = msgdata.getNReturned();
 
         dbresponse.response = resp;
-        dbresponse.responseTo = m.header()->id;
+        dbresponse.responseTo = m.header().getId();
         
         if( exhaust ) {
             curop.debug().exhaust = true;
@@ -777,24 +794,40 @@ namespace mongo {
             Collection* collection = ctx.db()->getCollection( txn, targetNS );
             if ( !collection ) {
                 // implicitly create
+                WriteUnitOfWork wunit(txn);
                 collection = ctx.db()->createCollection( txn, targetNS );
                 verify( collection );
+                repl::logOp(txn,
+                            "c",
+                            (ctx.db()->name() + ".$cmd").c_str(),
+                            BSON("create" << nsToCollectionSubstring(targetNS)));
+                wunit.commit();
             }
 
             // Only permit interrupting an (index build) insert if the
             // insert comes from a socket client request rather than a
             // parent operation using the client interface.  The parent
             // operation might not support interrupts.
-            bool mayInterrupt = txn->getCurOp()->parent() == NULL;
+            const bool mayInterrupt = txn->getCurOp()->parent() == NULL;
 
             txn->getCurOp()->setQuery(js);
-            Status status = collection->getIndexCatalog()->createIndex(txn, js, mayInterrupt);
 
+            MultiIndexBlock indexer(txn, collection);
+            indexer.allowBackgroundBuilding();
+            if (mayInterrupt)
+                indexer.allowInterruption();
+
+            Status status = indexer.init(js);
             if ( status.code() == ErrorCodes::IndexAlreadyExists )
-                return;
+                return; // inserting an existing index is a no-op.
+            uassertStatusOK(status);
+            uassertStatusOK(indexer.insertAllDocumentsInCollection());
 
-            uassertStatusOK( status );
+            WriteUnitOfWork wunit(txn);
+            indexer.commit();
             repl::logOp(txn, "i", ns, js);
+            wunit.commit();
+
             return;
         }
 
@@ -803,15 +836,21 @@ namespace mongo {
         if ( !fixed.getValue().isEmpty() )
             js = fixed.getValue();
 
+        WriteUnitOfWork wunit(txn);
         Collection* collection = ctx.db()->getCollection( txn, ns );
         if ( !collection ) {
             collection = ctx.db()->createCollection( txn, ns );
             verify( collection );
+            repl::logOp(txn,
+                        "c",
+                        (ctx.db()->name() + ".$cmd").c_str(),
+                        BSON("create" << nsToCollectionSubstring(ns)));
         }
 
         StatusWith<DiskLoc> status = collection->insertDocument( txn, js, true );
         uassertStatusOK( status.getStatus() );
         repl::logOp(txn, "i", ns, js);
+        wunit.commit();
     }
 
     NOINLINE_DECL void insertMulti(OperationContext* txn,
@@ -824,7 +863,6 @@ namespace mongo {
         for (i=0; i<objs.size(); i++){
             try {
                 checkAndInsert(txn, ctx, ns, objs[i]);
-                txn->recoveryUnit()->commitIfNeeded();
             } catch (const UserException& ex) {
                 if (!keepGoing || i == objs.size()-1){
                     globalOpCounters.incInsertInWriteLock(i);
@@ -871,10 +909,6 @@ namespace mongo {
         uassert(10058 , "not master",
                 repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(nsString.db()));
 
-        if ( handlePossibleShardedMessage( m , 0 ) )
-            return;
-
-        WriteUnitOfWork wunit(txn->recoveryUnit());
         Client::Context ctx(txn, ns);
 
         if (multi.size() > 1) {
@@ -885,7 +919,6 @@ namespace mongo {
             globalOpCounters.incInsertInWriteLock(1);
             op.debug().ninserted = 1;
         }
-        wunit.commit();
     }
 
     DBDirectClient::DBDirectClient() 
@@ -920,11 +953,10 @@ namespace {
         if ( lastError._get() )
             lastError.startRequest( toSend, lastError._get() );
         DbResponse dbResponse;
-        assembleResponse( _txn, toSend, dbResponse , _clientHost );
+        assembleResponse(_txn, toSend, dbResponse, dummyHost);
         verify( dbResponse.response );
         dbResponse.response->concat(); // can get rid of this if we make response handling smarter
         response = *dbResponse.response;
-        _txn->recoveryUnit()->commitIfNeeded();
         return true;
     }
 
@@ -933,8 +965,7 @@ namespace {
         if ( lastError._get() )
             lastError.startRequest( toSend, lastError._get() );
         DbResponse dbResponse;
-        assembleResponse( _txn, toSend, dbResponse , _clientHost );
-        _txn->recoveryUnit()->commitIfNeeded();
+        assembleResponse(_txn, toSend, dbResponse, dummyHost);
     }
 
     auto_ptr<DBClientCursor> DBDirectClient::query(const string &ns, Query query, int nToReturn , int nToSkip ,
@@ -953,7 +984,7 @@ namespace {
         verify(!"killCursor should not be used in MongoD");
     }
 
-    HostAndPort DBDirectClient::_clientHost = HostAndPort( "0.0.0.0" , 0 );
+    const HostAndPort DBDirectClient::dummyHost("0.0.0.0", 0);
 
     unsigned long long DBDirectClient::count(const string &ns, const BSONObj& query, int options, int limit, int skip ) {
         if ( skip < 0 ) {
@@ -989,47 +1020,55 @@ namespace {
         // Must hold global lock to get to here
         invariant(txn->lockState()->isW());
 
-        log() << "shutdown: going to close listening sockets..." << endl;
+        log(LogComponent::kNetworking) << "shutdown: going to close listening sockets..." << endl;
         ListeningSockets::get()->closeAll();
 
-        log() << "shutdown: going to flush diaglog..." << endl;
+        log(LogComponent::kNetworking) << "shutdown: going to flush diaglog..." << endl;
         _diaglog.flush();
 
         /* must do this before unmapping mem or you may get a seg fault */
-        log() << "shutdown: going to close sockets..." << endl;
+        log(LogComponent::kNetworking) << "shutdown: going to close sockets..." << endl;
         boost::thread close_socket_thread( stdx::bind(MessagingPort::closeAllSockets, 0) );
 
         StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
         storageEngine->cleanShutdown(txn);
     }
 
-    void exitCleanly( ExitCode code ) {
+    void exitCleanly( ExitCode code, OperationContext* txn ) {
         shutdownInProgress.store(1);
 
-        getGlobalEnvironment()->setKillAllOperations();
+        // Global storage engine may not be started in all cases before we exit
+        if (getGlobalEnvironment()->getGlobalStorageEngine() != NULL) {
 
-        repl::getGlobalReplicationCoordinator()->shutdown();
+            getGlobalEnvironment()->setKillAllOperations();
 
-        OperationContextImpl txn;
-        Lock::GlobalWrite lk(txn.lockState());
-        log() << "now exiting" << endl;
+            repl::getGlobalReplicationCoordinator()->shutdown();
 
-        // Execute the graceful shutdown tasks, such as flushing the outstanding journal and data 
-        // files, close sockets, etc.
-        try {
-            shutdownServer(&txn);
-        }
-        catch (const DBException& ex) {
-            severe() << "shutdown failed with DBException " << ex;
-            std::terminate();
-        }
-        catch (const std::exception& ex) {
-            severe() << "shutdown failed with std::exception: " << ex.what();
-            std::terminate();
-        }
-        catch (...) {
-            severe() << "shutdown failed with exception";
-            std::terminate();
+            if (!txn) {
+                // leaked, but we are exiting so doesn't matter
+                txn = new OperationContextImpl();
+            }
+
+            Lock::GlobalWrite lk(txn->lockState());
+            log() << "now exiting" << endl;
+
+            // Execute the graceful shutdown tasks, such as flushing the outstanding journal 
+            // and data files, close sockets, etc.
+            try {
+                shutdownServer(txn);
+            }
+            catch (const DBException& ex) {
+                severe() << "shutdown failed with DBException " << ex;
+                std::terminate();
+            }
+            catch (const std::exception& ex) {
+                severe() << "shutdown failed with std::exception: " << ex.what();
+                std::terminate();
+            }
+            catch (...) {
+                severe() << "shutdown failed with exception";
+                std::terminate();
+            }
         }
 
         dbexit( code );
@@ -1040,14 +1079,7 @@ namespace {
 
         audit::logShutdown(currentClient.get());
 
-        log() << "dbexit: " << why;
-
-#if defined(_DEBUG)
-        try {
-            mutexDebugger.programEnding();
-        }
-        catch (...) { }
-#endif
+        log() << "dbexit: " << why << " rc: " << rc;
 
 #ifdef _WIN32
         // Windows Service Controller wants to be told when we are down,

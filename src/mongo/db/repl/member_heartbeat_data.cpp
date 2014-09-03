@@ -35,8 +35,6 @@
 namespace mongo {
 namespace repl {
 
-    unsigned int MemberHeartbeatData::numPings;
-
     MemberHeartbeatData::MemberHeartbeatData(int configIndex) :
         _configIndex(configIndex),
         _state(MemberState::RS_UNKNOWN), 
@@ -45,8 +43,7 @@ namespace repl {
         _lastHeartbeat(0),
         _lastHeartbeatRecv(0),
         _skew(INT_MIN), 
-        _authIssue(false), 
-        _ping(0) { 
+        _authIssue(false) {
     }
 
     void MemberHeartbeatData::updateFrom(const MemberHeartbeatData& newInfo) {
@@ -59,35 +56,45 @@ namespace repl {
         _opTime = newInfo.getOpTime();
         _skew = newInfo.getSkew();
         _authIssue = newInfo.hasAuthIssue();
-        _ping = newInfo.getPing();
         _electionTime = newInfo.getElectionTime();
     }
 
-    void MemberHeartbeatData::setUpValues(time_t now,
+    MemberHeartbeatData& MemberHeartbeatData::setUpValues(Date_t now,
                                           MemberState state,
                                           OpTime electionTime,
                                           OpTime optime,
                                           const std::string& syncingTo,
                                           const std::string& heartbeatMessage) {
-        _authIssue = false;
-        _health = 1;
-
-        _lastHeartbeat = now;
         _state = state;
-        _electionTime = electionTime;
-        _opTime = optime;
-        _syncSource = syncingTo;
+        _health = 1;
+        if (_upSince == 0) {
+            _upSince = now;
+        }
+        _lastHeartbeat = now;
         _lastHeartbeatMsg = heartbeatMessage;
+        _syncSource = syncingTo;
+        _opTime = optime;
+        _authIssue = false;
+        _electionTime = electionTime;
+        return *this;
     }
 
-    void MemberHeartbeatData::setDownValues(time_t now,
+    MemberHeartbeatData& MemberHeartbeatData::setDownValues(Date_t now,
                                             const std::string& heartbeatMessage) {
-        _authIssue = false;
-        _health = 0;
         _state = MemberState::RS_DOWN;
-
+        _health = 0;
+        _upSince = 0;
         _lastHeartbeat = now;
         _lastHeartbeatMsg = heartbeatMessage;
+        _authIssue = false;
+        return *this;
+    }
+
+    MemberHeartbeatData& MemberHeartbeatData::setAuthIssue() {
+        _state = MemberState::RS_UNKNOWN;
+        _health = 0; // set health to 0 so that this doesn't count towards majority.
+        _authIssue = true;
+        return *this;
     }
 
 } // namespace repl

@@ -31,44 +31,33 @@
 #pragma once
 
 #include "mongo/db/catalog/collection_catalog_entry.h"
+#include "mongo/db/storage/bson_collection_catalog_entry.h"
+
+namespace rocksdb {
+    class DB;
+}
 
 namespace mongo {
 
     class RocksEngine;
 
-    class RocksCollectionCatalogEntry : public CollectionCatalogEntry {
+    class RocksCollectionCatalogEntry : public BSONCollectionCatalogEntry {
     public:
         RocksCollectionCatalogEntry( RocksEngine* engine, const StringData& ns );
 
         virtual ~RocksCollectionCatalogEntry(){}
 
-        virtual CollectionOptions getCollectionOptions(OperationContext* txn) const;
-
         // ------- indexes ----------
 
-        virtual int getTotalIndexCount() const;
-
-        virtual int getCompletedIndexCount() const;
-
         virtual int getMaxAllowedIndexes() const;
-
-        virtual void getAllIndexes( std::vector<std::string>* names ) const;
-
-        virtual BSONObj getIndexSpec( const StringData& idxName ) const;
-
-        virtual bool isIndexMultikey( const StringData& indexName) const;
 
         virtual bool setIndexIsMultikey(OperationContext* txn,
                                         const StringData& indexName,
                                         bool multikey = true);
 
-        virtual DiskLoc getIndexHead( const StringData& indexName ) const;
-
         virtual void setIndexHead( OperationContext* txn,
                                    const StringData& indexName,
                                    const DiskLoc& newHead );
-
-        virtual bool isIndexReady( const StringData& indexName ) const;
 
         virtual Status removeIndex( OperationContext* txn,
                                     const StringData& indexName );
@@ -89,45 +78,36 @@ namespace mongo {
 
         // ------ internal api
 
-        // called once when collection is created
+        BSONObj getOtherIndexSpec( const StringData& idxName, rocksdb::DB* db ) const;
+
+        // called once when collection is created.
         void createMetaData();
 
         // when collection is dropped, call this
-        // all indexes have to be dropped first
+        // all indexes have to be dropped first.
         void dropMetaData();
 
-        struct IndexMetaData {
-            IndexMetaData() {}
-            IndexMetaData( BSONObj s, bool r, DiskLoc h, bool m )
-                : spec( s ), ready( r ), head( h ), multikey( m ) {}
+        const string metaDataKey() { return _metaDataKey; }
 
-            BSONObj spec;
-            bool ready;
-            DiskLoc head;
-            bool multikey;
-        };
-
-        struct MetaData {
-            void parse( const BSONObj& obj );
-            BSONObj toBSON() const;
-
-            int findIndexOffset( const StringData& name ) const;
-
-            std::string ns;
-            std::vector<IndexMetaData> indexes;
-        };
+    protected:
+        virtual MetaData _getMetaData( OperationContext* txn ) const;
 
     private:
-        bool _getMetaData( MetaData* out ) const;
-        bool _getMetaData_inlock( MetaData* out ) const;
+        MetaData _getMetaData( rocksdb::DB* db ) const;
+
+        MetaData _getMetaData_inlock() const;
+        MetaData _getMetaData_inlock( rocksdb::DB* db ) const;
 
         void _putMetaData_inlock( const MetaData& in );
 
-        RocksEngine* _engine;
-        string _metaDataKey;
+        RocksEngine* _engine; // not owned
 
-        mutable boost::mutex _metaDataLock;
+        // the name of the column family which holds the metadata.
+        const string _metaDataKey;
 
+        // lock which must be acquired before calling _getMetaData_inlock(). Protects the metadata
+        // stored in the metadata column family.
+        mutable boost::mutex _metaDataMutex;
     };
 
 }

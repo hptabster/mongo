@@ -36,9 +36,7 @@ namespace mongo {
      * A replacement for the Record class. This class represents data in a record store.
      * The _dataPtr attribute is used to manage memory ownership. If _dataPtr is NULL, then
      * the memory pointed to by _data is owned by the RecordStore. If _dataPtr is not NULL, then
-     * it must point to _data. This means that the memory pointed to by _data is owned by the
-     * RecordData class, and will be cleaned up automatically when the RecordData destructor
-     * calls the _dataPtr destructor.
+     * it must point to the same array as _data.
      */
     class RecordData {
     public:
@@ -54,7 +52,7 @@ namespace mongo {
         /**
          * Returns true if this owns its own memory, and false otherwise
          */
-        bool isOwned() const { return _dataPtr; }
+        bool isOwned() const { return _dataPtr.get(); }
 
         // TODO eliminate double-copying
         BSONObj toBson() const { return isOwned() ? BSONObj(_data).getOwned() : BSONObj(_data); }
@@ -62,7 +60,7 @@ namespace mongo {
     private:
         const char* _data;
         int _size;
-        const boost::shared_array<char> _dataPtr;
+        boost::shared_array<char> _dataPtr;
     };
 
 } // namespace mongo

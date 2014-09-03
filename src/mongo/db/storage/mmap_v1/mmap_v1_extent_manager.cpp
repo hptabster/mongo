@@ -28,24 +28,25 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+
 #include <boost/filesystem/operations.hpp>
 
 #include "mongo/db/storage/mmap_v1/mmap_v1_extent_manager.h"
 
 #include "mongo/db/audit.h"
 #include "mongo/db/client.h"
-#include "mongo/db/d_concurrency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/db/storage/mmap_v1/data_file.h"
 #include "mongo/db/storage/mmap_v1/record.h"
 #include "mongo/db/storage/mmap_v1/extent.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/util/file.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kStorage);
 
     MmapV1ExtentManager::MmapV1ExtentManager( const StringData& dbname,
                                   const StringData& path,
@@ -87,21 +88,37 @@ namespace mongo {
 
             string fullNameString = fullName.string();
 
+            {
+                // If the file is uninitialized we exit the loop because it is just prealloced. We
+                // do this on a bare File object rather than using the DataFile because closing a
+                // DataFile triggers dur::closingFileNotification() which is fatal if there are any
+                // pending writes. Therefore we must only open files that we know we want to keep.
+                File preview;
+                preview.open(fullNameString.c_str(), /*readOnly*/ true);
+                invariant(preview.is_open());
+                if (preview.len() < sizeof(DataFileHeader))
+                    break; // can't be initialized if too small.
+
+                // This is the equivalent of DataFileHeader::uninitialized().
+                int version;
+                preview.read(0, reinterpret_cast<char*>(&version), sizeof(version));
+                invariant(!preview.bad());
+                if (version == 0)
+                    break;
+
+            }
+
             auto_ptr<DataFile> df( new DataFile(n) );
 
             Status s = df->openExisting( txn, fullNameString.c_str() );
-
-            // openExisting may upgrade the files, so make sure to commit its changes
-            txn->recoveryUnit()->commitIfNeeded(true);
-
             if ( !s.isOK() ) {
                 return s;
             }
 
-            if ( df->getHeader()->uninitialized() ) {
-                // pre-alloc only, so we're done
-                break;
-            }
+            invariant(!df->getHeader()->uninitialized());
+
+            // We only checkUpgrade on files that we are keeping, not preallocs.
+            df->getHeader()->checkUpgrade(txn);
 
             _files.push_back( df.release() );
         }

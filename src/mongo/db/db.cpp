@@ -28,6 +28,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+
 #include "mongo/platform/basic.h"
 
 #include <boost/thread/thread.hpp>
@@ -49,8 +51,7 @@
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/commands/server_status_metric.h"
-#include "mongo/db/d_concurrency.h"
-#include "mongo/db/d_globals.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db.h"
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/dbwebserver.h"
@@ -72,10 +73,8 @@
 #include "mongo/db/repl/network_interface_impl.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/db/repl/repl_coordinator_hybrid.h"
-#include "mongo/db/repl/repl_coordinator_impl.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/rs.h"
-#include "mongo/db/repl/topology_coordinator_impl.h"
 #include "mongo/db/restapi.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/startup_warnings.h"
@@ -85,7 +84,6 @@
 #include "mongo/db/storage_options.h"
 #include "mongo/db/ttl.h"
 #include "mongo/platform/process_id.h"
-#include "mongo/s/d_writeback.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/util/background.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
@@ -113,7 +111,7 @@
 
 namespace mongo {
 
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kStorage);
+    using logger::LogComponent;
 
     void (*snmpInit)() = NULL;
 
@@ -135,7 +133,7 @@ namespace mongo {
         }
     } mystartupdbcpp;
 
-    QueryResult* emptyMoreResult(long long);
+    QueryResult::View emptyMoreResult(long long);
 
 
     /* todo: make this a real test.  the stuff in dbtests/ seem to do all dbdirectclient which exhaust doesn't support yet. */
@@ -200,17 +198,17 @@ namespace mongo {
                 if ( dbresponse.response ) {
                     port->reply(m, *dbresponse.response, dbresponse.responseTo);
                     if( dbresponse.exhaustNS.size() > 0 ) {
-                        MsgData *header = dbresponse.response->header();
-                        QueryResult *qr = (QueryResult *) header;
-                        long long cursorid = qr->cursorId;
+                        MsgData::View header = dbresponse.response->header();
+                        QueryResult::View qr = header.view2ptr();
+                        long long cursorid = qr.getCursorId();
                         if( cursorid ) {
                             verify( dbresponse.exhaustNS.size() && dbresponse.exhaustNS[0] );
                             string ns = dbresponse.exhaustNS; // before reset() free's it...
                             m.reset();
                             BufBuilder b(512);
                             b.appendNum((int) 0 /*size set later in appendData()*/);
-                            b.appendNum(header->id);
-                            b.appendNum(header->responseTo);
+                            b.appendNum(header.getId());
+                            b.appendNum(header.getResponseTo());
                             b.appendNum((int) dbGetMore);
                             b.appendNum((int) 0);
                             b.appendStr(ns);
@@ -237,7 +235,7 @@ namespace mongo {
     static void logStartup() {
         BSONObjBuilder toLog;
         stringstream id;
-        id << getHostNameCached() << "-" << jsTime();
+        id << getHostNameCached() << "-" << jsTime().asInt64();
         toLog.append( "_id", id.str() );
         toLog.append( "hostname", getHostNameCached() );
 
@@ -278,9 +276,10 @@ namespace mongo {
         server->setupSockets();
 
         logStartup();
-        repl::getGlobalReplicationCoordinator()->startReplication(
-            new repl::TopologyCoordinatorImpl(repl::maxSyncSourceLagSecs), 
-            new repl::NetworkInterfaceImpl());
+        {
+            OperationContextImpl txn;
+            repl::getGlobalReplicationCoordinator()->startReplication(&txn);
+        }
         if (serverGlobalParams.isHttpInterfaceEnabled)
             boost::thread web(stdx::bind(&webServerThread,
                                          new RestAdminAccess())); // takes ownership
@@ -289,14 +288,6 @@ namespace mongo {
         boost::thread thr(testExhaust);
 #endif
         server->run();
-
-        // If system is in shutdown, any network errors are from the sockets closing, so just block
-        // and wait for _exit to be called.
-        if (inShutdown()) {
-            sleepsecs(std::numeric_limits<int>::max());
-        }
-
-        exitCleanly(EXIT_NET_ERROR);
     }
 
     void checkForIdIndexes( OperationContext* txn, Database* db ) {
@@ -320,7 +311,7 @@ namespace mongo {
             if ( !coll )
                 continue;
 
-            if ( coll->getIndexCatalog()->findIdIndex() )
+            if ( coll->getIndexCatalog()->findIdIndex( txn ) )
                 continue;
 
             log() << "WARNING: the collection '" << *i
@@ -339,7 +330,6 @@ namespace mongo {
 
         OperationContextImpl txn;
         Lock::GlobalWrite lk(txn.lockState());
-        WriteUnitOfWork wunit(txn.recoveryUnit());
 
         vector< string > dbNames;
 
@@ -412,7 +402,6 @@ namespace mongo {
                 dbHolder().close( &txn, dbName );
             }
         }
-        wunit.commit();
 
         LOG(1) << "done repairDatabases" << endl;
     }
@@ -558,7 +547,7 @@ namespace mongo {
                 repl::getGlobalReplicationCoordinator()->getSettings();
         {
             ProcessId pid = ProcessId::getCurrent();
-            LogstreamBuilder l = log();
+            LogstreamBuilder l = log(LogComponent::kDefault);
             l << "MongoDB starting : pid=" << pid
               << " port=" << serverGlobalParams.port
               << " dbpath=" << storageGlobalParams.dbpath;
@@ -566,7 +555,7 @@ namespace mongo {
             if( replSettings.slave )  l << " slave=" << (int) replSettings.slave;
             l << ( is32bit ? " 32" : " 64" ) << "-bit host=" << getHostNameCached() << endl;
         }
-        DEV log() << "_DEBUG build (which is slower)" << endl;
+        DEV log(LogComponent::kDefault) << "_DEBUG build (which is slower)" << endl;
         logStartupWarnings();
 #if defined(_WIN32)
         printTargetMinOS();
@@ -595,7 +584,7 @@ namespace mongo {
             snmpInit();
         }
 
-        initGlobalStorageEngine();
+        getGlobalEnvironment()->setGlobalStorageEngine(storageGlobalParams.engine);
 
         boost::filesystem::remove_all(storageGlobalParams.dbpath + "/_tmp/");
 
@@ -650,7 +639,8 @@ namespace mongo {
         if (serverGlobalParams.isHttpInterfaceEnabled)
             snapshotThread.go();
 
-        d.clientCursorMonitor.go();
+        startClientCursorMonitor();
+
         PeriodicTask::startRunningPeriodicTasks();
         if (missingRepl) {
             // a warning was logged earlier
@@ -676,39 +666,42 @@ namespace mongo {
 
         getDeleter()->startWorkers();
 
-        // Starts a background thread that rebuilds all incomplete indices. 
-        indexRebuilder.go(); 
+        restartInProgressIndexesFromLastShutdown();
 
         listen(listenPort);
+
+        // listen() will return when exit code closes its socket.
     }
 
-    static void initAndListen(int listenPort) {
+    ExitCode initAndListen(int listenPort) {
         try {
             _initAndListen(listenPort);
+
+            return inShutdown() ? EXIT_CLEAN : EXIT_NET_ERROR;
         }
         catch ( DBException &e ) {
             log() << "exception in initAndListen: " << e.toString() << ", terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            return EXIT_UNCAUGHT;
         }
         catch ( std::exception &e ) {
-            log() << "exception in initAndListen std::exception: " << e.what() << ", terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            log() << "exception in initAndListen std::exception: " << e.what() << ", terminating";
+            return EXIT_UNCAUGHT;
         }
         catch ( int& n ) {
             log() << "exception in initAndListen int: " << n << ", terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            return EXIT_UNCAUGHT;
         }
         catch(...) {
             log() << "exception in initAndListen, terminating" << endl;
-            dbexit( EXIT_UNCAUGHT );
+            return EXIT_UNCAUGHT;
         }
     }
 
 #if defined(_WIN32)
-    void initService() {
+    ExitCode initService() {
         ntservice::reportStatus( SERVICE_RUNNING );
         log() << "Service running" << endl;
-        initAndListen(serverGlobalParams.port);
+        return initAndListen(serverGlobalParams.port);
     }
 #endif
 
@@ -838,11 +831,6 @@ MONGO_INITIALIZER_GENERAL(CreateAuthorizationManager,
     return Status::OK();
 }
 
-MONGO_INITIALIZER(SetGlobalConfigExperiment)(InitializerContext* context) {
-    setGlobalEnvironment(new GlobalEnvironmentMongoD());
-    return Status::OK();
-}
-
 namespace {
     repl::ReplSettings replSettings;
 } // namespace
@@ -853,7 +841,8 @@ namespace mongo {
     }
 } // namespace mongo
 
-MONGO_INITIALIZER(CreateReplicationManager)(InitializerContext* context) {
+MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager, ("SetGlobalEnvironment"))
+        (InitializerContext* context) {
     repl::setGlobalReplicationCoordinator(new repl::HybridReplicationCoordinator(replSettings));
     return Status::OK();
 }
@@ -906,7 +895,7 @@ static int mongoDbMain(int argc, char* argv[], char **envp) {
         unsigned x = 0x12345678;
         unsigned char& b = (unsigned char&) x;
         if ( b != 0x78 ) {
-            log() << "big endian cpus not yet supported" << endl;
+            mongo::log(LogComponent::kDefault) << "big endian cpus not yet supported" << endl;
             return 33;
         }
     }
@@ -916,7 +905,7 @@ static int mongoDbMain(int argc, char* argv[], char **envp) {
 
     Status status = mongo::runGlobalInitializers(argc, argv, envp);
     if (!status.isOK()) {
-        severe() << "Failed global initialization: " << status;
+        severe(LogComponent::kDefault) << "Failed global initialization: " << status;
         ::_exit(EXIT_FAILURE);
     }
 
@@ -940,6 +929,7 @@ static int mongoDbMain(int argc, char* argv[], char **envp) {
 #endif
 
     StartupTest::runTests();
-    initAndListen(serverGlobalParams.port);
-    fassertFailed(18000);
+    ExitCode exitCode = initAndListen(serverGlobalParams.port);
+    exitCleanly(exitCode);
+    return 0;
 }

@@ -35,6 +35,7 @@
 #include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/platform/random.h"
+#include "mongo/util/log.h"
 #include "mongo/util/fail_point_service.h"
 
 namespace mongo {
@@ -80,6 +81,10 @@ namespace mongo {
 
     CurOp* OperationContextImpl::getCurOp() const {
         return cc().curop();
+    }
+
+    unsigned int OperationContextImpl::getOpID() const {
+        return getCurOp()->opNum();
     }
 
     // Enabling the checkForInterruptFail fail point will start a game of random chance on the
@@ -152,11 +157,12 @@ namespace mongo {
         }
 
         if (c.curop()->killPending()) {
-            uasserted(11601, "operation was interrupted");
+            uasserted(ErrorCodes::Interrupted, "operation was interrupted");
         }
     }
 
     Status OperationContextImpl::checkForInterruptNoAssert() const {
+        // TODO(spencer): Unify error codes and implementation with checkForInterrupt()
         Client& c = cc();
 
         if (getGlobalEnvironment()->getKillAllOperations()) {

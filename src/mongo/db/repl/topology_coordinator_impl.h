@@ -28,7 +28,6 @@
 
 #pragma once
 
-#include <limits>
 #include <string>
 #include <vector>
 
@@ -50,43 +49,79 @@ namespace repl {
     /**
      * Represents a latency measurement for each replica set member based on heartbeat requests.
      * The measurement is an average weighted 80% to the old value, and 20% to the new value.
+     *
+     * Also stores information about heartbeat progress and retries.
      */
     class PingStats {
     public:
-        PingStats() : count(0), value(std::numeric_limits<int>::max()) {}
+        PingStats();
 
-        void hit(int millis) {
-            ++count;
-            value = value == 0 ? millis :
-                                 static_cast<unsigned long>((value * .8) + (millis * .2));
-        }
+        /**
+         * Records that a new heartbeat request started at "now".
+         *
+         * This resets the failure count used in determining whether the next request to a target
+         * should be a retry or a regularly scheduled heartbeat message.
+         */
+        void start(Date_t now);
 
-        unsigned int getCount() {
-            return count;
-        }
+        /**
+         * Records that a heartbeat request completed successfully, and that "millis" milliseconds
+         * were spent for a single network roundtrip plus remote processing time.
+         */
+        void hit(int millis);
 
-        unsigned int getMillis() {
-            return value;
-        }
+        /**
+         * Records that a heartbeat request failed.
+         */
+        void miss();
+
+        /**
+         * Gets the number of hit() calls.
+         */
+        unsigned int getCount() const { return count; }
+
+        /**
+         * Gets the weighted average round trip time for heartbeat messages to the target.
+         */
+        unsigned int getMillis() const { return value; }
+
+        /**
+         * Gets the date at which start() was last called, which is used to determine if
+         * a heartbeat should be retried or if the time limit has expired.
+         */
+        Date_t getLastHeartbeatStartDate() const { return _lastHeartbeatStartDate; }
+
+        /**
+         * Gets the number of failures since start() was last called.
+         *
+         * This value is incremented by calls to miss(), cleared by calls to start() and
+         * set to the maximum possible value by calls to hit().
+         */
+        int getNumFailuresSinceLastStart() const { return _numFailuresSinceLastStart; }
+
     private:
         unsigned int count;
         unsigned int value;
+        Date_t _lastHeartbeatStartDate;
+        int _numFailuresSinceLastStart;
     };
-
 
     class TopologyCoordinatorImpl : public TopologyCoordinator {
     public:
-        explicit TopologyCoordinatorImpl(int maxSyncSourceLagSecs);
+        /**
+         * Constructs a Topology Coordinator object.
+         * @param maxSyncSourceLagSecs a sync source is re-evaluated after it lags behind further
+         *                             than this amount.
+         **/
+        TopologyCoordinatorImpl(Seconds maxSyncSourceLagSecs);
 
-        virtual void setLastApplied(const OpTime& optime);
-        virtual void setCommitOkayThrough(const OpTime& optime);
-        virtual void setLastReceived(const OpTime& optime);
+        // TODO(spencer): Can this be made private?
         virtual void setForceSyncSourceIndex(int index);
 
         // Looks up syncSource's address and returns it, for use by the Applier
         virtual HostAndPort getSyncSourceAddress() const;
         // Chooses and sets a new sync source, based on our current knowledge of the world
-        virtual void chooseNewSyncSource(Date_t now);
+        virtual void chooseNewSyncSource(Date_t now, const OpTime& lastOpApplied);
         // Does not choose a member as a sync source until time given; 
         // call this when we have reason to believe it's a bad choice
         virtual void blacklistSyncSource(const HostAndPort& host, Date_t until);
@@ -97,38 +132,62 @@ namespace repl {
         virtual void registerConfigChangeCallback(const ConfigChangeCallbackFn& fn);
         // ReplCoord needs to know the state to implement certain public functions
         virtual void registerStateChangeCallback(const StateChangeCallbackFn& fn);
-        
+
         // Applier calls this to notify that it's now safe to transition from SECONDARY to PRIMARY
         virtual void signalDrainComplete();
 
-        // produces a reply to a RAFT-style RequestVote RPC
-        virtual void prepareRequestVoteResponse(const Date_t now,
-                                                const BSONObj& cmdObj,
-                                                std::string& errmsg, 
-                                                BSONObjBuilder& result);
+        // produces a reply to a replSetSyncFrom command
+        virtual void prepareSyncFromResponse(const ReplicationExecutor::CallbackData& data,
+                                             const HostAndPort& target,
+                                             const OpTime& lastOpApplied,
+                                             BSONObjBuilder* response,
+                                             Status* result);
+
+        virtual void prepareFreshResponse(const ReplicationExecutor::CallbackData& data,
+                                          const ReplicationCoordinator::ReplSetFreshArgs& args,
+                                          const OpTime& lastOpApplied,
+                                          BSONObjBuilder* response,
+                                          Status* result);
 
         // produces a reply to a received electCmd
-        virtual void prepareElectCmdResponse(const Date_t now,
-                                             const BSONObj& cmdObj,
-                                             BSONObjBuilder& result);
+        virtual void prepareElectResponse(const ReplicationExecutor::CallbackData& data,
+                                          const ReplicationCoordinator::ReplSetElectArgs& args,
+                                          const Date_t now,
+                                          BSONObjBuilder* response);
 
         // produces a reply to a heartbeat
         virtual void prepareHeartbeatResponse(const ReplicationExecutor::CallbackData& data,
                                               Date_t now,
                                               const ReplSetHeartbeatArgs& args,
                                               const std::string& ourSetName,
+                                              const OpTime& lastOpApplied,
                                               ReplSetHeartbeatResponse* response,
                                               Status* result);
 
+        virtual std::pair<ReplSetHeartbeatArgs, Milliseconds> prepareHeartbeatRequest(
+                Date_t now,
+                const std::string& ourSetName,
+                const HostAndPort& target);
+
+        virtual HeartbeatResponseAction processHeartbeatResponse(
+                Date_t now,
+                Milliseconds networkRoundTripTime,
+                const HostAndPort& target,
+                const StatusWith<ReplSetHeartbeatResponse>& hbResponse,
+                OpTime myLastOpApplied);
+
         // updates internal state with heartbeat response
-        HeartbeatResultAction updateHeartbeatData(Date_t now,
-                                                  const MemberHeartbeatData& newInfo,
-                                                  int id);
+        HeartbeatResponseAction::Action updateHeartbeatData(
+                Date_t now,
+                const MemberHeartbeatData& newInfo,
+                int id,
+                const OpTime& lastOpApplied);
 
         // produces a reply to a status request
         virtual void prepareStatusResponse(const ReplicationExecutor::CallbackData& data,
                                            Date_t now,
                                            unsigned uptime,
+                                           const OpTime& lastOpApplied,
                                            BSONObjBuilder* response,
                                            Status* result);
 
@@ -143,15 +202,52 @@ namespace repl {
         virtual void relinquishPrimary(OperationContext* txn);
 
         // updates internal config with new config (already validated)
-        virtual void updateConfig(const ReplicationExecutor::CallbackData& cbData,
-                                  const ReplicaSetConfig& newConfig,
+        virtual void updateConfig(const ReplicaSetConfig& newConfig,
                                   int selfIndex,
-                                  Date_t now);
+                                  Date_t now,
+                                  const OpTime& lastOpApplied);
 
         // Record a ping in millis based on the round-trip time of the heartbeat for the member
-        virtual void recordPing(const HostAndPort& host, const int elapsedMillis);
+        virtual void recordPing(const HostAndPort& host, const Milliseconds elapsedMillis);
+
+        // Changes _memberState to newMemberState, then calls all registered callbacks
+        // for state changes.
+        // NOTE: The only reason this method is public instead of private is for testing.  Do not
+        // call this method from outside of TopologyCoordinatorImpl or a unit test.
+        void _changeMemberState(const MemberState& newMemberState);
+
+        // Sets "_electionTime" to "newElectionTime".
+        // NOTE: The only reason this method exists is for testing.  Do not call this method from
+        //       outside of TopologyCoordinatorImpl or a unit test.
+        void _setElectionTime(const OpTime& newElectionTime);
+
+        // Sets _currentPrimaryIndex to the given index.  Should only be used in unit tests!
+        // TODO(spencer): Remove this once we can easily call for an election in unit tests to
+        // set the current primary.
+        void _setCurrentPrimaryForTest(int primaryIndex);
+        
+        // Retrieves a vector of HostAndPorts containing only nodes that are not DOWN
+        // and are not ourselves.
+        virtual std::vector<HostAndPort> getMaybeUpHostAndPorts() const;
+
+        // If the lastVote tracker allows the current node to vote for itself, updates the 
+        // lastVote tracker and returns true.  Otherwise, returns false.
+        virtual bool voteForMyself(Date_t now);
+
+        // Sets _stepDownTime to newTime.  newTime must be strictly later than _stepDownTime.
+        virtual void setStepDownTime(Date_t newTime);
 
     private:
+
+        enum UnelectableReason {
+            None,
+            CannotSeeMajority,
+            NotCloseEnoughToLatestOptime,
+            ArbiterIAm,
+            NotSecondary,
+            NoPriority,
+            StepDownPeriodActive
+        };
 
         // Returns the number of heartbeat pings which have occurred.
         virtual int _getTotalPings();
@@ -159,18 +255,34 @@ namespace repl {
         // Returns the current "ping" value for the given member by their address
         virtual int _getPing(const HostAndPort& host);
 
-        // Determines if we will veto the member in the "fresh" command response
+        // Determines if we will veto the member specified by "memberID", given that the last op
+        // we have applied locally is "lastOpApplied".
         // If we veto, the errmsg will be filled in with a reason
-        bool _shouldVeto(const BSONObj& cmdObj, string& errmsg) const;
+        bool _shouldVetoMember(unsigned int memberID,
+                               const OpTime& lastOpApplied,
+                               std::string* errmsg) const;
 
         // Returns the index of the member with the matching id, or -1 if none match.
-        int _getMemberIndex(int id) const; 
-
-        // Logic to determine if we should step down as primary
-        bool _shouldRelinquish() const;
+        int _getMemberIndex(int id) const;
 
         // Sees if a majority number of votes are held by members who are currently "up"
         bool _aMajoritySeemsToBeUp() const;
+
+        // Is optime close enough to the latest known optime to qualify for an election
+        bool _isOpTimeCloseEnoughToLatestToElect(const OpTime lastApplied) const;
+
+        // Returns reason why "self" member is unelectable
+        UnelectableReason _getMyUnelectableReason(const Date_t now,
+                                                  const OpTime lastOpApplied) const;
+
+        // Returns reason why memberIndex is unelectable
+        UnelectableReason _getUnelectableReason(int memberIndex) const;
+
+        // Returns the nice text of why the node is unelectable
+        std::string _getUnelectableReasonString(UnelectableReason ur) const;
+
+        // Return true if we are currently primary
+        bool _iAmPrimary() const;
 
         // Returns the total number of votes in the current config
         int _totalVotes() const;
@@ -178,37 +290,40 @@ namespace repl {
         // Scans through all members that are 'up' and return the latest known optime
         OpTime _latestKnownOpTime() const;
 
-        // Begins election proceedings
-        void _electSelf(Date_t now);
-
         // Scans the electable set and returns the highest priority member index
         int _getHighestPriorityElectableIndex() const;
+        
+        // Returns true if "one" member is higher priority than "two" member
+        bool _isMemberHigherPriority(int memberOneIndex, int memberTwoIndex) const;
 
-        // Changes _memberState to newMemberState, then calls all registered callbacks
-        // for state changes.
-        void _changeMemberState(const MemberState& newMemberState);
+        // Helper shortcut to self config
+        const MemberConfig& _selfConfig() const;
 
-        OpTime _lastApplied;  // the last op that the applier has actually written to the data
-        OpTime _commitOkayThrough; // the primary's latest op that won't get rolled back
-        OpTime _lastReceived; // the last op we have received from our sync source
+        // Returns NULL if there is no primary, or the MemberConfig* for the current primary
+        const MemberConfig* _currentPrimaryMember() const;
+
+        /**
+         * Performs data updating common to updateHeartbeatData() and processHeartbeatResponse().
+         */
+        TopologyCoordinatorImpl::HeartbeatResponseAction _updateHeartbeatDataImpl(
+                int updatedConfigIndex,
+                Date_t now,
+                const OpTime& lastOpApplied);
+
 
         // Our current state (PRIMARY, SECONDARY, etc)
         MemberState _memberState;
-        
+
         // This is a unique id that is generated and set each time we transition to PRIMARY, as the
         // result of an election.
         OID _electionId;
-        // PRIMARY server's time when the election to primary occurred
+        // The time at which the current PRIMARY was elected.
         OpTime _electionTime;
-
-        // set of electable members' _ids
-        // For implementation of priorities
-        std::set<unsigned int> _electableSet;
 
         // the member we currently believe is primary, if one exists
         int _currentPrimaryIndex;
         // the member we are currently syncing from
-        // NULL if no sync source (we are primary, or we cannot connect to anyone yet)
+        // -1 if no sync source (we are primary, or we cannot connect to anyone yet)
         int _syncSourceIndex; 
         // These members are not chosen as sync sources for a period of time, due to connection
         // issues with them
@@ -216,7 +331,7 @@ namespace repl {
         // The next sync source to be chosen, requested via a replSetSyncFrom command
         int _forceSyncSourceIndex;
         // How far this node must fall behind before considering switching sync sources
-        int _maxSyncSourceLagSecs;
+        Seconds _maxSyncSourceLagSecs;
 
         // insanity follows
 
@@ -231,14 +346,13 @@ namespace repl {
             return _hbmsg;
         }
 
-        // Flag to prevent re-entering election code
-        bool _busyWithElectSelf;
-
         int _selfIndex; // this node's index in _members and _currentConfig
-        const MemberConfig& _selfConfig();  // Helper shortcut to self config
 
         ReplicaSetConfig _currentConfig; // The current config, including a vector of MemberConfigs
-        std::vector<MemberHeartbeatData> _hbdata; // heartbeat data for each member
+        // heartbeat data for each member.  It is guaranteed that this vector will be maintained
+        // in the same order as the MemberConfigs in _currentConfig, therefore the member config
+        // index can be used to index into this vector as well.
+        std::vector<MemberHeartbeatData> _hbdata;
 
         // Time when stepDown command expires
         Date_t _stepDownUntil;
@@ -285,11 +399,14 @@ namespace repl {
 
         // Last vote info from the election
         struct LastVote {
-            LastVote() : when(0), who(0xffffffff) { }
-            Date_t when;
-            unsigned who;
-        } _lastVote;
 
+            static const Seconds leaseTime;
+
+            LastVote() : when(0), whoId(-1) { }
+            Date_t when;
+            int whoId;
+            HostAndPort whoHostAndPort;
+        } _lastVote;
 
     };
 

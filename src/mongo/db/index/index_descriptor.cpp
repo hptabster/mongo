@@ -29,6 +29,7 @@
 */
 
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -46,7 +47,7 @@ namespace mongo {
                      fieldName == "name" ||
                      fieldName == "v" ||
                      fieldName == "background" || // this is a creation time option only
-                     fieldName == "dropDups" || // this is a creation time option only
+                     fieldName == "dropDups" || // this is now ignored
                      fieldName == "sparse" || // checked specially
                      fieldName == "unique" // check specially
                      ) {
@@ -78,6 +79,13 @@ namespace mongo {
         populateOptionsMap( newOptionsMap, other->infoObj() );
 
         return existingOptionsMap == newOptionsMap;
+    }
+
+    void IndexDescriptor::_checkOk() const {
+        if ( _magic == 123987 )
+            return;
+        log() << "uh oh: " << (void*)(this) << " " << _magic;
+        invariant(0);
     }
 
 }

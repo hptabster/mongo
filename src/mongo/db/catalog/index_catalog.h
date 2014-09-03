@@ -62,39 +62,50 @@ namespace mongo {
 
         // ---- accessors -----
 
-        int numIndexesTotal() const;
-        int numIndexesReady() const;
-        int numIndexesInProgress() const { return numIndexesTotal() - numIndexesReady(); }
+        int numIndexesTotal( OperationContext* txn ) const;
+        int numIndexesReady( OperationContext* txn ) const;
+        int numIndexesInProgress( OperationContext* txn  ) const {
+            return numIndexesTotal(txn) - numIndexesReady(txn);
+        }
 
         /**
          * this is in "alive" until the Collection goes away
          * in which case everything from this tree has to go away
          */
 
-        bool haveIdIndex() const;
+        bool haveIdIndex( OperationContext* txn ) const;
 
-        IndexDescriptor* findIdIndex() const;
+        /**
+         * Returns the spec for the id index to create by default for this collection.
+         */
+        BSONObj getDefaultIdIndexSpec() const;
+
+        IndexDescriptor* findIdIndex( OperationContext* txn ) const;
 
         /**
          * @return null if cannot find
          */
-        IndexDescriptor* findIndexByName( const StringData& name,
+        IndexDescriptor* findIndexByName( OperationContext* txn,
+                                          const StringData& name,
                                           bool includeUnfinishedIndexes = false ) const;
 
         /**
          * @return null if cannot find
          */
-        IndexDescriptor* findIndexByKeyPattern( const BSONObj& key,
+        IndexDescriptor* findIndexByKeyPattern( OperationContext* txn,
+                                                const BSONObj& key,
                                                 bool includeUnfinishedIndexes = false ) const;
 
         /* Returns the index entry for the first index whose prefix contains
          * 'keyPattern'. If 'requireSingleKey' is true, skip indices that contain
          * array attributes. Otherwise, returns NULL.
          */
-        IndexDescriptor* findIndexByPrefix( const BSONObj &keyPattern,
+        IndexDescriptor* findIndexByPrefix( OperationContext* txn,
+                                            const BSONObj &keyPattern,
                                             bool requireSingleKey ) const;
 
-        void findIndexByType( const std::string& type,
+        void findIndexByType( OperationContext* txn,
+                              const std::string& type,
                               std::vector<IndexDescriptor*>& matches,
                               bool includeUnfinishedIndexes = false ) const;
 
@@ -104,6 +115,12 @@ namespace mongo {
         IndexAccessMethod* getIndex( const IndexDescriptor* desc );
         const IndexAccessMethod* getIndex( const IndexDescriptor* desc ) const;
 
+        /**
+         * Returns a not-ok Status if there are any unfinished index builds. No new indexes should
+         * be built when in this state.
+         */
+        Status checkUnfinished() const;
+
         class IndexIterator {
         public:
             bool more();
@@ -112,11 +129,15 @@ namespace mongo {
             // returns the access method for the last return IndexDescriptor
             IndexAccessMethod* accessMethod( IndexDescriptor* desc );
         private:
-            IndexIterator( const IndexCatalog* cat, bool includeUnfinishedIndexes );
+            IndexIterator( OperationContext* txn,
+                           const IndexCatalog* cat,
+                           bool includeUnfinishedIndexes );
 
             void _advance();
 
             bool _includeUnfinishedIndexes;
+
+            OperationContext* _txn;
             const IndexCatalog* _catalog;
             IndexCatalogEntryContainer::const_iterator _iterator;
 
@@ -128,23 +149,18 @@ namespace mongo {
             friend class IndexCatalog;
         };
 
-        IndexIterator getIndexIterator( bool includeUnfinishedIndexes ) const {
-            return IndexIterator( this, includeUnfinishedIndexes );
+        IndexIterator getIndexIterator( OperationContext* txn,
+                                        bool includeUnfinishedIndexes ) const {
+            return IndexIterator( txn, this, includeUnfinishedIndexes );
         };
 
         // ---- index set modifiers ------
 
-        Status ensureHaveIdIndex(OperationContext* txn);
-
-        enum ShutdownBehavior {
-            SHUTDOWN_CLEANUP, // fully clean up this build
-            SHUTDOWN_LEAVE_DIRTY // leave as if kill -9 happened, so have to deal with on restart
-        };
-
-        Status createIndex( OperationContext* txn,
-                            BSONObj spec,
-                            bool mayInterrupt,
-                            ShutdownBehavior shutdownBehavior = SHUTDOWN_CLEANUP );
+        /**
+         * Call this only on an empty collection from inside a WriteUnitOfWork. Index creation on an
+         * empty collection can be rolled back as part of a larger WUOW.
+         */
+        Status createIndexOnEmptyCollection(OperationContext* txn, BSONObj spec);
 
         StatusWith<BSONObj> prepareSpecForCreate( OperationContext* txn,
                                                   const BSONObj& original ) const;
@@ -177,7 +193,7 @@ namespace mongo {
 
         // ---- modify single index
 
-        bool isMultikey( const IndexDescriptor* idex );
+        bool isMultikey( OperationContext* txn, const IndexDescriptor* idex );
 
         // --- these probably become private?
 
@@ -192,6 +208,7 @@ namespace mongo {
          * 4) system.namespaces entry for index ns
          */
         class IndexBuildBlock {
+            MONGO_DISALLOW_COPYING(IndexBuildBlock);
         public:
             IndexBuildBlock(OperationContext* txn,
                             Collection* collection,
@@ -212,12 +229,11 @@ namespace mongo {
              * we're stopping the build
              * do NOT cleanup, leave meta data as is
              */
-            void abort();
+            void abortWithoutCleanup();
 
             IndexCatalogEntry* getEntry() { return _entry; }
 
         private:
-
             Collection* _collection;
             IndexCatalog* _catalog;
             std::string _ns;
@@ -263,8 +279,6 @@ namespace mongo {
         static BSONObj fixIndexKey( const BSONObj& key );
 
     private:
-        typedef unordered_map<IndexDescriptor*, Client*> InProgressIndexesMap;
-
         bool _shouldOverridePlugin( OperationContext* txn, const BSONObj& keyPattern ) const;
 
         /**
@@ -275,11 +289,6 @@ namespace mongo {
         std::string _getAccessMethodName(OperationContext* txn, const BSONObj& keyPattern) const;
 
         void _checkMagic() const;
-
-
-        // checks if there is anything in _leftOverIndexes
-        // meaning we shouldn't modify catalog
-        Status _checkUnfinished() const;
 
         Status _indexRecord(OperationContext* txn,
                             IndexCatalogEntry* index,
@@ -308,6 +317,10 @@ namespace mongo {
         IndexCatalogEntry* _setupInMemoryStructures(OperationContext* txn,
                                                     IndexDescriptor* descriptor );
 
+        // Apply a set of transformations to the user-provided index object 'spec' to make it
+        // conform to the standard for insertion.  This function adds the 'v' field if it didn't
+        // exist, removes the '_id' field if it exists, applies plugin-level transformations if
+        // appropriate, etc.
         static BSONObj _fixIndexSpec( const BSONObj& spec );
 
         Status _isSpecOk( const BSONObj& spec ) const;
@@ -326,9 +339,6 @@ namespace mongo {
         std::vector<BSONObj> _unfinishedIndexes;
 
         static const BSONObj _idObj; // { _id : 1 }
-
-        // Track in-progress index builds, in order to find and stop them when necessary.
-        InProgressIndexesMap _inProgressIndexes;
     };
 
 }

@@ -205,6 +205,9 @@ add_option( "dynamic-windows", "dynamically link on Windows", 0, True)
 add_option( "64" , "whether to force 64 bit" , 0 , True , "force64" )
 add_option( "32" , "whether to force 32 bit" , 0 , True , "force32" )
 
+add_option( "endian" , "endianness of target platform" , 1 , False , "endian",
+            type="choice", choices=["big", "little", "auto"], default="auto" )
+
 add_option( "cxx", "compiler to use" , 1 , True )
 add_option( "cc", "compiler to use for c" , 1 , True )
 add_option( "cc-use-shell-environment", "use $CC from shell for C compiler" , 0 , False )
@@ -282,9 +285,9 @@ add_option( "use-system-tcmalloc", "use system version of tcmalloc library", 0, 
 add_option( "use-system-pcre", "use system version of pcre library", 0, True )
 
 # library choices
-boost_choices = ['1.49', '1.55']
+boost_choices = ['1.49', '1.56']
 add_option( "internal-boost", "Specify internal boost version to use", 1, True,
-           type='choice', default=boost_choices[0], choices=boost_choices)
+           type='choice', default=boost_choices[1], choices=boost_choices)
 
 add_option( "use-system-boost", "use system version of boost libraries", 0, True )
 
@@ -552,6 +555,16 @@ if has_option('mute'):
     env.Append( SHLINKCOMSTR = env["LINKCOMSTR"] )
     env.Append( ARCOMSTR = "Generating library $TARGET" )
 
+endian = get_option( "endian" )
+
+if endian == "auto":
+    endian = sys.byteorder
+
+if endian == "little":
+    env.Append( CPPDEFINES=[("MONGO_BYTE_ORDER", "1234")] )
+elif endian == "big":
+    env.Append( CPPDEFINES=[("MONGO_BYTE_ORDER", "4321")] )
+
 env['_LIBDEPS'] = '$_LIBDEPS_OBJS'
 
 if env['_LIBDEPS'] == '$_LIBDEPS_OBJS':
@@ -716,7 +729,7 @@ elif linux:
 
 elif solaris:
      env.Append( CPPDEFINES=[ "__sunos__" ] )
-     env.Append( LIBS=["socket","resolv"] )
+     env.Append( LIBS=["socket","resolv","lgrp"] )
 
 elif freebsd:
     env.Append( LIBS=[ "kvm" ] )
@@ -842,7 +855,13 @@ elif windows:
     # This gives 32-bit programs 4 GB of user address space in WOW64, ignored in 64-bit builds
     env.Append( LINKFLAGS=["/LARGEADDRESSAWARE"] )
 
-    env.Append(LIBS=['ws2_32.lib', 'kernel32.lib', 'advapi32.lib', 'Psapi.lib', 'DbgHelp.lib', 'shell32.lib'])
+    env.Append(LIBS=['ws2_32.lib',
+                     'kernel32.lib',
+                     'advapi32.lib',
+                     'Psapi.lib',
+                     'DbgHelp.lib',
+                     'shell32.lib',
+                     'Iphlpapi.lib'])
 
     # v8 calls timeGetTime()
     if usev8:
@@ -958,7 +977,7 @@ if not windows:
 boostSuffix = "";
 if not use_system_version_of_library("boost"):
     if get_option( "internal-boost") != "1.49":
-        boostSuffix = "-1.55.0"
+        boostSuffix = "-1.56.0"
     env.Prepend(CPPDEFINES=['BOOST_ALL_NO_LIB'])
 
 env.Append( CPPPATH=['$EXTRACPPPATH'],
@@ -1532,8 +1551,34 @@ def doConfigure(myenv):
             if using_asan:
                 myenv['ENV']['ASAN_SYMBOLIZER_PATH'] = llvm_symbolizer
 
-    # When using msvc, check for VS 2013 Update 2+ so we can use new compiler flags
+    # When using msvc,
+    # check for min version of VS2013 for fixes in std::list::splice
+    # check for VS 2013 Update 2+ so we can use new compiler flags
     if using_msvc():
+        haveVS2013OrLater = False
+        def CheckVS2013(context):
+            test_body = """
+            #if _MSC_VER < 1800
+            #error Old Version
+            #endif
+            int main(int argc, char* argv[]) {
+            return 0;
+            }
+            """
+            context.Message('Checking for VS 2013 or Later... ')
+            ret = context.TryCompile(textwrap.dedent(test_body), ".cpp")
+            context.Result(ret)
+            return ret
+        conf = Configure(myenv, help=False, custom_tests = {
+            'CheckVS2013' : CheckVS2013,
+        })
+        haveVS2013 = conf.CheckVS2013()
+        conf.Finish()
+
+        if not haveVS2013:
+            print("Visual Studio 2013 RTM or later is required to compile MongoDB.")
+            Exit(1)
+
         haveVS2013Update2OrLater = False
         def CheckVS2013Update2(context):
             test_body = """
@@ -1795,6 +1840,7 @@ def doConfigure(myenv):
     # requires ports devel/libexecinfo to be installed
     if freebsd or openbsd:
         if not conf.CheckLib("execinfo"):
+            print("Cannot find libexecinfo, please install devel/libexecinfo.")
             Exit(1)
 
     # 'tcmalloc' needs to be the last library linked. Please, add new libraries before this 
@@ -2070,4 +2116,4 @@ def clean_old_dist_builds(env, target, source):
 env.Alias("dist_clean", [], [clean_old_dist_builds])
 env.AlwaysBuild("dist_clean")
 
-env.Alias('all', ['core', 'tools', 'dbtest', 'unittests'])
+env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'file_allocator_bench'])

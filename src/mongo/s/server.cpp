@@ -28,6 +28,8 @@
 *    then also delete it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/s/server.h"
@@ -90,7 +92,7 @@
 
 namespace mongo {
 
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kSharding);
+    using logger::LogComponent;
 
 #if defined(_WIN32)
     ntservice::NtServiceDefaultStrings defaultServiceStrings = {
@@ -98,7 +100,7 @@ namespace mongo {
         L"MongoDB Router",
         L"MongoDB Sharding Router"
     };
-    static void initService();
+    static ExitCode initService();
 #endif
 
     Database *database = 0;
@@ -150,7 +152,7 @@ namespace mongo {
                     << " for " << r.getns() << causedBy( ex ) << endl;
 
                 if ( r.expectResponse() ) {
-                    m.header()->id = r.id();
+                    m.header().setId(r.id());
                     replyToQuery( ResultFlag_ErrSet, p , m , buildErrReply( ex ) );
                 }
 
@@ -164,7 +166,7 @@ namespace mongo {
                       << " for " << r.getns() << causedBy( ex ) << endl;
 
                 if ( r.expectResponse() ) {
-                    m.header()->id = r.id();
+                    m.header().setId(r.id());
                     replyToQuery( ResultFlag_ErrSet, p , m , buildErrReply( ex ) );
                 }
 
@@ -210,7 +212,7 @@ namespace mongo {
 
 using namespace mongo;
 
-static bool runMongosServer( bool doUpgrade ) {
+static ExitCode runMongosServer( bool doUpgrade ) {
     setThreadName( "mongosMain" );
     printShardingVersionInfo( false );
 
@@ -235,13 +237,13 @@ static bool runMongosServer( bool doUpgrade ) {
     }
 
     if (!configServer.init(mongosGlobalParams.configdbs)) {
-        log() << "couldn't resolve config db address" << endl;
-        return false;
+        mongo::log(LogComponent::kDefault) << "couldn't resolve config db address" << endl;
+        return EXIT_SHARDING_ERROR;
     }
 
     if ( ! configServer.ok( true ) ) {
-        log() << "configServer connection startup check failed" << endl;
-        return false;
+        mongo::log(LogComponent::kDefault) << "configServer connection startup check failed" << endl;
+        return EXIT_SHARDING_ERROR;
     }
 
     startConfigServerChecker();
@@ -252,8 +254,8 @@ static bool runMongosServer( bool doUpgrade ) {
     string configServerURL = configServer.getPrimary().getConnString();
     ConnectionString configServerConnString = ConnectionString::parse(configServerURL, errMsg);
     if (!configServerConnString.isValid()) {
-        error() << "Invalid connection string for config servers: " << configServerURL << endl;
-        return false;
+        error(LogComponent::kDefault) << "Invalid connection string for config servers: " << configServerURL << endl;
+        return EXIT_SHARDING_ERROR;
     }
     bool upgraded = checkAndUpgradeConfigVersion(configServerConnString,
                                                  doUpgrade,
@@ -262,14 +264,16 @@ static bool runMongosServer( bool doUpgrade ) {
                                                  &errMsg);
 
     if (!upgraded) {
-        error() << "error upgrading config database to v" << CURRENT_CONFIG_VERSION
+        error(LogComponent::kDefault) << "error upgrading config database to v"
+                << CURRENT_CONFIG_VERSION
                 << causedBy(errMsg) << endl;
-        return false;
+        return EXIT_SHARDING_ERROR;
     }
 
     if ( doUpgrade ) {
-        log() << "Config database is at version v" << CURRENT_CONFIG_VERSION;
-        return true;
+        mongo::log(LogComponent::kDefault) << "Config database is at version v"
+                << CURRENT_CONFIG_VERSION;
+        return EXIT_CLEAN;
     }
 
     configServer.reloadSettings();
@@ -288,8 +292,8 @@ static bool runMongosServer( bool doUpgrade ) {
 
     Status status = getGlobalAuthorizationManager()->initialize(&txn);
     if (!status.isOK()) {
-        log() << "Initializing authorization data failed: " << status;
-        return false;
+        mongo::log(LogComponent::kDefault) << "Initializing authorization data failed: " << status;
+        return EXIT_SHARDING_ERROR;
     }
 
     MessageServer::Options opts;
@@ -298,8 +302,7 @@ static bool runMongosServer( bool doUpgrade ) {
     start(opts);
 
     // listen() will return when exit code closes its socket.
-    dbexit( EXIT_NET_ERROR );
-    return true;
+    return EXIT_NET_ERROR;
 }
 
 MONGO_INITIALIZER_GENERAL(ForkServer,
@@ -326,7 +329,6 @@ static void startupConfigActions(const std::vector<std::string>& argv) {
 }
 
 static int _main() {
-
     if (!initializeServerGlobalState())
         return EXIT_FAILURE;
 
@@ -344,13 +346,14 @@ static int _main() {
             }
 
             if ( configAddr.isLocalHost() != grid.allowLocalHost() ) {
-                log() << "cannot mix localhost and ip addresses in configdbs" << endl;
+                mongo::log(LogComponent::kDefault)
+                    << "cannot mix localhost and ip addresses in configdbs" << endl;
                 return 10;
             }
 
         }
         catch ( DBException& e) {
-            log() << "configdb: " << e.what() << endl;
+            mongo::log(LogComponent::kDefault) << "configdb: " << e.what() << endl;
             return 9;
         }
     }
@@ -363,15 +366,27 @@ static int _main() {
     }
 #endif
 
-    return !runMongosServer(mongosGlobalParams.upgrade);
+    ExitCode exitCode = runMongosServer(mongosGlobalParams.upgrade);
+
+    // To maintain backwards compatibility, we exit with EXIT_NET_ERROR if the listener loop returns.
+    if (exitCode == EXIT_NET_ERROR) {
+        dbexit( EXIT_NET_ERROR );
+    }
+
+    return (exitCode == EXIT_CLEAN) ? 0 : 1;
 }
 
 #if defined(_WIN32)
 namespace mongo {
-    static void initService() {
+    static ExitCode initService() {
         ntservice::reportStatus( SERVICE_RUNNING );
         log() << "Service running" << endl;
-        runMongosServer( false );
+
+        ExitCode exitCode = runMongosServer(mongosGlobalParams.upgrade);
+
+        // ignore EXIT_NET_ERROR on clean shutdown since we return this when the listening socket
+        // is closed
+        return (exitCode == EXIT_NET_ERROR && inShutdown()) ? EXIT_CLEAN : exitCode;
     }
 }  // namespace mongo
 #endif
@@ -411,7 +426,7 @@ int mongoSMain(int argc, char* argv[], char** envp) {
 
     Status status = mongo::runGlobalInitializers(argc, argv, envp);
     if (!status.isOK()) {
-        severe() << "Failed global initialization: " << status;
+        severe(LogComponent::kDefault) << "Failed global initialization: " << status;
         ::_exit(EXIT_FAILURE);
     }
 
@@ -459,7 +474,7 @@ int main(int argc, char* argv[], char** envp) {
 
 #undef exit
 
-void mongo::exitCleanly( ExitCode code ) {
+void mongo::exitCleanly( ExitCode code, OperationContext* txn ) {
     // TODO: do we need to add anything?
     mongo::dbexit( code );
 }
@@ -475,7 +490,6 @@ void mongo::dbexit( ExitCode rc, const char *why ) {
 #endif
     log() << "dbexit: " << why
           << " rc:" << rc
-          << " " << ( why ? why : "" )
           << endl;
     flushForGcov();
     ::_exit(rc);

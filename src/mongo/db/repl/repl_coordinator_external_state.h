@@ -32,9 +32,12 @@
 
 namespace mongo {
 
-    struct HostAndPort;
+    class BSONObj;
     class OID;
     class OperationContext;
+    class Status;
+    struct HostAndPort;
+    template <typename T> class StatusWith;
 
 namespace repl {
 
@@ -82,7 +85,7 @@ namespace repl {
          * exist or our hostname doesn't match what was recorded in local.me, generates a new OID
          * to use as our RID, stores it in local.me, and returns it.
          */
-        virtual OID ensureMe() = 0;
+        virtual OID ensureMe(OperationContext*) = 0;
 
         /**
          * Returns true if "host" is one of the network identities of this node.
@@ -90,10 +93,26 @@ namespace repl {
         virtual bool isSelf(const HostAndPort& host) = 0;
 
         /**
+         * Gets the replica set config document from local storage, or returns an error.
+         */
+        virtual StatusWith<BSONObj> loadLocalConfigDocument(OperationContext* txn) = 0;
+
+        /**
+         * Stores the replica set config document in local storage, or returns an error.
+         */
+        virtual Status storeLocalConfigDocument(OperationContext* txn, const BSONObj& config) = 0;
+
+        /**
          * Returns the HostAndPort of the remote client connected to us that initiated the operation
          * represented by "txn".
          */
         virtual HostAndPort getClientHostAndPort(const OperationContext* txn) = 0;
+
+        /**
+         * Closes all client connections.
+         * This is used during stepdown, and transition out of primary.
+         */
+        virtual void closeClientConnections() = 0;
     };
 
 } // namespace repl

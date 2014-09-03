@@ -40,6 +40,7 @@
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/query/expression_index.h"
 #include "mongo/db/query/expression_index_knobs.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -136,12 +137,12 @@ namespace mongo {
         // Must have an object in order to get geometry out of it.
         invariant(member->hasObj());
 
-        CRS queryCRS = nearParams.nearQuery.centroid.crs;
+        CRS queryCRS = nearParams.nearQuery->centroid->crs;
 
         // Extract all the geometries out of this document for the near query
         OwnedPointerVector<StoredGeometry> geometriesOwned;
         vector<StoredGeometry*>& geometries = geometriesOwned.mutableVector();
-        extractGeometries(member->obj, nearParams.nearQuery.field, &geometries);
+        extractGeometries(member->obj, nearParams.nearQuery->field, &geometries);
 
         // Compute the minimum distance of all the geometries in the document
         double minDistance = -1;
@@ -151,6 +152,10 @@ namespace mongo {
 
             StoredGeometry& stored = **it;
 
+            // NOTE: A stored document with STRICT_SPHERE CRS is treated as a malformed document
+            // and ignored. Since GeoNear requires an index, there's no stored STRICT_SPHERE shape.
+            // So we don't check it here.
+
             // NOTE: For now, we're sure that if we get this far in the query we'll have an
             // appropriate index which validates the type of geometry we're pulling back here.
             // TODO: It may make sense to change our semantics and, by default, only return
@@ -159,7 +164,7 @@ namespace mongo {
                 continue;
             stored.geometry.projectInto(queryCRS);
 
-            double nextDistance = stored.geometry.minDistance(nearParams.nearQuery.centroid);
+            double nextDistance = stored.geometry.minDistance(*nearParams.nearQuery->centroid);
 
             if (minDistance < 0 || nextDistance < minDistance) {
                 minDistance = nextDistance;
@@ -173,7 +178,7 @@ namespace mongo {
         }
 
         if (nearParams.addDistMeta) {
-            if (nearParams.nearQuery.unitsAreRadians) {
+            if (nearParams.nearQuery->unitsAreRadians) {
                 // Hack for nearSphere
                 // TODO: Remove nearSphere?
                 invariant(SPHERE == queryCRS);
@@ -192,12 +197,12 @@ namespace mongo {
         return StatusWith<double>(minDistance);
     }
 
-    static R2Annulus geoNearDistanceBounds(const NearQuery& query) {
+    static R2Annulus geoNearDistanceBounds(const GeoNearExpression& query) {
 
-        const CRS queryCRS = query.centroid.crs;
+        const CRS queryCRS = query.centroid->crs;
 
         if (FLAT == queryCRS) {
-            return R2Annulus(query.centroid.oldPoint, query.minDistance, query.maxDistance);
+            return R2Annulus(query.centroid->oldPoint, query.minDistance, query.maxDistance);
         }
 
         invariant(SPHERE == queryCRS);
@@ -219,7 +224,7 @@ namespace mongo {
         // place.
         // TODO: Wrapping behavior should not depend on the index, which would make $near code
         // insensitive to which direction we explore the index in.
-        return R2Annulus(query.centroid.oldPoint,
+        return R2Annulus(query.centroid->oldPoint,
                          min(minDistance, kMaxEarthDistanceInMeters),
                          min(maxDistance, kMaxEarthDistanceInMeters));
     }
@@ -231,8 +236,8 @@ namespace mongo {
     static R2Annulus twoDDistanceBounds(const GeoNearParams& nearParams,
                                         const IndexDescriptor* twoDIndex) {
 
-        R2Annulus fullBounds = geoNearDistanceBounds(nearParams.nearQuery);
-        const CRS queryCRS = nearParams.nearQuery.centroid.crs;
+        R2Annulus fullBounds = geoNearDistanceBounds(*nearParams.nearQuery);
+        const CRS queryCRS = nearParams.nearQuery->centroid->crs;
 
         if (FLAT == queryCRS) {
 
@@ -254,7 +259,7 @@ namespace mongo {
             // Spherical queries have upper bounds set by the earth - no-op
             // TODO: Wrapping errors would creep in here if nearSphere wasn't defined to not wrap
             invariant(SPHERE == queryCRS);
-            invariant(!nearParams.nearQuery.isWrappingQuery);
+            invariant(!nearParams.nearQuery->isWrappingQuery);
         }
 
         return fullBounds;
@@ -262,7 +267,7 @@ namespace mongo {
 
     static double twoDBoundsIncrement(const GeoNearParams& nearParams) {
         // TODO: Revisit and tune these
-        if (FLAT == nearParams.nearQuery.centroid.crs) {
+        if (FLAT == nearParams.nearQuery->centroid->crs) {
             return 10;
         }
         else {
@@ -432,11 +437,12 @@ namespace mongo {
         class FetchStageWithMatch : public FetchStage {
         public:
 
-            FetchStageWithMatch(WorkingSet* ws,
+            FetchStageWithMatch(OperationContext* txn,
+                                WorkingSet* ws,
                                 PlanStage* child,
                                 MatchExpression* filter,
                                 const Collection* collection)
-                : FetchStage(ws, child, filter, collection), _matcher(filter) {
+                : FetchStage(txn, ws, child, filter, collection), _matcher(filter) {
             }
 
             virtual ~FetchStageWithMatch() {
@@ -449,7 +455,7 @@ namespace mongo {
         };
     }
 
-    static double min2DBoundsIncrement(NearQuery query, IndexDescriptor* twoDIndex) {
+    static double min2DBoundsIncrement(const GeoNearExpression& query, IndexDescriptor* twoDIndex) {
         GeoHashConverter::Parameters hashParams;
         Status status = GeoHashConverter::parseParameters(twoDIndex->infoObj(), &hashParams);
         invariant(status.isOK()); // The index status should always be valid
@@ -460,7 +466,7 @@ namespace mongo {
         // max radius.  This is slightly conservative for now (box diagonal vs circle radius).
         double minBoundsIncrement = hasher.getError() / 2;
 
-        const CRS queryCRS = query.centroid.crs;
+        const CRS queryCRS = query.centroid->crs;
         if (FLAT == queryCRS)
             return minBoundsIncrement;
 
@@ -509,7 +515,7 @@ namespace mongo {
         }
 
         _boundsIncrement = max(_boundsIncrement,
-                               min2DBoundsIncrement(_nearParams.nearQuery, _twoDIndex));
+                               min2DBoundsIncrement(*_nearParams.nearQuery, _twoDIndex));
 
         R2Annulus nextBounds(_currBounds.center(),
                              _currBounds.getOuter(),
@@ -523,7 +529,7 @@ namespace mongo {
         // Get a covering region for this interval
         //
 
-        const CRS queryCRS = _nearParams.nearQuery.centroid.crs;
+        const CRS queryCRS = _nearParams.nearQuery->centroid->crs;
 
         auto_ptr<R2Region> coverRegion;
 
@@ -597,7 +603,7 @@ namespace mongo {
         scanParams.bounds = _nearParams.baseBounds;
 
         // The "2d" field is always the first in the index
-        const string twoDFieldName = _nearParams.nearQuery.field;
+        const string twoDFieldName = _nearParams.nearQuery->field;
         const int twoDFieldPosition = 0;
 
         OrderedIntervalList coveredIntervals;
@@ -634,28 +640,16 @@ namespace mongo {
         // IndexScanWithMatch owns the matcher
         IndexScan* scan = new IndexScanWithMatch(txn, scanParams, workingSet, keyMatcher);
         
-        MatchExpression* docMatcher = 
-            _nearParams.fullFilter ? _nearParams.fullFilter->shallowClone() : NULL;
+        MatchExpression* docMatcher = NULL;
         
         // FLAT searches need to add an additional annulus $within matcher, see above
         if (FLAT == queryCRS) {
-
-            MatchExpression* withinMatcher =
-                new TwoDPtInAnnulusExpression(_fullBounds, twoDFieldName);
-            
-            if (docMatcher) {
-                AndMatchExpression* andMatcher = new AndMatchExpression();
-                andMatcher->add(docMatcher);
-                andMatcher->add(withinMatcher);
-                docMatcher = andMatcher;
-            }
-            else {
-                docMatcher = withinMatcher;
-            }
+            docMatcher = new TwoDPtInAnnulusExpression(_fullBounds, twoDFieldName);
         }
         
         // FetchStage owns index scan
-        FetchStage* fetcher(new FetchStageWithMatch(workingSet, 
+        FetchStage* fetcher(new FetchStageWithMatch(txn,
+                                                    workingSet, 
                                                     scan, 
                                                     docMatcher, 
                                                     collection));
@@ -708,7 +702,7 @@ namespace mongo {
                                        STAGE_GEO_NEAR_2DSPHERE)),
           _nearParams(nearParams),
           _s2Index(s2Index),
-          _fullBounds(geoNearDistanceBounds(nearParams.nearQuery)),
+          _fullBounds(geoNearDistanceBounds(*nearParams.nearQuery)),
           _currBounds(_fullBounds.center(), -1, _fullBounds.getInner()),
           _boundsIncrement(twoDSphereBoundsIncrement(s2Index)) {
 
@@ -873,7 +867,7 @@ namespace mongo {
         scanParams.bounds = _nearParams.baseBounds;
 
         // Because the planner doesn't yet set up 2D index bounds, do it ourselves here
-        const string s2Field = _nearParams.nearQuery.field;
+        const string s2Field = _nearParams.nearQuery->field;
         const int s2FieldPosition = getFieldPosition(_s2Index, s2Field);
         scanParams.bounds.fields[s2FieldPosition].intervals.clear();
         OrderedIntervalList* coveredIntervals = &scanParams.bounds.fields[s2FieldPosition];
@@ -889,7 +883,7 @@ namespace mongo {
         IndexScan* scan = new IndexScanWithMatch(txn, scanParams, workingSet, keyMatcher);
 
         // FetchStage owns index scan
-        FetchStage* fetcher(new FetchStage(workingSet, scan, _nearParams.filter, collection));
+        FetchStage* fetcher(new FetchStage(txn, workingSet, scan, _nearParams.filter, collection));
 
         return StatusWith<CoveredInterval*>(new CoveredInterval(fetcher,
                                                                 true,

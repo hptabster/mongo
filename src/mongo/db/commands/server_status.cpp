@@ -42,7 +42,9 @@
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/platform/process_id.h"
+#include "mongo/util/log.h"
 #include "mongo/util/net/listen.h"
+#include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/ramlog.h"
 #include "mongo/util/version.h"
@@ -256,6 +258,23 @@ namespace mongo {
             }
                 
         } network;
+
+#ifdef MONGO_SSL
+        class Security : public ServerStatusSection {
+        public:
+            Security() : ServerStatusSection( "security" ) {}
+            virtual bool includeByDefault() const { return true; }
+
+            BSONObj generateSection(const BSONElement& configElement) const {
+                BSONObj result;
+                if (getSSLManager()) {
+                    result = getSSLManager()->getSSLConfiguration().getServerStatusBSON();
+                }
+
+                return result;
+            }
+        } security;
+#endif
 
         class MemBase : public ServerStatusMetric {
         public:

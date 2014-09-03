@@ -29,6 +29,7 @@
 #include "mongo/s/collection_metadata.h"
 
 #include "mongo/bson/util/builder.h" // for StringBuilder
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -606,6 +607,7 @@ namespace mongo {
             // bounds of the surrounding ranges in both maps.
             //
 
+            range->keyPattern = _keyPattern;
             range->minKey = getMinKey();
             range->maxKey = maxKey;
 

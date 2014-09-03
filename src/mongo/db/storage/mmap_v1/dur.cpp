@@ -69,9 +69,12 @@
    @see https://docs.google.com/drawings/edit?id=1TklsmZzm7ohIZkwgeK6rMvsdaR13KjtJYMsfLr175Zc
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kJournaling
+
 #include "mongo/platform/basic.h"
 
 #include <boost/thread/thread.hpp>
+#include <iomanip>
 
 #include "mongo/db/client.h"
 #include "mongo/db/commands/fsync.h"
@@ -85,7 +88,6 @@
 #include "mongo/db/storage/mmap_v1/dur_stats.h"
 #include "mongo/db/storage_options.h"
 #include "mongo/server.h"
-#include "mongo/util/concurrency/race.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/stacktrace.h"
@@ -94,9 +96,6 @@
 using namespace mongoutils;
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kStorage);
-
     namespace dur {
 
         void PREPLOGBUFFER(JSectHeader& outParm, AlignedBuilder&);
@@ -266,10 +265,6 @@ namespace mongo {
                 declareWriteIntent( p + i->first, i->second );
             }
             return p;
-        }
-
-        bool DurableImpl::isCommitNeeded() const {
-            return commitJob.bytes() > UncommittedBytesLimit;
         }
 
         bool NOINLINE_DECL DurableImpl::_aCommitIsNeeded(OperationContext* txn) {
@@ -810,8 +805,6 @@ namespace mongo {
             }
 
             while( !inShutdown() ) {
-                RACECHECK
-
                 unsigned ms = storageGlobalParams.journalCommitInterval;
                 if( ms == 0 ) { 
                     // use default
@@ -845,7 +838,6 @@ namespace mongo {
             cc().shutdown();
         }
 
-        void recover(OperationContext* txn);
         void preallocateFiles();
 
         /** at startup, recover, and then start the journal threads */
@@ -870,9 +862,8 @@ namespace mongo {
 
             journalMakeDir();
 
-            OperationContextImpl txn;
             try {
-                recover(&txn);
+                replayJournalFilesAtStartup();
             }
             catch(DBException& e) {
                 log() << "dbexception during recovery: " << e.toString() << endl;
@@ -892,6 +883,10 @@ namespace mongo {
             boost::thread t(durThread);
         }
 
+        DurableInterface::~DurableInterface() {
+            log() << "ERROR warning ~DurableInterface not intended to be called" << std::endl;
+        }
+
         void DurableImpl::syncDataAndTruncateJournal(OperationContext* txn) {
             invariant(txn->lockState()->isW());
 
@@ -903,7 +898,7 @@ namespace mongo {
             }
 
             commitNow(txn);
-            globalStorageEngine->flushAllFiles(true);
+            MongoFile::flushAll(true);
             journalCleanup();
 
             verify(!haveJournalFiles()); // Double check post-conditions

@@ -28,6 +28,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommands
+
 #include "mongo/platform/basic.h"
 
 #include <time.h>
@@ -72,8 +74,7 @@
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/mmap_v1/dur_stats.h"
 #include "mongo/db/write_concern.h"
-#include "mongo/s/d_logic.h"
-#include "mongo/s/d_writeback.h"
+#include "mongo/s/d_state.h"
 #include "mongo/s/stale_exception.h"  // for SendStaleConfigException
 #include "mongo/scripting/engine.h"
 #include "mongo/server.h"
@@ -82,8 +83,6 @@
 #include "mongo/util/md5.hpp"
 
 namespace mongo {
-
-    MONGO_LOG_DEFAULT_COMPONENT_FILE(::mongo::logger::LogComponent::kCommands);
 
     CmdShutdown cmdShutdown;
 
@@ -120,7 +119,7 @@ namespace mongo {
 
         writelocktry wlt(txn->lockState(), 2 * 60 * 1000);
         uassert( 13455 , "dbexit timed out getting lock" , wlt.got() );
-        return shutdownHelper();
+        return shutdownHelper(txn);
     }
 
     class CmdDropDatabase : public Command {
@@ -187,7 +186,7 @@ namespace mongo {
                 // and that may need a global lock.
                 Lock::GlobalWrite lk(txn->lockState());
                 Client::Context context(txn, dbname);
-                WriteUnitOfWork wunit(txn->recoveryUnit());
+                WriteUnitOfWork wunit(txn);
 
                 log() << "dropDatabase " << dbname << " starting" << endl;
 
@@ -338,7 +337,7 @@ namespace mongo {
             // in the local database.
             //
             Lock::DBWrite dbXLock(txn->lockState(), dbname);
-            WriteUnitOfWork wunit(txn->recoveryUnit());
+            WriteUnitOfWork wunit(txn);
             Client::Context ctx(txn, dbname);
 
             BSONElement e = cmdObj.firstElement();
@@ -386,6 +385,10 @@ namespace mongo {
         }
 
         bool run(OperationContext* txn, const string& dbname , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
+            const char* deprecationWarning = 
+                "CMD diagLogging is deprecated and will be removed in a future release";
+            warning() << deprecationWarning << startupWarningsLog;
+
             // This doesn't look like it requires exclusive DB lock, because it uses its own diag
             // locking, but originally the lock was set to be WRITE, so preserving the behaviour.
             //
@@ -398,6 +401,7 @@ namespace mongo {
                 LOG(0) << "CMD: diagLogging set to " << _diaglog.getLevel() << " from: " << was << endl;
             }
             result.append( "was" , was );
+            result.append( "note", deprecationWarning );
             return true;
         }
     } cmddiaglogging;
@@ -445,7 +449,7 @@ namespace mongo {
             }
 
             Lock::DBWrite dbXLock(txn->lockState(), dbname);
-            WriteUnitOfWork wunit(txn->recoveryUnit());
+            WriteUnitOfWork wunit(txn);
             Client::Context ctx(txn, nsToDrop);
             Database* db = ctx.db();
 
@@ -456,7 +460,7 @@ namespace mongo {
                 return false;
             }
 
-            int numIndexes = coll->getIndexCatalog()->numIndexesTotal();
+            int numIndexes = coll->getIndexCatalog()->numIndexesTotal( txn );
 
             stopIndexBuilds(txn, db, cmdObj);
 
@@ -545,7 +549,7 @@ namespace mongo {
                         options.hasField("$nExtents"));
 
             Lock::DBWrite dbXLock(txn->lockState(), dbname);
-            WriteUnitOfWork wunit(txn->recoveryUnit());
+            WriteUnitOfWork wunit(txn);
             Client::Context ctx(txn, ns);
 
             // Create collection.
@@ -780,7 +784,7 @@ namespace mongo {
 
             Collection* collection = ctx.ctx().db()->getCollection( txn, ns );
 
-            if ( !collection || collection->numRecords() == 0 ) {
+            if ( !collection || collection->numRecords(txn) == 0 ) {
                 result.appendNumber( "size" , 0 );
                 result.appendNumber( "numObjects" , 0 );
                 result.append( "millis" , timer.millis() );
@@ -792,9 +796,9 @@ namespace mongo {
             auto_ptr<PlanExecutor> exec;
             if ( min.isEmpty() && max.isEmpty() ) {
                 if ( estimate ) {
-                    result.appendNumber( "size" , static_cast<long long>(collection->dataSize()) );
+                    result.appendNumber( "size" , static_cast<long long>(collection->dataSize(txn)) );
                     result.appendNumber( "numObjects",
-                                         static_cast<long long>( collection->numRecords() ) );
+                                         static_cast<long long>( collection->numRecords(txn) ) );
                     result.append( "millis" , timer.millis() );
                     return 1;
                 }
@@ -812,7 +816,7 @@ namespace mongo {
                 }
 
                 IndexDescriptor *idx =
-                    collection->getIndexCatalog()->findIndexByPrefix( keyPattern, true );  /* require single key */
+                    collection->getIndexCatalog()->findIndexByPrefix( txn, keyPattern, true );  /* require single key */
 
                 if ( idx == NULL ) {
                     errmsg = "couldn't find valid index containing key pattern";
@@ -826,7 +830,7 @@ namespace mongo {
                 exec.reset(InternalPlanner::indexScan(txn, collection, idx, min, max, false));
             }
 
-            long long avgObjSize = collection->dataSize() / collection->numRecords();
+            long long avgObjSize = collection->dataSize(txn) / collection->numRecords(txn);
 
             long long maxSize = jsobj["maxSize"].numberLong();
             long long maxObjects = jsobj["maxObjects"].numberLong();
@@ -840,7 +844,7 @@ namespace mongo {
                 if ( estimate )
                     size += avgObjSize;
                 else
-                    size += collection->getRecordStore()->dataFor(loc).size();
+                    size += collection->getRecordStore()->dataFor(txn, loc).size();
 
                 numObjects++;
 
@@ -918,18 +922,18 @@ namespace mongo {
 
             bool verbose = jsobj["verbose"].trueValue();
 
-            long long size = collection->dataSize() / scale;
-            long long numRecords = collection->numRecords();
+            long long size = collection->dataSize(txn) / scale;
+            long long numRecords = collection->numRecords(txn);
             result.appendNumber( "count" , numRecords );
             result.appendNumber( "size" , size );
             if( numRecords )
-                result.append( "avgObjSize" , collection->averageObjectSize() );
+                result.append( "avgObjSize" , collection->averageObjectSize(txn) );
 
             result.appendNumber( "storageSize",
                                  static_cast<long long>(collection->getRecordStore()->storageSize( txn, &result,
                                                                                                    verbose ? 1 : 0 ) ) / 
                                  scale );
-            result.append( "nindexes" , collection->getIndexCatalog()->numIndexesReady() );
+            result.append( "nindexes" , collection->getIndexCatalog()->numIndexesReady( txn ) );
 
             collection->getRecordStore()->appendCustomStats( txn, &result, scale );
 
@@ -972,7 +976,7 @@ namespace mongo {
             const string ns = dbname + "." + jsobj.firstElement().valuestr();
 
             Lock::DBWrite dbXLock(txn->lockState(), dbname);
-            WriteUnitOfWork wunit(txn->recoveryUnit());
+            WriteUnitOfWork wunit(txn);
             Client::Context ctx(txn,  ns );
 
             Collection* coll = ctx.db()->getCollection( txn, ns );
@@ -1012,7 +1016,7 @@ namespace mongo {
                         continue;
                     }
 
-                    IndexDescriptor* idx = coll->getIndexCatalog()->findIndexByKeyPattern( keyPattern );
+                    IndexDescriptor* idx = coll->getIndexCatalog()->findIndexByKeyPattern( txn, keyPattern );
                     if ( idx == NULL ) {
                         errmsg = str::stream() << "cannot find index " << keyPattern
                                                << " for ns " << ns;

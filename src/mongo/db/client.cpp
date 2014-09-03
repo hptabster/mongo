@@ -55,19 +55,23 @@
 #include "mongo/db/json.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/handshake_args.h"
 #include "mongo/db/repl/repl_coordinator_global.h"
 #include "mongo/db/repl/rs.h"
 #include "mongo/db/storage_options.h"
 #include "mongo/s/chunk_version.h"
-#include "mongo/s/d_logic.h"
+#include "mongo/s/d_state.h"
 #include "mongo/s/stale_exception.h" // for SendStaleConfigException
 #include "mongo/scripting/engine.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/file_allocator.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/log.h"
 
 
 namespace mongo {
+
+    using logger::LogComponent;
 
     mongo::mutex& Client::clientsMutex = *(new mutex("clientsMutex"));
     set<Client*>& Client::clients = *(new set<Client*>); // always be in clientsMutex when manipulating this
@@ -202,11 +206,13 @@ namespace mongo {
 
         // we usually don't get here, so doesn't matter how fast this part is
         {
-            DEV log() << "_DEBUG ReadContext db wasn't open, will try to open " << ns << endl;
+            DEV log(LogComponent::kStorage)
+                << "_DEBUG ReadContext db wasn't open, will try to open " << ns << endl;
             if (txn->lockState()->isW()) {
                 // write locked already
-                WriteUnitOfWork wunit(txn->recoveryUnit());
-                DEV RARELY log() << "write locked on ReadContext construction " << ns << endl;
+                WriteUnitOfWork wunit(txn);
+                DEV RARELY log(LogComponent::kStorage)
+                    << "write locked on ReadContext construction " << ns << endl;
                 _c.reset(new Context(txn, ns, doVersion));
                 wunit.commit();
             }
@@ -214,7 +220,7 @@ namespace mongo {
                 _lk.reset(0);
                 {
                     Lock::GlobalWrite w(txn->lockState());
-                    WriteUnitOfWork wunit(txn->recoveryUnit());
+                    WriteUnitOfWork wunit(txn);
                     Context c(txn, ns, doVersion);
                     wunit.commit();
                 }
@@ -236,7 +242,7 @@ namespace mongo {
     Client::WriteContext::WriteContext(
                 OperationContext* opCtx, const std::string& ns, bool doVersion)
         : _lk(opCtx->lockState(), ns),
-          _wunit(opCtx->recoveryUnit()),
+          _wunit(opCtx),
           _c(opCtx, ns, doVersion) {
     }
 
@@ -306,6 +312,17 @@ namespace mongo {
         }
     }
 
+    void Client::reportState(BSONObjBuilder& builder) {
+        builder.append("desc", desc());
+        if (_threadId.size()) {
+            builder.append("threadId", _threadId);
+        }
+
+        if (_connectionId) {
+            builder.appendNumber("connectionId", _connectionId);
+        }
+    }
+
     string Client::clientAddress(bool includePort) const {
         if( _curOp )
             return _curOp->getRemoteString(includePort);
@@ -331,11 +348,17 @@ namespace mongo {
             out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
         }
         virtual bool run(OperationContext* txn, const string& , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool fromRepl) {
-            OID rid =  cmdObj["handshake"].OID();
-            txn->getClient()->setRemoteID(rid);
-            Status status = repl::getGlobalReplicationCoordinator()->processHandshake(txn,
-                                                                                      rid,
-                                                                                      cmdObj);
+            repl::HandshakeArgs handshake;
+            Status status = handshake.initialize(cmdObj);
+            if (!status.isOK()) {
+                return appendCommandStatus(result, status);
+            }
+
+            // TODO(dannenberg) move this into actual processing for both version
+            txn->getClient()->setRemoteID(handshake.getRid());
+
+            status = repl::getGlobalReplicationCoordinator()->processHandshake(txn,
+                                                                               handshake);
             return appendCommandStatus(result, status);
         }
 

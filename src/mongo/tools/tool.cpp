@@ -53,6 +53,7 @@
 #include "mongo/platform/posix_fadvise.h"
 #include "mongo/util/exception_filter_win32.h"
 #include "mongo/util/exit.h"
+#include "mongo/util/log.h"
 #include "mongo/util/options_parser/option_section.h"
 #include "mongo/util/password.h"
 #include "mongo/util/net/ssl_options.h"
@@ -78,8 +79,6 @@ namespace mongo {
                 new AuthzManagerExternalStateMock()));
         repl::ReplSettings replSettings;
         repl::setGlobalReplicationCoordinator(new repl::ReplicationCoordinatorMock(replSettings));
-        // We don't use the noop environment here since we actually need the storage engine...
-        setGlobalEnvironment(new GlobalEnvironmentMongoD());
         return Status::OK();
     }
 
@@ -133,7 +132,7 @@ namespace mongo {
             Client::initThread("tools");
             storageGlobalParams.dbpath = toolGlobalParams.dbpath;
             try {
-                initGlobalStorageEngine();
+                getGlobalEnvironment()->setGlobalStorageEngine(storageGlobalParams.engine);
             }
             catch (const DBException& ex) {
                 if (ex.getCode() == ErrorCodes::DBPathInUse) {

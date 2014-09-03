@@ -65,7 +65,7 @@ namespace QueryTests {
 
     public:
         Base() : _lk(_txn.lockState()),
-                 _wunit(_txn.recoveryUnit()),
+                 _wunit(&_txn),
                  _context(&_txn, ns()) {
             _database = _context.db();
             _collection = _database->getCollection( &_txn, ns() );
@@ -89,13 +89,7 @@ namespace QueryTests {
             return "unittests.querytests";
         }
         void addIndex( const BSONObj &key ) {
-            BSONObjBuilder b;
-            b.append( "name", key.firstElementFieldName() );
-            b.append( "ns", ns() );
-            b.append( "key", key );
-            BSONObj o = b.done();
-            Status s = _collection->getIndexCatalog()->createIndex(&_txn, o, false);
-            uassertStatusOK( s );
+            Helpers::ensureIndex(&_txn, _collection, key, false, key.firstElementFieldName());
         }
         void insert( const char *s ) {
             insert( fromjson( s ) );
@@ -128,7 +122,7 @@ namespace QueryTests {
             ASSERT( Helpers::findOne( &_txn, _collection, query, ret, true ) );
             ASSERT_EQUALS( string( "b" ), ret.firstElement().fieldName() );
             // Cross check with findOne() returning location.
-            ASSERT_EQUALS(ret, _collection->docFor(Helpers::findOne(&_txn, _collection, query, true)));
+            ASSERT_EQUALS(ret, _collection->docFor(&_txn, Helpers::findOne(&_txn, _collection, query, true)));
         }
     };
     
@@ -142,7 +136,7 @@ namespace QueryTests {
             // Check findOne() returning object, allowing unindexed scan.
             ASSERT( Helpers::findOne( &_txn, _collection, query, ret, false ) );
             // Check findOne() returning location, allowing unindexed scan.
-            ASSERT_EQUALS(ret, _collection->docFor(Helpers::findOne(&_txn, _collection, query, false)));
+            ASSERT_EQUALS(ret, _collection->docFor(&_txn, Helpers::findOne(&_txn, _collection, query, false)));
             
             // Check findOne() returning object, requiring indexed scan without index.
             ASSERT_THROWS( Helpers::findOne( &_txn, _collection, query, ret, true ), MsgAssertionException );
@@ -153,7 +147,7 @@ namespace QueryTests {
             // Check findOne() returning object, requiring indexed scan with index.
             ASSERT( Helpers::findOne( &_txn, _collection, query, ret, true ) );
             // Check findOne() returning location, requiring indexed scan with index.
-            ASSERT_EQUALS(ret, _collection->docFor(Helpers::findOne(&_txn, _collection, query, true)));
+            ASSERT_EQUALS(ret, _collection->docFor(&_txn, Helpers::findOne(&_txn, _collection, query, true)));
         }
     };
     
@@ -183,7 +177,7 @@ namespace QueryTests {
             BSONObj ret;
             ASSERT( Helpers::findOne( &_txn, _collection, query, ret, false ) );
             ASSERT( ret.isEmpty() );
-            ASSERT_EQUALS(ret, _collection->docFor(Helpers::findOne(&_txn, _collection, query, false)));
+            ASSERT_EQUALS(ret, _collection->docFor(&_txn, Helpers::findOne(&_txn, _collection, query, false)));
         }
     };
     
@@ -246,7 +240,7 @@ namespace QueryTests {
             {
                 // Check internal server handoff to getmore.
                 Lock::DBWrite lk(_txn.lockState(), ns);
-                WriteUnitOfWork wunit(_txn.recoveryUnit());
+                WriteUnitOfWork wunit(&_txn);
                 Client::Context ctx(&_txn,  ns );
                 ClientCursorPin clientCursor( ctx.db()->getCollection(&_txn, ns), cursorId );
                 // pq doesn't exist if it's a runner inside of the clientcursor.
@@ -260,9 +254,6 @@ namespace QueryTests {
             ASSERT( cursor->more() );
             ASSERT_EQUALS( 3, cursor->next().getIntField( "a" ) );
         }
-
-    protected:
-        OperationContextImpl _txn;
     };
 
     /**
@@ -595,7 +586,7 @@ namespace QueryTests {
         void run() {
             const char *ns = "unittests.querytests.OplogReplaySlaveReadTill";
             Lock::DBWrite lk(_txn.lockState(), ns);
-            WriteUnitOfWork wunit(_txn.recoveryUnit());
+            WriteUnitOfWork wunit(&_txn);
             Client::Context ctx(&_txn,  ns );
 
             BSONObj info;
@@ -641,8 +632,9 @@ namespace QueryTests {
             // Check number of results and filterSet flag in explain.
             // filterSet is not available in oplog replay mode.
             BSONObj explainObj = c->next();
-            ASSERT_EQUALS( 1, explainObj.getIntField( "n" ) );
-            ASSERT_FALSE( explainObj.hasField( "filterSet" ) );
+            ASSERT( explainObj.hasField("executionStats") );
+            BSONObj execStats = explainObj["executionStats"].Obj();
+            ASSERT_EQUALS( 1, execStats.getIntField( "nReturned" ) );
 
             ASSERT( !c->more() );
         }
@@ -982,26 +974,6 @@ namespace QueryTests {
             checkMatch();
             _client.ensureIndex( _ns, BSON( "a" << 1 ) );
             checkMatch();
-            // Use explain queries to check index bounds.
-            {
-                BSONObj explain = _client.findOne( _ns, QUERY( "a" << BSON( "$type" << (int)Code ) ).explain() );
-                BSONObjBuilder lower;
-                lower.appendCode( "", "" );
-                BSONObjBuilder upper;
-                upper.appendCodeWScope( "", "", BSONObj() );
-                ASSERT( lower.done().firstElement().valuesEqual( explain[ "indexBounds" ].Obj()[ "a" ].Array()[ 0 ].Array()[ 0 ] ) );
-                ASSERT( upper.done().firstElement().valuesEqual( explain[ "indexBounds" ].Obj()[ "a" ].Array()[ 0 ].Array()[ 1 ] ) );
-            }
-            {
-                BSONObj explain = _client.findOne( _ns, QUERY( "a" << BSON( "$type" << (int)CodeWScope ) ).explain() );
-                BSONObjBuilder lower;
-                lower.appendCodeWScope( "", "", BSONObj() );
-                // This upper bound may change if a new bson type is added.
-                BSONObjBuilder upper;
-                upper << "" << BSON( "$maxElement" << 1 );
-                ASSERT( lower.done().firstElement().valuesEqual( explain[ "indexBounds" ].Obj()[ "a" ].Array()[ 0 ].Array()[ 0 ] ) );
-                ASSERT( upper.done().firstElement().valuesEqual( explain[ "indexBounds" ].Obj()[ "a" ].Array()[ 0 ].Array()[ 1 ] ) );
-            }
         }
     private:
         void checkMatch() {
@@ -1061,7 +1033,7 @@ namespace QueryTests {
         void run() {
             Lock::GlobalWrite lk(_txn.lockState());
             Client::Context ctx(&_txn, "unittests.DirectLocking");
-            WriteUnitOfWork wunit(_txn.recoveryUnit());
+            WriteUnitOfWork wunit(&_txn);
             _client.remove( "a.b", BSONObj() );
             wunit.commit();
             ASSERT_EQUALS( "unittests", ctx.db()->name() );
@@ -1430,7 +1402,7 @@ namespace QueryTests {
         CollectionInternalBase( const char *nsLeaf ) :
           CollectionBase( nsLeaf ),
           _lk(_txn.lockState(), ns() ),
-          _wunit( _txn.recoveryUnit() ),
+          _wunit( &_txn ),
           _ctx(&_txn, ns()) {
         }
         ~CollectionInternalBase() {

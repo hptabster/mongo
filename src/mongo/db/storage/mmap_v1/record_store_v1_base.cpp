@@ -37,6 +37,7 @@
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
 #include "mongo/db/storage/mmap_v1/record.h"
 #include "mongo/db/storage/mmap_v1/record_store_v1_repair_iterator.h"
+#include "mongo/util/log.h"
 #include "mongo/util/progress_meter.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/touch_pages.h"
@@ -103,7 +104,7 @@ namespace mongo {
         return total;
     }
 
-    RecordData RecordStoreV1Base::dataFor( const DiskLoc& loc ) const {
+    RecordData RecordStoreV1Base::dataFor( OperationContext* txn, const DiskLoc& loc ) const {
         return recordFor(loc)->toRecordData();
     }
 

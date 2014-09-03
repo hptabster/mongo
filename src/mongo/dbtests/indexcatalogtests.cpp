@@ -18,6 +18,7 @@
 
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/db.h"
+#include "mongo/db/dbhelpers.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/operation_context_impl.h"
@@ -52,23 +53,14 @@ namespace IndexCatalogTests {
             OperationContextImpl txn;
             Client::WriteContext ctx(&txn, _ns);
 
-            int numFinishedIndexesStart = _catalog->numIndexesReady();
+            int numFinishedIndexesStart = _catalog->numIndexesReady(&txn);
 
-            BSONObjBuilder b1;
-            b1.append("key", BSON("x" << 1));
-            b1.append("ns", _ns);
-            b1.append("name", "_x_0");
-            _catalog->createIndex(&txn, b1.obj(), true);
+            Helpers::ensureIndex(&txn, _coll, BSON("x" << 1), false, "_x_0");
+            Helpers::ensureIndex(&txn, _coll, BSON("y" << 1), false, "_y_0");
 
-            BSONObjBuilder b2;
-            b2.append("key", BSON("y" << 1));
-            b2.append("ns", _ns);
-            b2.append("name", "_y_0");
-            _catalog->createIndex(&txn, b2.obj(), true);
+            ASSERT_TRUE(_catalog->numIndexesReady(&txn) == numFinishedIndexesStart+2);
 
-            ASSERT_TRUE(_catalog->numIndexesReady() == numFinishedIndexesStart+2);
-
-            IndexCatalog::IndexIterator ii = _catalog->getIndexIterator(false);
+            IndexCatalog::IndexIterator ii = _catalog->getIndexIterator(&txn,false);
             int indexesIterated = 0;
             bool foundIndex = false;
             while (ii.more()) {
@@ -86,7 +78,7 @@ namespace IndexCatalogTests {
             }
 
             ctx.commit();
-            ASSERT_TRUE(indexesIterated == _catalog->numIndexesReady());
+            ASSERT_TRUE(indexesIterated == _catalog->numIndexesReady(&txn));
             ASSERT_TRUE(foundIndex);
         }
 
