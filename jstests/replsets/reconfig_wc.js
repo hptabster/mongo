@@ -1,3 +1,6 @@
+// Tests different configuration of a replSet with
+// replSetReconfig and verifies writeConcern
+
 function addTagset(replSet, tags, tagKey) {
     var primary = replSet.getPrimary();
     var conf = getReplSetConf(primary);
@@ -44,16 +47,58 @@ function getReplSetConf(conn) {
     return conn.getDB("local").system.replset.findOne();
 }
 
+function setTagsetConf(replSet, conf, writeConcern, delay) {
+    var tagSet = writeConcern.w;
+    // Initialize all members to be slave delayed, except primary
+    for (var i = 0; i < conf.members.length; i++) {
+        // Primary is never slave delayed
+        if (replSet.nodes[i].host == replSet.getPrimary().host) {
+            conf.members[i] = setDelayAndPriority(conf.members[i], 0);
+        } else {
+        conf.members[i] = setDelayAndPriority(conf.members[i], delay);
+        }
+    }
+    for (var key in tagKey[tagSet]) {
+        // Determine the number of nodes in the writeConcern for the tagKey
+        // i.e, if tagKey = {maindc: {main: 1}}
+        //      set only one node to be in the writeConcern with
+        //      a tag of main, the others will be slave delayed
+        nodesInWrite = Math.max(1, tagKey[tagSet][key]);
+        var tagIdx = 0;
+        // Unset slaveDelay for all members matching the tag inside the writeConcern
+        for (var i = 0; i < conf.members.length; i++) {
+            var member = conf.members[i];
+            if ("tags" in member &&
+              member.tags[key] &&
+              tagIdx < nodesInWrite) {
+                conf.members[i] = setDelayAndPriority(member, 0);
+                tagIdx++;
+            }
+        }
+    }
+    return conf;
+}
+
+function setConf(replSet, conf, nodesInWrite, delay) {
+    // Set each member's slaveDelay & priority
+    for (var i = 0; i < conf.members.length; i++) {
+        if (i < nodesInWrite ||
+          replSet.nodes[i].host == replSet.getPrimary().host) {
+            // Primary is never slaved delayed
+            conf.members[i] = setDelayAndPriority(conf.members[i], 0);
+        } else {
+            conf.members[i] = setDelayAndPriority(conf.members[i], delay);
+        }
+    }
+    return conf;
+}
+
 function setSlaveDelay(replSet, writeConcern, delay) {
     var primary = replSet.getPrimary();
     var conf = getReplSetConf(primary);
     var nodesInWrite = 0;
     var isTagSet = false;
-    var version = conf.version+1;
 
-    if (!("w" in writeConcern)) {
-        nodesInWrite = 1;
-    }
     if (typeof writeConcern.w === "number") {
         nodesInWrite = Math.min(writeConcern.w, conf.members.length);
     } else {
@@ -62,52 +107,20 @@ function setSlaveDelay(replSet, writeConcern, delay) {
         } else {
             // write concern is a tag set
             isTagSet = true;
-            var tagSet = writeConcern.w;
-            // Initialize all members to be slave delayed
-            for (var i = 0; i < conf.members.length; i++) {
-                // Primary is never slave delayed
-                if (replSet.nodes[i].host == primary.host) {
-                    conf.members[i] = setDelayAndPriority(conf.members[i], 0);
-                } else {
-                    conf.members[i] = setDelayAndPriority(conf.members[i], delay);
-                }
-            }
-            for (var key in tagKey[tagSet]) {
-                nodesInWrite = Math.max(1, tagKey[tagSet][key]);
-                var tagIdx = 0;
-                // Set slaveDelay for all members matching the tag outside the writeConcern
-                for (var i = 0; i < conf.members.length; i++) {
-                    var member = conf.members[i];
-                    if ("tags" in member && member.tags[key]) {
-                        if (tagIdx < nodesInWrite) {
-                            conf.members[i] = setDelayAndPriority(member, 0);
-                        } else if (replSet.nodes[i].host != primary.host) {
-                            conf.members[i] = setDelayAndPriority(member, delay);
-                        }
-                        tagIdx++;
-                    }
-                }
-            }
+            conf = setTagsetConf(replSet, conf, writeConcern, delay);
         }
     }
     // At least one member of set has nodelay
     nodesInWrite = Math.max(1, nodesInWrite);
     // Set slaveDelay for non-tag write concerns
     if (!isTagSet) {
-        // Set each member's slaveDelay & priority
-        for (var i = 0; i < conf.members.length; i++) {
-            if (i < nodesInWrite || replSet.nodes[i].host == primary.host) {
-                conf.members[i] = setDelayAndPriority(conf.members[i], 0);
-            } else {
-                conf.members[i] = setDelayAndPriority(conf.members[i], delay);
-            }
-        }
+        conf = setConf(replSet, conf, nodesInWrite, delay);
     }
-    conf.version = version;
+    conf.version++;
     print("Reconfiguring replSet nodesInWrite: ", nodesInWrite, tojson(conf));
     try {
         var result = primary.adminCommand({replSetReconfig: conf, force: false});
-        print("Reconfigure result:", tojson(result));
+        assert.commandWorked(result);
     }
     catch(err) {
         print("Error reconfiguring:", err);
@@ -125,8 +138,7 @@ function checkHost(conn, collName, numDocs) {
     conn.setSlaveOk();
     var numOnHost = conn.getDB("test")[collName].find().itcount();
     //print("****Num of docs, on host",conn.host,numOnHost,"****");
-    assert.eq(numDocs, conn.getDB("test")[collName].find().itcount(),
-              "Num of docs, on host "+conn.host);
+    assert.eq(numDocs, numOnHost, "Num of docs, on host "+conn.host);
 }
 
 function checkReplSet(replSet, collName, docsInWrite, docsOutsideWrite) {
@@ -189,36 +201,31 @@ function runTest(test) {
 
 // Main
 var numNodes = 5;
-// Tag sets
+// Tags used to represent 2 datacenters: main & backup
 var tags = [{"main": "NY"}, {"backup": "SF"}];
+// Tag keys used to specify the writeConcern for different tests
+//   1. maindc - writeConcern of 1 node in main datacenter
+//   2. alldc -  writeConcern of 1 node in man & backup datacenters
 var tagKey = {"maindc": {"main": 1}, "alldc": {"main": 1, "backup": 1}};
 
 var tests = [
     {name: "Write all",
-     writeConcern: {w: numNodes, wtimeout: 0},
-     error: false
+     writeConcern: {w: numNodes, wtimeout: 0}
     },
     {name: "Write 1",
-     writeConcern: {w: 1, wtimeout: 0},
-     error: false
+     writeConcern: {w: 1, wtimeout: 0}
     },
     {name: "Write 2",
-     writeConcern: {w: 2, wtimeout: 0},
-     error: false
+     writeConcern: {w: 2, wtimeout: 0}
     },
     {name: "Write majority",
-     writeConcern: {w: "majority", wtimeout: 0},
-     error: false
+     writeConcern: {w: "majority", wtimeout: 0}
     },
     {name: "Tag set - maindc",
-     secondaryThrottle: true,
-     writeConcern: {w: "maindc", wtimeout: 0},
-     error: false
+     writeConcern: {w: "maindc", wtimeout: 0}
     },
     {name: "Tag set - alldc",
-     secondaryThrottle: true,
-     writeConcern: {w: "alldc", wtimeout: 0},
-     error: false
+     writeConcern: {w: "alldc", wtimeout: 0}
     },
 ];
 
