@@ -34,11 +34,9 @@ function getReplSetConf(conn) {
 
 function setTagsetConf(replSet, conf, writeConcern, delay) {
     var tagSet = writeConcern.w;
-    var primaryHost = replSet.getPrimary().host;
-    print("The primary is", primaryHost);
     for (var i = 0; i < conf.members.length; i++) {
         // Primary is never slave delayed
-        if (replSet.nodes[i].host == primaryHost) {
+        if (replSet.nodes[i].host == conf.members[i]) {
             conf.members[i] = setDelayAndPriority(conf.members[i], 0);
         // For now assume host is slave delayed
         } else {
