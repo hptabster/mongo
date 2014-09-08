@@ -25,7 +25,7 @@ function setDelayAndPriority(member, delay) {
         delete member.slaveDelay;
         delete member.priority;
     }
-   return member;
+    return member;
 }
 
 function getReplSetConf(conn) {
@@ -34,6 +34,17 @@ function getReplSetConf(conn) {
 
 function setTagsetConf(replSet, conf, writeConcern, delay) {
     var tagSet = writeConcern.w;
+    var primaryHost = replSet.getPrimary().host;
+    print("The primary is", primaryHost);
+    for (var i = 0; i < conf.members.length; i++) {
+        // Primary is never slave delayed
+        if (replSet.nodes[i].host == primaryHost) {
+            conf.members[i] = setDelayAndPriority(conf.members[i], 0);
+        // For now assume host is slave delayed
+        } else {
+            conf.members[i] = setDelayAndPriority(conf.members[i], delay);
+        }
+    }
     for (var key in tagKey[tagSet]) {
         // Determine the number of nodes in the writeConcern for the tagKey
         // i.e, if tagKey = {maindc: {main: 1}}
@@ -43,12 +54,6 @@ function setTagsetConf(replSet, conf, writeConcern, delay) {
         var tagIdx = 0;
         for (var i = 0; i < conf.members.length; i++) {
             var member = conf.members[i];
-            // Primary is never slave delayed
-            if (replSet.nodes[i].host == replSet.getPrimary().host) {
-                conf.members[i] = setDelayAndPriority(member, 0);
-            } else {
-                conf.members[i] = setDelayAndPriority(member, delay);
-            }
             // Unset slaveDelay for all members matching the tag inside the writeConcern
             if ("tags" in member && member.tags[key] && tagIdx < nodesInWrite) {
                 conf.members[i] = setDelayAndPriority(member, 0);
