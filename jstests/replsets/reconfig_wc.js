@@ -1,5 +1,7 @@
-// Tests different configuration of a replSet with
+// Tests different configurations of a replSet with
 // replSetReconfig and verifies writeConcern
+// This will insure that after a replSetReconfig,
+// the writeConcern is enforced across the replSet.
 
 function addTagset(replSet, tags, tagKey) {
     var primary = replSet.getPrimary();
@@ -13,23 +15,6 @@ function addTagset(replSet, tags, tagKey) {
     conf.version++;
     print("Adding tagset:", tojson(conf));
     primary.adminCommand({replSetReconfig: conf});
-}
-
-function waitForAllMembers(replSet, version, timeout, interval) {
-    print("Waiting for all members to have this config version", version);
-
-    for (var i=0; i<replSet.nodes.length; i++) {
-        var conn = replSet.nodes[i];
-        assert.soon(function() {
-            curConf = getReplSetConf(conn);
-            if (curConf.version == version) {
-                return true;
-            }
-            return false;
-        }, "not all members ready", timeout || 5000, interval || 500);
-    }
-
-    print( "All members have updated configuration" );
 }
 
 function setDelayAndPriority(member, delay) {
@@ -49,15 +34,6 @@ function getReplSetConf(conn) {
 
 function setTagsetConf(replSet, conf, writeConcern, delay) {
     var tagSet = writeConcern.w;
-    // Initialize all members to be slave delayed, except primary
-    for (var i = 0; i < conf.members.length; i++) {
-        // Primary is never slave delayed
-        if (replSet.nodes[i].host == replSet.getPrimary().host) {
-            conf.members[i] = setDelayAndPriority(conf.members[i], 0);
-        } else {
-        conf.members[i] = setDelayAndPriority(conf.members[i], delay);
-        }
-    }
     for (var key in tagKey[tagSet]) {
         // Determine the number of nodes in the writeConcern for the tagKey
         // i.e, if tagKey = {maindc: {main: 1}}
@@ -65,12 +41,16 @@ function setTagsetConf(replSet, conf, writeConcern, delay) {
         //      a tag of main, the others will be slave delayed
         nodesInWrite = Math.max(1, tagKey[tagSet][key]);
         var tagIdx = 0;
-        // Unset slaveDelay for all members matching the tag inside the writeConcern
         for (var i = 0; i < conf.members.length; i++) {
             var member = conf.members[i];
-            if ("tags" in member &&
-              member.tags[key] &&
-              tagIdx < nodesInWrite) {
+            // Primary is never slave delayed
+            if (replSet.nodes[i].host == replSet.getPrimary().host) {
+                conf.members[i] = setDelayAndPriority(member, 0);
+            } else {
+                conf.members[i] = setDelayAndPriority(member, delay);
+            }
+            // Unset slaveDelay for all members matching the tag inside the writeConcern
+            if ("tags" in member && member.tags[key] && tagIdx < nodesInWrite) {
                 conf.members[i] = setDelayAndPriority(member, 0);
                 tagIdx++;
             }
@@ -127,7 +107,7 @@ function setSlaveDelay(replSet, writeConcern, delay) {
     }
 
     // Wait until all memberd of replSet are ready
-    waitForAllMembers(replSet, conf.version);
+    replSet.awaitReplication();
 
     // Wait for replSet to come back
     print("Wait completed!");
@@ -142,6 +122,9 @@ function checkHost(conn, collName, numDocs) {
 }
 
 function checkReplSet(replSet, collName, docsInWrite, docsOutsideWrite) {
+    // docsInWrite will either be numDocs or 0, depending on the step in the test
+    // docsOutsideWrite is currently always specified as 0, for slave delayed nodes,
+    // however, if the tests change then this value could be numDocs
     var conf = getReplSetConf(replSet.getPrimary());
     // Check all nodes for number of docs
     for (i=0; i<replSet.nodes.length; i++) {
