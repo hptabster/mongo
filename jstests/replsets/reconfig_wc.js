@@ -6,6 +6,8 @@
 function addTagset(replSet, tags, tagKey) {
     var primary = replSet.getPrimary();
     var conf = getReplSetConf(primary);
+    // Make sure first node is always primary
+    conf.members[0].priority = 100;
     // Add tag set
     for (var i=0; i<conf.members.length; i++) {
         // Set each member's tag
@@ -14,7 +16,20 @@ function addTagset(replSet, tags, tagKey) {
     conf.settings = {getLastErrorModes: tagKey};
     conf.version++;
     print("Adding tagset:", tojson(conf));
-    primary.adminCommand({replSetReconfig: conf});
+    try {
+        var result = primary.adminCommand({replSetReconfig: conf, force: false});
+        assert.commandWorked(result);
+    }
+    catch(err) {
+        print("Error reconfiguring:", err);
+    }
+
+    // Wait until all memberd of replSet are ready
+    replSet.awaitReplication();
+}
+
+function getReplSetConf(conn) {
+    return conn.getDB("local").system.replset.findOne();
 }
 
 function setDelayAndPriority(member, delay) {
@@ -23,20 +38,16 @@ function setDelayAndPriority(member, delay) {
         member.priority = 0;
     } else {
         delete member.slaveDelay;
-        delete member.priority;
     }
     return member;
 }
 
-function getReplSetConf(conn) {
-    return conn.getDB("local").system.replset.findOne();
-}
-
 function setTagsetConf(replSet, conf, writeConcern, delay) {
     var tagSet = writeConcern.w;
+    var primaryHost = replSet.getPrimary().host;
     for (var i = 0; i < conf.members.length; i++) {
         // Primary is never slave delayed
-        if (replSet.nodes[i].host == conf.members[i]) {
+        if (conf.members[i].host == primaryHost) {
             conf.members[i] = setDelayAndPriority(conf.members[i], 0);
         // For now assume host is slave delayed
         } else {
@@ -63,10 +74,11 @@ function setTagsetConf(replSet, conf, writeConcern, delay) {
 }
 
 function setConf(replSet, conf, nodesInWrite, delay) {
+    var primaryHost = replSet.getPrimary().host;
     // Set each member's slaveDelay & priority
     for (var i = 0; i < conf.members.length; i++) {
         if (i < nodesInWrite ||
-          replSet.nodes[i].host == replSet.getPrimary().host) {
+            replSet.nodes[i].host == primaryHost) {
             // Primary is never slaved delayed
             conf.members[i] = setDelayAndPriority(conf.members[i], 0);
         } else {
@@ -100,7 +112,7 @@ function setSlaveDelay(replSet, writeConcern, delay) {
         conf = setConf(replSet, conf, nodesInWrite, delay);
     }
     conf.version++;
-    print("Reconfiguring replSet nodesInWrite: ", nodesInWrite, tojson(conf));
+    print("Reconfiguring replSet, nodesInWrite: ", nodesInWrite, tojson(conf));
     try {
         var result = primary.adminCommand({replSetReconfig: conf, force: false});
         assert.commandWorked(result);
@@ -120,7 +132,6 @@ function checkHost(conn, collName, numDocs) {
     // Read from host, to check num of docs
     conn.setSlaveOk();
     var numOnHost = conn.getDB("test")[collName].find().itcount();
-    //print("****Num of docs, on host",conn.host,numOnHost,"****");
     assert.eq(numDocs, numOnHost, "Num of docs, on host "+conn.host);
 }
 
@@ -131,7 +142,6 @@ function checkReplSet(replSet, collName, docsInWrite, docsOutsideWrite) {
     var conf = getReplSetConf(replSet.getPrimary());
     // Check all nodes for number of docs
     for (i=0; i<replSet.nodes.length; i++) {
-        //print("Configuration of replSet member",tojson(conf.members[i]));
         if ("slaveDelay" in conf.members[i] && conf.members[i].slaveDelay > 0) {
             checkHost(replSet.nodes[i], collName, docsOutsideWrite);
         } else {
