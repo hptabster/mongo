@@ -1,7 +1,23 @@
 // Tests different configurations of a replSet with
-// replSetReconfig and verifies writeConcern
-// This will insure that after a replSetReconfig,
+// replSetReconfig and verifies writeConcern.
+// This will ensure that after a replSetReconfig,
 // the writeConcern is enforced across the replSet.
+
+function reconfigReplSet(replSet, conf) {
+    var primary = replSet.getPrimary();
+    conf.version++;
+    print("Reconfiguring replSet on host", primary.host,tojson(conf));
+    try {
+        var result = primary.adminCommand({replSetReconfig: conf});
+        assert.commandWorked(result);
+    }
+    catch(err) {
+        print("Error reconfiguring:", err);
+    }
+    // Wait until all members of replSet are ready
+    replSet.awaitReplication();
+    print("Wait completed for replSet after replSetReconfig!");
+}
 
 function addTagset(replSet, tags, tagKey) {
     var primary = replSet.getPrimary();
@@ -14,18 +30,8 @@ function addTagset(replSet, tags, tagKey) {
         conf.members[i].tags = tags[i%tags.length];
     }
     conf.settings = {getLastErrorModes: tagKey};
-    conf.version++;
     print("Adding tagset:", tojson(conf));
-    try {
-        var result = primary.adminCommand({replSetReconfig: conf, force: false});
-        assert.commandWorked(result);
-    }
-    catch(err) {
-        print("Error reconfiguring:", err);
-    }
-
-    // Wait until all memberd of replSet are ready
-    replSet.awaitReplication();
+    reconfigReplSet(replSet, conf);
 }
 
 function getReplSetConf(conn) {
@@ -46,11 +52,11 @@ function setTagsetConf(replSet, conf, writeConcern, delay) {
     var tagSet = writeConcern.w;
     var primaryHost = replSet.getPrimary().host;
     for (var i = 0; i < conf.members.length; i++) {
-        // Primary is never slave delayed
         if (conf.members[i].host == primaryHost) {
+            // Primary is never slave delayed
             conf.members[i] = setDelayAndPriority(conf.members[i], 0);
-        // For now assume host is slave delayed
         } else {
+            // For now assume host is slave delayed
             conf.members[i] = setDelayAndPriority(conf.members[i], delay);
         }
     }
@@ -111,21 +117,7 @@ function setSlaveDelay(replSet, writeConcern, delay) {
     if (!isTagSet) {
         conf = setConf(replSet, conf, nodesInWrite, delay);
     }
-    conf.version++;
-    print("Reconfiguring replSet, nodesInWrite: ", nodesInWrite, tojson(conf));
-    try {
-        var result = primary.adminCommand({replSetReconfig: conf, force: false});
-        assert.commandWorked(result);
-    }
-    catch(err) {
-        print("Error reconfiguring:", err);
-    }
-
-    // Wait until all memberd of replSet are ready
-    replSet.awaitReplication();
-
-    // Wait for replSet to come back
-    print("Wait completed!");
+    reconfigReplSet(replSet, conf);
 }
 
 function checkHost(conn, collName, numDocs) {
