@@ -112,7 +112,8 @@ namespace mongo {
 
         // we mark our thread as having done writes now as we do not want any exceptions
         // once we start creating a new database
-        cc().writeHappened();
+        // TODO(Mathias): Remove this when rollback is enabled.
+        txn->getClient()->writeHappened();
 
         // this locks _m for defensive checks, so we don't want to be locked right here :
         StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
@@ -157,8 +158,6 @@ namespace mongo {
                                   BSONObjBuilder& result,
                                   bool force) {
         invariant(txn->lockState()->isW());
-
-        getDur().commitNow(txn); // bad things happen if we close a DB with outstanding writes
 
         SimpleMutex::scoped_lock lk(_m);
 

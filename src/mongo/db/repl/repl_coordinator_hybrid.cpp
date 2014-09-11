@@ -93,16 +93,44 @@ namespace repl {
             const OperationContext* txn,
             const OpTime& ts,
             const WriteConcernOptions& writeConcern) {
-        StatusAndDuration legacyStatus = _legacy.awaitReplication(txn, ts, writeConcern);
-        return legacyStatus;
+        StatusAndDuration implStatus = _impl.awaitReplication(txn, ts, writeConcern);
+        if (implStatus.status.isOK()) {
+            WriteConcernOptions legacyWriteConcern = writeConcern;
+            legacyWriteConcern.wTimeout = WriteConcernOptions::kNoWaiting;
+            StatusAndDuration legacyStatus = _legacy.awaitReplication(txn, ts, legacyWriteConcern);
+            fassert(18691, legacyStatus.status);
+        }
+        return implStatus;
     }
 
     ReplicationCoordinator::StatusAndDuration 
-            HybridReplicationCoordinator::awaitReplicationOfLastOp(
+            HybridReplicationCoordinator::awaitReplicationOfLastOpForClient(
                     const OperationContext* txn,
                     const WriteConcernOptions& writeConcern) {
-        StatusAndDuration legacyStatus = _legacy.awaitReplicationOfLastOp(txn, writeConcern);
-        return legacyStatus;
+        StatusAndDuration implStatus = _impl.awaitReplicationOfLastOpForClient(txn, writeConcern);
+        if (implStatus.status.isOK()) {
+            WriteConcernOptions legacyWriteConcern = writeConcern;
+            legacyWriteConcern.wTimeout = WriteConcernOptions::kNoWaiting;
+            StatusAndDuration legacyStatus = _legacy.awaitReplicationOfLastOpForClient(
+                    txn, legacyWriteConcern);
+            fassert(18669, legacyStatus.status);
+        }
+        return implStatus;
+    }
+
+    ReplicationCoordinator::StatusAndDuration
+            HybridReplicationCoordinator::awaitReplicationOfLastOpApplied(
+                    const OperationContext* txn,
+                    const WriteConcernOptions& writeConcern) {
+        StatusAndDuration implStatus = _impl.awaitReplicationOfLastOpApplied(txn, writeConcern);
+        if (implStatus.status.isOK()) {
+            WriteConcernOptions legacyWriteConcern = writeConcern;
+            legacyWriteConcern.wTimeout = WriteConcernOptions::kNoWaiting;
+            StatusAndDuration legacyStatus = _legacy.awaitReplicationOfLastOpApplied(
+                    txn, legacyWriteConcern);
+            fassert(18694, legacyStatus.status);
+        }
+        return implStatus;
     }
 
     Status HybridReplicationCoordinator::stepDown(OperationContext* txn,
@@ -111,22 +139,6 @@ namespace repl {
                                                   const Milliseconds& stepdownTime) {
         Status legacyStatus = _legacy.stepDown(txn, force, waitTime, stepdownTime);
         Status implStatus = _impl.stepDown(txn, force, waitTime, stepdownTime);
-        return legacyStatus;
-    }
-
-    Status HybridReplicationCoordinator::stepDownAndWaitForSecondary(
-            OperationContext* txn,
-            const Milliseconds& initialWaitTime,
-            const Milliseconds& stepdownTime,
-            const Milliseconds& postStepdownWaitTime) {
-        Status legacyStatus = _legacy.stepDownAndWaitForSecondary(txn,
-                                                                  initialWaitTime,
-                                                                  stepdownTime,
-                                                                  postStepdownWaitTime);
-        Status implStatus = _impl.stepDownAndWaitForSecondary(txn,
-                                                              initialWaitTime,
-                                                              stepdownTime,
-                                                              postStepdownWaitTime);
         return legacyStatus;
     }
 
@@ -167,13 +179,29 @@ namespace repl {
                                                        const OpTime& ts) {
         Status legacyStatus = _legacy.setLastOptime(txn, rid, ts);
         Status implStatus = _impl.setLastOptime(txn, rid, ts);
-        return legacyStatus;
+        if (legacyStatus.code() != implStatus.code()) {
+            warning() << "Hybrid response difference in setLastOptime. Legacy response: "
+                      << legacyStatus << ", impl response: " << implStatus;
+        }
+        fassert(18667, legacyStatus.code() == implStatus.code());
+        return implStatus;
     }
 
     Status HybridReplicationCoordinator::setMyLastOptime(OperationContext* txn, const OpTime& ts) {
         Status legacyStatus = _legacy.setMyLastOptime(txn, ts);
         Status implStatus = _impl.setMyLastOptime(txn, ts);
+        if (legacyStatus.code() != implStatus.code()) {
+            warning() << "Hybrid response difference in setMyLastOptime. Legacy response: "
+                      << legacyStatus << ", impl response: " << implStatus;
+        }
+        fassert(18666, legacyStatus.code() == implStatus.code());
         return legacyStatus;
+    }
+
+    OpTime HybridReplicationCoordinator::getMyLastOptime() const {
+        _legacy.getMyLastOptime();
+        OpTime implOpTime = _impl.getMyLastOptime();
+        return implOpTime;
     }
 
     OID HybridReplicationCoordinator::getElectionId() {
@@ -182,25 +210,30 @@ namespace repl {
         return legacyOID;
     }
 
-    OID HybridReplicationCoordinator::getMyRID() {
+    OID HybridReplicationCoordinator::getMyRID() const {
         OID legacyRID = _legacy.getMyRID();
-        _impl.getMyRID();
+        fassert(18696, legacyRID == _impl.getMyRID());
         return legacyRID;
+    }
+
+    void HybridReplicationCoordinator::setFollowerMode(const MemberState& newState) {
+        _legacy.setFollowerMode(newState);
+        _impl.setFollowerMode(newState);
     }
 
     void HybridReplicationCoordinator::prepareReplSetUpdatePositionCommand(OperationContext* txn,
                                                                            BSONObjBuilder* result) {
-        _legacy.prepareReplSetUpdatePositionCommand(txn, result);
-        BSONObjBuilder implResult;
-        _impl.prepareReplSetUpdatePositionCommand(txn, &implResult);
+        _impl.prepareReplSetUpdatePositionCommand(txn, result);
+        BSONObjBuilder legacyResult;
+        _legacy.prepareReplSetUpdatePositionCommand(txn, &legacyResult);
     }
 
     void HybridReplicationCoordinator::prepareReplSetUpdatePositionCommandHandshakes(
             OperationContext* txn,
             std::vector<BSONObj>* handshakes) {
-        _legacy.prepareReplSetUpdatePositionCommandHandshakes(txn, handshakes);
-        std::vector<BSONObj> implResult;
-        _impl.prepareReplSetUpdatePositionCommandHandshakes(txn, &implResult);
+        _impl.prepareReplSetUpdatePositionCommandHandshakes(txn, handshakes);
+        std::vector<BSONObj> legacyResult;
+        _legacy.prepareReplSetUpdatePositionCommandHandshakes(txn, &legacyResult);
     }
 
     Status HybridReplicationCoordinator::processReplSetGetStatus(BSONObjBuilder* result) {
@@ -216,8 +249,8 @@ namespace repl {
         _impl.processReplSetGetConfig(&implResult);
     }
 
-    bool HybridReplicationCoordinator::setMaintenanceMode(OperationContext* txn, bool activate) {
-        bool legacyResponse = _legacy.setMaintenanceMode(txn, activate);
+    Status HybridReplicationCoordinator::setMaintenanceMode(OperationContext* txn, bool activate) {
+        Status legacyResponse = _legacy.setMaintenanceMode(txn, activate);
         _impl.setMaintenanceMode(txn, activate);
         return legacyResponse;
     }
@@ -285,15 +318,6 @@ namespace repl {
         return legacyStatus;
     }
 
-    Status HybridReplicationCoordinator::processReplSetMaintenance(OperationContext* txn,
-                                                                   bool activate,
-                                                                   BSONObjBuilder* resultObj) {
-        Status legacyStatus = _legacy.processReplSetMaintenance(txn, activate, resultObj);
-        BSONObjBuilder implResult;
-        Status implStatus = _impl.processReplSetMaintenance(txn, activate, &implResult);
-        return legacyStatus;
-    }
-
     Status HybridReplicationCoordinator::processReplSetSyncFrom(const HostAndPort& target,
                                                                 BSONObjBuilder* resultObj) {
         Status legacyStatus = _legacy.processReplSetSyncFrom(target, resultObj);
@@ -306,15 +330,37 @@ namespace repl {
             OperationContext* txn,
             const UpdatePositionArgs& updates) {
         Status legacyStatus = _legacy.processReplSetUpdatePosition(txn, updates);
-        _impl.processReplSetUpdatePosition(txn, updates);
-        return legacyStatus;
+        Status implStatus = _impl.processReplSetUpdatePosition(txn, updates);
+        if (legacyStatus.code() != implStatus.code()) {
+            warning() << "Hybrid response difference in processReplSetUpdatePosition. "
+                    "Legacy response: " << legacyStatus << ", impl response: " << implStatus;
+            // Only valid way they can be different is legacy not finding the node and impl
+            // succeeding.  This is valid b/c legacy clears it's _members array on reconfigs
+            // and then rebuilds it in a non-atomic way.
+            fassert(18690, legacyStatus == ErrorCodes::NodeNotFound && implStatus.isOK());
+        }
+        return implStatus;
     }
 
     Status HybridReplicationCoordinator::processHandshake(const OperationContext* txn,
                                                           const HandshakeArgs& handshake) {
         Status legacyResponse = _legacy.processHandshake(txn, handshake);
-        _impl.processHandshake(txn, handshake);
-        return legacyResponse;
+        Status implResponse = _impl.processHandshake(txn, handshake);
+        if (legacyResponse.code() != implResponse.code()) {
+            warning() << "Hybrid response difference in processHandshake. Legacy response: "
+                      << legacyResponse << ", impl response: " << implResponse;
+            // Can't fassert that the codes match because when doing a replSetReconfig that adds or
+            // removes nodes there is always a race condition between the two coordinators switching
+            // to the new config.
+            if (implResponse.isOK()) {
+                // If either coordinator has a problem have to return whichever has the non-OK
+                // status so that the handshake will be retried by the sender, otherwise whichever
+                // coordinator failed to process the handshake will fail later on when processing
+                // replSetUpdatePosition
+                return legacyResponse;
+            }
+        }
+        return implResponse;
     }
 
     void HybridReplicationCoordinator::waitUpToOneSecondForOptimeChange(const OpTime& ot) {

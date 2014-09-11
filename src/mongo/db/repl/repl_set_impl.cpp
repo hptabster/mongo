@@ -52,6 +52,7 @@
 #include "mongo/util/background.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -454,8 +455,12 @@ namespace {
         BSONObj o;
         if (Helpers::getLast(txn, rsoplog, o)) {
             lastH = o["h"].numberLong();
-            lastOpTimeWritten = o["ts"]._opTime();
-            uassert(13290, "bad replSet oplog entry?", quiet || !lastOpTimeWritten.isNull());
+            OpTime lastOpTime = o["ts"]._opTime();
+            uassert(13290, "bad replSet oplog entry?", quiet || !lastOpTime.isNull());
+            getGlobalReplicationCoordinator()->setMyLastOptime(txn, lastOpTime);
+        }
+        else {
+            getGlobalReplicationCoordinator()->setMyLastOptime(txn, OpTime());
         }
     }
 
@@ -488,7 +493,7 @@ namespace {
         bool meEnsured = false;
         while (!inShutdown() && !meEnsured) {
             try {
-                theReplSet->syncSourceFeedback.ensureMe(&txn);
+                syncSourceFeedback.ensureMe(&txn);
                 meEnsured = true;
             }
             catch (const DBException& e) {
@@ -599,6 +604,13 @@ namespace {
 
         _cfg = new ReplSetConfig(c);
 
+        // config() is same thing but const, so we use that when we can for clarity below
+        dassert(&config() == _cfg);
+        verify(config().ok());
+        verify(_name.empty() || _name == config()._id);
+        _name = config()._id;
+        verify(!_name.empty());
+
         {
             // Hack to force ReplicationCoordinatorImpl to have a config.
             // TODO(spencer): rm this once the ReplicationCoordinatorImpl can load its own config.
@@ -608,12 +620,6 @@ namespace {
             replCoord->setImplConfigHack(_cfg);
         }
 
-        // config() is same thing but const, so we use that when we can for clarity below
-        dassert(&config() == _cfg);
-        verify(config().ok());
-        verify(_name.empty() || _name == config()._id);
-        _name = config()._id;
-        verify(!_name.empty());
         // this is a shortcut for simple changes
         if (additive) {
             log() << "replSet info : additive change to configuration" << rsLog;
@@ -764,7 +770,7 @@ namespace {
             try {
                 OwnedPointerVector<ReplSetConfig> configs;
                 try {
-                    configs.mutableVector().push_back(ReplSetConfig::makeDirect());
+                    configs.mutableVector().push_back(ReplSetConfig::makeDirect(txn));
                 }
                 catch (DBException& e) {
                     log() << "replSet exception loading our local replset configuration object : "
@@ -774,7 +780,7 @@ namespace {
                         i != _seeds->end();
                         i++) {
                     try {
-                        configs.mutableVector().push_back(ReplSetConfig::make(*i));
+                        configs.mutableVector().push_back(ReplSetConfig::make(txn, *i));
                     }
                     catch (DBException& e) {
                         log() << "replSet exception trying to load config from " << *i
@@ -790,7 +796,7 @@ namespace {
                              i++) {
                             try {
                                 configs.mutableVector().push_back(
-                                                            ReplSetConfig::make(HostAndPort(*i)));
+                                                            ReplSetConfig::make(txn, HostAndPort(*i)));
                             }
                             catch (DBException&) {
                                 LOG(1) << "replSet exception trying to load config from discovered "
@@ -803,7 +809,7 @@ namespace {
 
                 if (!replSettings.reconfig.isEmpty()) {
                     try {
-                        configs.mutableVector().push_back(ReplSetConfig::make(replSettings.reconfig,
+                        configs.mutableVector().push_back(ReplSetConfig::make(txn, replSettings.reconfig,
                                                                        true));
                     }
                     catch (DBException& re) {
@@ -881,17 +887,21 @@ namespace {
     const char* ReplSetImpl::_initialSyncFlagString = "doingInitialSync";
     const BSONObj ReplSetImpl::_initialSyncFlag(BSON(_initialSyncFlagString << true));
 
+    namespace {
+        const char* minvalidNS = "local.replset.minvalid";
+    } // namespace
+
     void ReplSetImpl::clearInitialSyncFlag(OperationContext* txn) {
         Lock::DBWrite lk(txn->lockState(), "local");
         WriteUnitOfWork wunit(txn);
-        Helpers::putSingleton(txn, "local.replset.minvalid", BSON("$unset" << _initialSyncFlag));
+        Helpers::putSingleton(txn, minvalidNS, BSON("$unset" << _initialSyncFlag));
         wunit.commit();
     }
 
     void ReplSetImpl::setInitialSyncFlag(OperationContext* txn) {
         Lock::DBWrite lk(txn->lockState(), "local");
         WriteUnitOfWork wunit(txn);
-        Helpers::putSingleton(txn, "local.replset.minvalid", BSON("$set" << _initialSyncFlag));
+        Helpers::putSingleton(txn, minvalidNS, BSON("$set" << _initialSyncFlag));
         wunit.commit();
     }
 
@@ -899,28 +909,27 @@ namespace {
         OperationContextImpl txn; // XXX?
         Lock::DBRead lk (txn.lockState(), "local");
         BSONObj mv;
-        if (Helpers::getSingleton(&txn, "local.replset.minvalid", mv)) {
+        if (Helpers::getSingleton(&txn, minvalidNS, mv)) {
             return mv[_initialSyncFlagString].trueValue();
         }
         return false;
     }
 
-    void ReplSetImpl::setMinValid(OperationContext* txn, BSONObj obj) {
-        BSONObjBuilder builder;
-        BSONObjBuilder subobj(builder.subobjStart("$set"));
-        subobj.appendTimestamp("ts", obj["ts"].date());
-        subobj.done();
-
-        Lock::DBWrite lk(txn->lockState(), "local");
-        WriteUnitOfWork wunit(txn);
-        Helpers::putSingleton(txn, "local.replset.minvalid", builder.obj());
+    void ReplSetImpl::setMinValid(OperationContext* ctx, OpTime ts) {
+        Lock::DBWrite lk(ctx->lockState(), "local");
+        WriteUnitOfWork wunit(ctx);
+        Helpers::putSingleton(ctx, minvalidNS, BSON("$set" << BSON("ts" << ts)));
         wunit.commit();
+    }
+
+    void ReplSetImpl::setMinValid(OperationContext* ctx, BSONObj obj) {
+        setMinValid(ctx, obj["ts"]._opTime());
     }
 
     OpTime ReplSetImpl::getMinValid(OperationContext* txn) {
         Lock::DBRead lk(txn->lockState(), "local.replset.minvalid");
         BSONObj mv;
-        if (Helpers::getSingleton(txn, "local.replset.minvalid", mv)) {
+        if (Helpers::getSingleton(txn, minvalidNS, mv)) {
             return mv["ts"]._opTime();
         }
         return OpTime();

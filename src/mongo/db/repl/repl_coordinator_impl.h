@@ -44,11 +44,13 @@
 #include "mongo/db/repl/repl_coordinator_external_state.h"
 #include "mongo/db/repl/replica_set_config.h"
 #include "mongo/db/repl/replication_executor.h"
-#include "mongo/platform/random.h"
 #include "mongo/platform/unordered_map.h"
 #include "mongo/util/net/hostandport.h"
 
 namespace mongo {
+
+    class Timer;
+
 namespace repl {
 
     class SyncSourceFeedback;
@@ -97,7 +99,11 @@ namespace repl {
                 const OpTime& ts,
                 const WriteConcernOptions& writeConcern);
 
-        virtual ReplicationCoordinator::StatusAndDuration awaitReplicationOfLastOp(
+        virtual ReplicationCoordinator::StatusAndDuration awaitReplicationOfLastOpForClient(
+                const OperationContext* txn,
+                const WriteConcernOptions& writeConcern);
+
+        virtual ReplicationCoordinator::StatusAndDuration awaitReplicationOfLastOpApplied(
                 const OperationContext* txn,
                 const WriteConcernOptions& writeConcern);
 
@@ -105,11 +111,6 @@ namespace repl {
                                 bool force,
                                 const Milliseconds& waitTime,
                                 const Milliseconds& stepdownTime);
-
-        virtual Status stepDownAndWaitForSecondary(OperationContext* txn,
-                                                   const Milliseconds& initialWaitTime,
-                                                   const Milliseconds& stepdownTime,
-                                                   const Milliseconds& postStepdownWaitTime);
 
         virtual bool isMasterForReportingPurposes();
 
@@ -128,9 +129,13 @@ namespace repl {
 
         virtual Status setMyLastOptime(OperationContext* txn, const OpTime& ts);
 
+        virtual OpTime getMyLastOptime() const;
+
         virtual OID getElectionId();
 
-        virtual OID getMyRID();
+        virtual OID getMyRID() const;
+
+        virtual void setFollowerMode(const MemberState& newState);
 
         virtual void prepareReplSetUpdatePositionCommand(OperationContext* txn,
                                                          BSONObjBuilder* cmdBuilder);
@@ -143,11 +148,7 @@ namespace repl {
 
         virtual void processReplSetGetConfig(BSONObjBuilder* result);
 
-        virtual bool setMaintenanceMode(OperationContext* txn, bool activate);
-
-        virtual Status processReplSetMaintenance(OperationContext* txn,
-                                                 bool activate,
-                                                 BSONObjBuilder* resultObj);
+        virtual Status setMaintenanceMode(OperationContext* txn, bool activate);
 
         virtual Status processReplSetSyncFrom(const HostAndPort& target,
                                               BSONObjBuilder* resultObj);
@@ -230,6 +231,12 @@ namespace repl {
          */
         void testElection();
 
+        /**
+         * Used to set the current member state of this node.
+         * Should only be used in unit tests.
+         */
+        void _setCurrentMemberState_forTest(const MemberState& newState);
+
     private:
 
         /**
@@ -290,11 +297,37 @@ namespace repl {
                 const ReplicaSetConfig& newConfig,
                 int myIndex);
 
+        /**
+         * Helper method for setting/unsetting maintenance mode.  Scheduled by setMaintenanceMode()
+         * to run in a global write lock in the replication executor thread.
+         */
+        void _setMaintenanceMode_helper(const ReplicationExecutor::CallbackData& cbData,
+                                        bool activate,
+                                        Status* result);
+
+        /**
+         * Bottom half of _setCurrentMemberState_forTest.
+         */
+        void _setCurrentMemberState_forTestFinish(const ReplicationExecutor::CallbackData& cbData,
+                                                  const MemberState& newState);
+
         /*
          * Returns the OpTime of the last applied operation on this node.
          */
         OpTime _getLastOpApplied();
         OpTime _getLastOpApplied_inlock();
+
+        /**
+         * Helper method for _awaitReplication that takes an already locked unique_lock and a
+         * Timer for timing the operation which has been counting since before the lock was
+         * acquired.
+         */
+        ReplicationCoordinator::StatusAndDuration _awaitReplication_inlock(
+                const Timer* timer,
+                boost::unique_lock<boost::mutex>* lock,
+                const OperationContext* txn,
+                const OpTime& ts,
+                const WriteConcernOptions& writeConcern);
 
         /*
          * Returns true if the given writeConcern is satisfied up to "optime" or is unsatisfiable.
@@ -317,7 +350,13 @@ namespace repl {
         Status _checkIfWriteConcernCanBeSatisfied_inlock(
                 const WriteConcernOptions& writeConcern) const;
 
-        OID _getMyRID_inlock();
+        OID _getMyRID_inlock() const;
+
+        /**
+         * Bottom half of setFollowerMode.
+         */
+        void _setFollowerModeFinish(const ReplicationExecutor::CallbackData& cbData,
+                                    const MemberState& newState);
 
         /**
          * Helper method for setLastOptime and setMyLastOptime that takes in a unique lock on
@@ -503,9 +542,6 @@ namespace repl {
 
         // This member's index position in the current config.
         int _thisMembersConfigIndex;                                                      // (MX)
-
-        // PRNG; seeded at class construction time.
-        PseudoRandom _random;                                                             // (M)
 
         // Used for conducting an election of this node;
         // the presence of a non-null _freshnessChecker pointer indicates that an election is
