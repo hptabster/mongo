@@ -1,10 +1,10 @@
 // Test remove including findAndModify, 
 // using single value clause queries (SERVER-14973)
 
+// Build out different single value clause queries
+// The query key must use dot notation, i.e.,
+//    {"x.y" : {$eq : 2}}
 function buildQueries(id, values) {
-    // Build out different single value clause queries
-    // The query key must use dot notation, i.e.,
-    //    {"x.y" : {$eq : 2}}
 
     var queries = [];
     var i = 0;
@@ -53,25 +53,29 @@ function buildQueries(id, values) {
     return queries;
 }
 
+// function to create the proper path for the query
+// path may have dot notation, i.e.,
+// "x.y.z" is expanded to {x: {y: {z: 1}}}
+// results is returned in obj
 function setByPath(obj, path, value) {
-    // path may have dot notation, i.e., 
-    // "x.y.z" is expanded to {x: {y: {z: 1}}}
     var parts = path.split('.');
     var o = obj;
     if (parts.length > 1) {
       for (var i = 0; i < parts.length - 1; i++) {
-          if (!o[parts[i]])
+          if (!o[parts[i]]) {
               o[parts[i]] = {};
+          }
           o = o[parts[i]];
       }
     }
     o[parts[parts.length - 1]] = value;
 }
 
+// functin to set path for each value for insert, i.e.,
+//   {x : {y : 1}}
+//   {x : 1, y : 1}
+// results is returned in obj
 function setPaths(obj, paths, value) {
-    // set path for each value for insert, i.e.,
-    //   {x : {y : 1}}
-    //   {x : 1, y : 1}
     var pathArray = paths;
 
     // compound id is represented as array of paths
@@ -83,10 +87,10 @@ function setPaths(obj, paths, value) {
     });
 }
 
+// function to set the key used for query, i.e.,
+//   {"x.y" : 1}
+//   {"x" :  1, "y" : 1}
 function setKey(obj, ids, value) {
-    // set the key used for query, i.e.,
-    //   {"x.y" : 1}
-    //   {"x" :  1, "y" : 1}
     var o = obj;
     // compound id is represented as array of ids
     if (ids instanceof Array) {
@@ -98,6 +102,7 @@ function setKey(obj, ids, value) {
     }
 }
 
+// create array for sequence of numbers from min to max
 function createArray(min ,max) {
     var a = [];
     for (var i = min; i <= max; i++) {
@@ -144,6 +149,8 @@ function runTest(test) {
                   test.name + " findAndModify " + tojson(q));
     });
 
+    // for compound id, create the array of ids used in buildQueries, i.e.,
+    // ["x","y"] => ["x.notAnId", "y.notAnId"]
     var ids = [];
     if (test.id instanceof Array) {
         test.id.forEach(function (i) {
@@ -170,22 +177,27 @@ function runTest(test) {
 // Main
 
 tests = [
+    // Test with _id as key
     { name : "_id",
       id : "_id",
       numDocs : 100
     },
+    // Test with non _d as key
     { name : "non_id",
       id : "non_id",
       numDocs : 100
     },
+    // Test with nested key
     { name : "nested x.y",
       id : "x.y",
       numDocs : 100
     },
+    // Test with compound key
     { name : "compound x,y",
       id : ["x", "y"],
       numDocs : 100
     },
+    // Test with nested, compund key
     { name : "compound nested x.a,y.b",
       id : ["x.a", "y.b"],
       numDocs : 100

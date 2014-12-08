@@ -1,10 +1,10 @@
 // Test remove including findAndModify, in sharding context,
 // using single value clause queries (SERVER-14973)
 
+// Build out different single value clause queries
+// The query key must use dot notation, i.e.,
+//    {"x.y" : {$eq : 2}}
 function buildQueries(id, values) {
-    // Build out different single value clause queries
-    // The query key must use dot notation, i.e.,
-    //    {"x.y" : {$eq : 2}}
 
     var queries = [];
     var i = 0;
@@ -53,40 +53,46 @@ function buildQueries(id, values) {
     return queries;
 }
 
+// function to create the proper path for the query
+// path may have dot notation, i.e.,
+// "x.y.z" is expanded to {x: {y: {z: 1}}}
+// results is returned in obj
 function setByPath(obj, path, value) {
-    // path may have dot notation, i.e., 
-    // "x.y.z" is expanded to {x: {y: {z: 1}}}
     var parts = path.split('.');
     var o = obj;
     if (parts.length > 1) {
       for (var i = 0; i < parts.length - 1; i++) {
-          if (!o[parts[i]])
+          if (!o[parts[i]]) {
               o[parts[i]] = {};
+          }
           o = o[parts[i]];
       }
     }
     o[parts[parts.length - 1]] = value;
 }
 
+// functin to set path for each value for insert, i.e.,
+//   {x : {y : 1}}
+//   {x : 1, y : 1}
+// results is returned in obj
 function setPaths(obj, paths, value) {
-    // set path for each value for insert, i.e.,
-    //   {x : {y : 1}}
-    //   {x : 1, y : 1}
     var pathArray = paths;
 
-    // compound id is represented as array of paths
+    // compound id is represented as array of paths, i.e., [x, y]
     if (!(paths instanceof Array)) {
         pathArray = [paths];
     }
+
     pathArray.forEach(function(p) {
+        // setByPath needs an array in p
         setByPath(obj, p, value);
     });
 }
 
+// function to set the key used for shardKey or a query, i.e.,
+//   {"x.y" : 1}
+//   {"x" :  1, "y" : 1}
 function setKey(obj, ids, value) {
-    // set the key used for shardKey or a query, i.e.,
-    //   {"x.y" : 1}
-    //   {"x" :  1, "y" : 1}
     var o = obj;
     // compound id is represented as array of ids
     if (ids instanceof Array) {
@@ -98,6 +104,7 @@ function setKey(obj, ids, value) {
     }
 }
 
+// create array for sequence of numbers from min to max
 function createArray(min ,max) {
     var a = [];
     for (var i = min; i <= max; i++) {
@@ -159,6 +166,8 @@ function runTest(test) {
                       test.name + " findAndModify " + tojson(q));
     });
 
+    // for compound id, create the array of ids used in buildQueries, i.e.,
+    // ["x","y"] => ["x.notAnId", "y.notAnId"]
     var ids = [];
     if (test.id instanceof Array) {
         test.id.forEach(function (i) {
@@ -184,11 +193,7 @@ function runTest(test) {
 
 
 // Main
-var multiVersion = MongoRunner.versionIterator(["2.6","2.8"]);
-var options = {separateConfig : true,
-               mongosOptions : { binVersion : "2.8" },
-               //shardOptions : { binVersion : multiVersion }};
-               shardOptions : { binVersion : "2.8" }};
+var options = {separateConfig : true};
 
 var st = new ShardingTest({shards : 2, mongos : 1, other : options});
 st.stopBalancer();
@@ -201,22 +206,27 @@ assert.commandWorked(admin.runCommand({ enableSharding : "test" }), "enableShard
 printjson(admin.runCommand({ movePrimary : "test", to : shards[0]._id }));
 
 tests = [
+    // Test with _id as key
     { name : "_id",
       id : "_id",
       numDocs : 100
     },
+    // Test with non _d as key
     { name : "non_id",
       id : "non_id",
       numDocs : 100
     },
+    // Test with nested key
     { name : "nested x.y",
       id : "x.y",
       numDocs : 100
     },
+    // Test with compound key
     { name : "compound x,y",
       id : ["x", "y"],
       numDocs : 100
     },
+    // Test with nested, compund key
     { name : "compound nested x.a,y.b",
       id : ["x.a", "y.b"],
       numDocs : 100
