@@ -27,10 +27,11 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include <list>
 #include <boost/filesystem/path.hpp>
+#include <boost/noncopyable.hpp>
 #include <boost/thread/condition.hpp>
 
 #include "mongo/util/concurrency/mutex.h"

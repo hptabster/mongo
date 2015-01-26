@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 #
+# Public Domain 2014-2015 MongoDB, Inc.
 # Public Domain 2008-2014 WiredTiger, Inc.
 #
 # This is free and unencumbered software released into the public domain.
@@ -30,6 +31,6 @@ from intpacking import compress_int
 
 i = 1
 while i < 1 << 60:
-	print -i, ''.join('%02x' % ord(c) for c in compress_int(-i))
-	print i, ''.join('%02x' % ord(c) for c in compress_int(i))
-	i <<= 1
+    print -i, ''.join('%02x' % ord(c) for c in compress_int(-i))
+    print i, ''.join('%02x' % ord(c) for c in compress_int(i))
+    i <<= 1

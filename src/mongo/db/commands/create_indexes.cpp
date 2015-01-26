@@ -49,6 +49,8 @@
 
 namespace mongo {
 
+    using std::string;
+
     /**
      * { createIndexes : "bar", indexes : [ { ns : "test.bar", key : { x : 1 }, name: "x_1" } ] }
      */
@@ -143,7 +145,7 @@ namespace mongo {
                 db = dbHolder().openDb(txn, ns.db());
             }
 
-            Collection* collection = db->getCollection( txn, ns.ns() );
+            Collection* collection = db->getCollection( ns.ns() );
             result.appendBool( "createdCollectionAutomatically", collection == NULL );
             if ( !collection ) {
                 WriteUnitOfWork wunit(txn);
@@ -155,7 +157,8 @@ namespace mongo {
                 wunit.commit();
             }
 
-            result.append("numIndexesBefore", collection->getIndexCatalog()->numIndexesTotal(txn));
+            const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(txn);
+            result.append("numIndexesBefore", numIndexesBefore);
 
             MultiIndexBlock indexer(txn, collection);
             indexer.allowBackgroundBuilding();
@@ -165,6 +168,7 @@ namespace mongo {
             indexer.removeExistingIndexes(&specs);
 
             if (specs.size() == 0) {
+                result.append("numIndexesAfter", numIndexesBefore);
                 result.append( "note", "all indexes already exist" );
                 return true;
             }
@@ -220,7 +224,7 @@ namespace mongo {
                 Database* db = dbHolder().get(txn, ns.db());
                 uassert(28551, "database dropped during index build", db);
                 uassert(28552, "collection dropped during index build",
-                        db->getCollection(txn, ns.ns()));
+                        db->getCollection(ns.ns()));
             }
 
             {
@@ -247,7 +251,8 @@ namespace mongo {
         static Status checkUniqueIndexConstraints(OperationContext* txn,
                                                   const StringData& ns,
                                                   const BSONObj& newIdxKey) {
-            txn->lockState()->assertWriteLocked( ns );
+
+            invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
 
             if ( shardingState.enabled() ) {
                 CollectionMetadataPtr metadata(

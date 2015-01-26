@@ -34,7 +34,7 @@
 */
 
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include <string>
 #include <vector>
@@ -49,6 +49,8 @@
 #include "mongo/util/background.h"
 
 namespace mongo {
+
+    using std::string;
 
     class BasicDriverHelper : public Command {
     public:

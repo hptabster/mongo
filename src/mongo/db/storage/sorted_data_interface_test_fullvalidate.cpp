@@ -30,10 +30,14 @@
 
 #include "mongo/db/storage/sorted_data_interface_test_harness.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
 
     // Insert multiple keys and verify that fullValidate() either sets
     // the `numKeysOut` as the number of entries in the index, or as -1.
@@ -52,7 +56,7 @@ namespace mongo {
             {
                 WriteUnitOfWork uow( opCtx.get() );
                 BSONObj key = BSON( "" << i );
-                DiskLoc loc( 42, i * 2 );
+                RecordId loc( 42, i * 2 );
                 ASSERT_OK( sorted->insert( opCtx.get(), key, loc, true ) );
                 uow.commit();
             }

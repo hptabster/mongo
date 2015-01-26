@@ -40,8 +40,8 @@ namespace repl {
 
 
     UpdatePositionArgs::UpdateInfo::UpdateInfo(
-            const OID& anRid, const OpTime& aTs, long long aCfgver, long long aMemberID)
-        : rid(anRid), ts(aTs), cfgver(aCfgver), memberID(aMemberID) {}
+            const OID& anRid, const OpTime& aTs, long long aCfgver, long long aMemberId)
+        : rid(anRid), ts(aTs), cfgver(aCfgver), memberId(aMemberId) {}
 
 namespace {
 
@@ -56,14 +56,14 @@ namespace {
     const std::string kMemberRIDFieldName = "_id";
     const std::string kMemberConfigFieldName = "config";
     const std::string kOpTimeFieldName = "optime";
-    const std::string kMemberIDFieldName = "memberID";
+    const std::string kMemberIdFieldName = "memberId";
     const std::string kConfigVersionFieldName = "cfgver";
 
     const std::string kLegalUpdateInfoFieldNames[] = {
         kMemberConfigFieldName,
         kMemberRIDFieldName,
         kOpTimeFieldName,
-        kMemberIDFieldName,
+        kMemberIdFieldName,
         kConfigVersionFieldName,
     };
 
@@ -98,7 +98,7 @@ namespace {
             if (!status.isOK())
                 return status;
 
-            // TODO(spencer): The following three fields are optional in 2.8, but should be made
+            // TODO(spencer): The following three fields are optional in 3.0, but should be made
             // required or ignored in 3.0
             long long cfgver;
             status = bsonExtractIntegerFieldWithDefault(entry, kConfigVersionFieldName, -1, &cfgver);
@@ -111,7 +111,7 @@ namespace {
                 return status;
 
             long long memberID;
-            status = bsonExtractIntegerFieldWithDefault(entry, kMemberIDFieldName, -1, &memberID);
+            status = bsonExtractIntegerFieldWithDefault(entry, kMemberIdFieldName, -1, &memberID);
             if (!status.isOK())
                 return status;
 
@@ -135,7 +135,7 @@ namespace {
                 updateArray.append(BSON(kMemberRIDFieldName << update->rid <<
                                         kOpTimeFieldName << update->ts <<
                                         kConfigVersionFieldName << update->cfgver <<
-                                        kMemberIDFieldName << update->memberID));
+                                        kMemberIdFieldName << update->memberId));
             }
             updateArray.doneFast();
         }

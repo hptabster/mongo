@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -179,8 +180,7 @@ __wt_scr_alloc_func(WT_SESSION_IMPL *session, size_t size, WT_ITEM **scratchp
 		 * or the largest buffer if none are large enough.
 		 */
 		if (best == NULL ||
-		    ((*best)->memsize < size &&
-		    buf->memsize > (*best)->memsize) ||
+		    (buf->memsize <= size && buf->memsize > (*best)->memsize) ||
 		    (buf->memsize >= size && buf->memsize < (*best)->memsize))
 			best = p;
 
@@ -209,20 +209,21 @@ __wt_scr_alloc_func(WT_SESSION_IMPL *session, size_t size, WT_ITEM **scratchp
 	}
 
 	/*
-	 * If slot is non-NULL, we found an empty slot, try and allocate a
+	 * If slot is non-NULL, we found an empty slot, try to allocate a
 	 * buffer.
 	 */
 	if (best == NULL) {
 		WT_ASSERT(session, slot != NULL);
 		best = slot;
 
-		WT_ERR(__wt_calloc_def(session, 1, best));
+		WT_ERR(__wt_calloc_one(session, best));
 
 		/* Scratch buffers must be aligned. */
 		F_SET(*best, WT_ITEM_ALIGNED);
 	}
 
 	/* Grow the buffer as necessary and return. */
+	session->scratch_cached -= (*best)->memsize;
 	WT_ERR(__wt_buf_init(session, *best, size));
 	F_SET(*best, WT_ITEM_INUSE);
 

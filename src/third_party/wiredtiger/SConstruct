@@ -157,7 +157,7 @@ env.Substfile(
 #
 # WiredTiger library
 #
-filelistfile = r'dist\filelist.win'
+filelistfile = r'build_win\filelist.win'
 filelist = open(filelistfile)
 wtsources = [line.strip()
              for line in filelist
@@ -199,10 +199,18 @@ env.Program("wt", [
     LIBS=[wtlib] + wtlibs)
 
 if GetOption("swig"):
-    env.SharedLibrary('_wiredtiger',
+    swiglib = env.SharedLibrary('_wiredtiger',
                       [ 'lang\python\wiredtiger.i'],
                       SHLIBSUFFIX=".pyd",
                       LIBS=[wtlib])
+
+    copySwig = env.Command(
+        'lang/python/wiredtiger/__init__.py',
+        'lang/python/wiredtiger.py',
+        Copy('$TARGET', '$SOURCE'))
+    env.Depends(copySwig, swiglib)
+
+    env.Install('lang/python/wiredtiger/', swiglib)
 
 # Shim library of functions to emulate POSIX on Windows
 shim = env.Library("window_shim",
@@ -275,7 +283,6 @@ examples = [
     "ex_cursor",
     "ex_data_source",
     "ex_extending",
-    "ex_file",
     "ex_hello",
     "ex_log",
     "ex_pack",

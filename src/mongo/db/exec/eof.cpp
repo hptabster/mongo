@@ -34,6 +34,8 @@
 
 namespace mongo {
 
+    using std::vector;
+
     // static
     const char* EOFStage::kStageType = "EOF";
 
@@ -60,7 +62,7 @@ namespace mongo {
         ++_commonStats.unyields;
     }
 
-    void EOFStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void EOFStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
     }
 

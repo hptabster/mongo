@@ -26,6 +26,9 @@
  *    then also delete it in the license file.
  */
 
+#include <boost/scoped_ptr.hpp>
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
@@ -45,6 +48,11 @@
 #include "mongo/dbtests/dbtests.h"
 
 namespace QueryPlanExecutor {
+
+    using boost::scoped_ptr;
+    using boost::shared_ptr;
+    using std::auto_ptr;
+    using std::string;
 
     class PlanExecutorBase {
     public:
@@ -129,7 +137,7 @@ namespace QueryPlanExecutor {
             ixparams.bounds.endKeyInclusive = true;
             ixparams.direction = 1;
 
-            const Collection* coll = context.db()->getCollection(&_txn, ns());
+            const Collection* coll = context.db()->getCollection(ns());
 
             auto_ptr<WorkingSet> ws(new WorkingSet());
             IndexScan* ix = new IndexScan(&_txn, ixparams, ws.get(), NULL);
@@ -154,7 +162,7 @@ namespace QueryPlanExecutor {
             Collection* collection = ctx.getCollection();
             if ( !collection )
                 return 0;
-            return collection->cursorCache()->numCursors();
+            return collection->getCursorManager()->numCursors();
         }
 
         void registerExec( PlanExecutor* exec ) {
@@ -162,7 +170,7 @@ namespace QueryPlanExecutor {
             AutoGetCollectionForRead ctx(&_txn, ns());
             WriteUnitOfWork wunit(&_txn);
             Collection* collection = ctx.getDb()->getOrCreateCollection(&_txn, ns());
-            collection->cursorCache()->registerExecutor( exec );
+            collection->getCursorManager()->registerExecutor( exec );
             wunit.commit();
         }
 
@@ -171,7 +179,7 @@ namespace QueryPlanExecutor {
             AutoGetCollectionForRead ctx(&_txn, ns());
             WriteUnitOfWork wunit(&_txn);
             Collection* collection = ctx.getDb()->getOrCreateCollection(&_txn, ns());
-            collection->cursorCache()->deregisterExecutor( exec );
+            collection->getCursorManager()->deregisterExecutor( exec );
             wunit.commit();
         }
 
@@ -180,7 +188,7 @@ namespace QueryPlanExecutor {
 
     private:
         IndexDescriptor* getIndex(Database* db, const BSONObj& obj) {
-            Collection* collection = db->getCollection( &_txn, ns() );
+            Collection* collection = db->getCollection( ns() );
             return collection->getIndexCatalog()->findIndexByKeyPattern(&_txn, obj);
         }
 
@@ -415,12 +423,12 @@ namespace QueryPlanExecutor {
                 PlanExecutor* exec = makeCollScanExec(coll,filterObj);
 
                 // Make a client cursor from the runner.
-                new ClientCursor(coll, exec, 0, BSONObj());
+                new ClientCursor(coll->getCursorManager(), exec, ns(), 0, BSONObj());
 
                 // There should be one cursor before invalidation,
                 // and zero cursors after invalidation.
                 ASSERT_EQUALS(1U, numCursors());
-                coll->cursorCache()->invalidateAll(false);
+                coll->getCursorManager()->invalidateAll(false);
                 ASSERT_EQUALS(0U, numCursors());
             }
         };
@@ -441,13 +449,17 @@ namespace QueryPlanExecutor {
                 PlanExecutor* exec = makeCollScanExec(collection, filterObj);
 
                 // Make a client cursor from the runner.
-                ClientCursor* cc = new ClientCursor(collection, exec, 0, BSONObj());
-                ClientCursorPin ccPin(collection, cc->cursorid());
+                ClientCursor* cc = new ClientCursor(collection->getCursorManager(),
+                                                    exec,
+                                                    ns(),
+                                                    0,
+                                                    BSONObj());
+                ClientCursorPin ccPin(collection->getCursorManager(), cc->cursorid());
 
                 // If the cursor is pinned, it sticks around,
                 // even after invalidation.
                 ASSERT_EQUALS(1U, numCursors());
-                collection->cursorCache()->invalidateAll(false);
+                collection->getCursorManager()->invalidateAll(false);
                 ASSERT_EQUALS(1U, numCursors());
 
                 // The invalidation should have killed the runner.
@@ -481,13 +493,13 @@ namespace QueryPlanExecutor {
                     PlanExecutor* exec = makeCollScanExec(collection, filterObj);
 
                     // Make a client cursor from the runner.
-                    new ClientCursor(collection, exec, 0, BSONObj());
+                    new ClientCursor(collection->getCursorManager(), exec, ns(), 0, BSONObj());
                 }
 
                 // There should be one cursor before timeout,
                 // and zero cursors after timeout.
                 ASSERT_EQUALS(1U, numCursors());
-                CollectionCursorCache::timeoutCursorsGlobal(&_txn, 600001);
+                CursorManager::timeoutCursorsGlobal(&_txn, 600001);
                 ASSERT_EQUALS(0U, numCursors());
             }
         };

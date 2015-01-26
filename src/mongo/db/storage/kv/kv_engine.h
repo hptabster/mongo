@@ -102,6 +102,13 @@ namespace mongo {
          */
         virtual bool supportsDocLocking() const = 0;
 
+        /**
+         * Returns true if storage engine supports --directoryperdb.
+         * See:
+         *     http://docs.mongodb.org/manual/reference/program/mongod/#cmdoption--directoryperdb
+         */
+        virtual bool supportsDirectoryPerDB() const = 0;
+
         virtual Status okToRename( OperationContext* opCtx,
                                    const StringData& fromNS,
                                    const StringData& toNS,
@@ -109,6 +116,8 @@ namespace mongo {
                                    const RecordStore* originalRecordStore ) const {
             return Status::OK();
         }
+
+        virtual bool hasIdent(OperationContext* opCtx, const StringData& ident) const = 0;
 
         virtual std::vector<std::string> getAllIdents( OperationContext* opCtx ) const = 0;
 
@@ -119,7 +128,7 @@ namespace mongo {
          *
          * There is intentionally no uncleanShutdown().
          */
-        virtual void cleanShutdown(OperationContext* txn) = 0;
+        virtual void cleanShutdown() = 0;
 
         /**
          * The destructor will never be called from mongod, but may be called from tests.

@@ -30,12 +30,15 @@
 
 #include "mongo/db/storage/record_store_test_updaterecord.h"
 
-#include "mongo/db/diskloc.h"
+#include <boost/scoped_ptr.hpp>
+
+#include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/record_store_test_harness.h"
 #include "mongo/unittest/unittest.h"
 
+using boost::scoped_ptr;
 using std::string;
 using std::stringstream;
 
@@ -52,12 +55,12 @@ namespace mongo {
         }
 
         string data = "my record";
-        DiskLoc loc;
+        RecordId loc;
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             data.c_str(),
                                                             data.size() + 1,
                                                             false );
@@ -77,7 +80,7 @@ namespace mongo {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->updateRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->updateRecord( opCtx.get(),
                                                             loc,
                                                             data.c_str(),
                                                             data.size() + 1,
@@ -110,7 +113,7 @@ namespace mongo {
         }
 
         const int nToInsert = 10;
-        DiskLoc locs[nToInsert];
+        RecordId locs[nToInsert];
         for ( int i = 0; i < nToInsert; i++ ) {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
@@ -119,7 +122,7 @@ namespace mongo {
                 string data = ss.str();
 
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             data.c_str(),
                                                             data.size() + 1,
                                                             false );
@@ -142,7 +145,7 @@ namespace mongo {
                 string data = ss.str();
 
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->updateRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->updateRecord( opCtx.get(),
                                                             locs[i],
                                                             data.c_str(),
                                                             data.size() + 1,
@@ -168,7 +171,7 @@ namespace mongo {
         }
     }
 
-    // Insert a record, try to update it, and examine how the UpdateMoveNotifier is called.
+    // Insert a record, try to update it, and examine how the UpdateNotifier is called.
     TEST( RecordStoreTestHarness, UpdateRecordWithMoveNotifier ) {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
@@ -179,12 +182,12 @@ namespace mongo {
         }
 
         string oldData = "my record";
-        DiskLoc loc;
+        RecordId loc;
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             oldData.c_str(),
                                                             oldData.size() + 1,
                                                             false );
@@ -203,22 +206,26 @@ namespace mongo {
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
-                UpdateMoveNotifierSpy umn( opCtx.get(), loc, oldData.c_str(), oldData.size() );
+                UpdateNotifierSpy umn( opCtx.get(), loc, oldData.c_str(), oldData.size() );
 
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->updateRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->updateRecord( opCtx.get(),
                                                             loc,
                                                             newData.c_str(),
                                                             newData.size() + 1,
                                                             false,
                                                             &umn );
                 ASSERT_OK( res.getStatus() );
-                // UpdateMoveNotifier::recordStoreGoingToMove() called only if
-                // the DiskLoc for the record changes
+                // UpdateNotifier::recordStoreGoingToMove() called only if
+                // the RecordId for the record changes
                 if ( loc == res.getValue() ) {
-                    ASSERT_EQUALS( 0, umn.getNumCalls() );
+                    ASSERT_EQUALS( 0, umn.numMoveCallbacks() );
+                    // Only MMAP v1 is required to use the UpdateNotifier for in-place updates,
+                    // so the number of callbacks is expected to be 0 for non-MMAP storage engines.
+                    ASSERT_GTE( 1, umn.numInPlaceCallbacks() );
                 } else {
-                    ASSERT_EQUALS( 1, umn.getNumCalls() );
+                    ASSERT_EQUALS( 1, umn.numMoveCallbacks() );
+                    ASSERT_EQUALS( 0, umn.numInPlaceCallbacks() );
                 }
                 loc = res.getValue();
                 uow.commit();

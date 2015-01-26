@@ -1,5 +1,3 @@
-// rocks_init.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -29,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/storage/rocks/rocks_engine.h"
 
 #include "mongo/base/init.h"
@@ -42,12 +42,36 @@ namespace mongo {
         class RocksFactory : public StorageEngine::Factory {
         public:
             virtual ~RocksFactory(){}
-            virtual StorageEngine* create( const StorageGlobalParams& params ) const {
-                return new KVStorageEngine(new RocksEngine(params.dbpath));
+            virtual StorageEngine* create(const StorageGlobalParams& params,
+                                          const StorageEngineLockFile& lockFile) const {
+                KVStorageEngineOptions options;
+                options.directoryPerDB = params.directoryperdb;
+                options.forRepair = params.repair;
+                // Mongo keeps some files in params.dbpath. To avoid collision, put out files under
+                // db/ directory
+                return new KVStorageEngine(new RocksEngine(params.dbpath + "/db", params.dur),
+                                           options);
             }
 
             virtual StringData getCanonicalName() const {
                 return "rocksExperiment";
+            }
+
+            virtual Status validateCollectionStorageOptions(const BSONObj& options) const {
+                return Status::OK();
+            }
+
+            virtual Status validateIndexStorageOptions(const BSONObj& options) const {
+                return Status::OK();
+            }
+
+            virtual Status validateMetadata(const StorageEngineMetadata& metadata,
+                                            const StorageGlobalParams& params) const {
+                return Status::OK();
+            }
+
+            virtual BSONObj createMetadataOptions(const StorageGlobalParams& params) const {
+                return BSONObj();
             }
         };
     } // namespace

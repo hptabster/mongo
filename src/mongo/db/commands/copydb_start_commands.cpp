@@ -28,7 +28,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kAccessControl
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
@@ -56,6 +56,9 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::string;
+    using std::stringstream;
 
     // SERVER-4328 todo review for concurrency
     // :(

@@ -34,6 +34,7 @@
 #include <set>
 #include <string>
 
+#include <boost/scoped_ptr.hpp>
 #include <boost/thread/mutex.hpp>
 
 #include <wiredtiger.h>
@@ -52,13 +53,16 @@ namespace mongo {
     public:
         WiredTigerKVEngine( const std::string& path,
                             const std::string& extraOpenOptions = "",
-                            bool durable = true );
+                            bool durable = true,
+                            bool repair = false );
         virtual ~WiredTigerKVEngine();
 
         void setRecordStoreExtraOptions( const std::string& options );
         void setSortedDataInterfaceExtraOptions( const std::string& options );
 
         virtual bool supportsDocLocking() const;
+
+        virtual bool supportsDirectoryPerDB() const;
 
         virtual bool isDurable() const { return _durable; }
 
@@ -99,9 +103,11 @@ namespace mongo {
         virtual Status repairIdent( OperationContext* opCtx,
                                     const StringData& ident );
 
+        virtual bool hasIdent(OperationContext* opCtx, const StringData& ident) const;
+
         std::vector<std::string> getAllIdents( OperationContext* opCtx ) const;
 
-        virtual void cleanShutdown(OperationContext* txn);
+        virtual void cleanShutdown();
 
         // wiredtiger specific
         // Calls WT_CONNECTION::reconfigure on the underlying WT_CONNECTION
@@ -112,30 +118,32 @@ namespace mongo {
         void dropAllQueued();
         bool haveDropsQueued() const;
 
-        int currentEpoch() const { return _epoch; }
-
         void syncSizeInfo(bool sync) const;
 
     private:
 
-        string _uri( const StringData& ident ) const;
+        Status _salvageIfNeeded(const char* uri);
+        void _checkIdentPath( const StringData& ident );
+
+        bool _hasUri(WT_SESSION* session, const std::string& uri) const;
+
+        std::string _uri( const StringData& ident ) const;
         bool _drop( const StringData& ident );
 
         WT_CONNECTION* _conn;
         WT_EVENT_HANDLER _eventHandler;
         boost::scoped_ptr<WiredTigerSessionCache> _sessionCache;
+        std::string _path;
         bool _durable;
 
-        string _rsOptions;
-        string _indexOptions;
+        std::string _rsOptions;
+        std::string _indexOptions;
 
         std::set<std::string> _identToDrop;
         mutable boost::mutex _identToDropMutex;
 
-        int _epoch; // this is how we keep track of if a session is too old
-
-        scoped_ptr<WiredTigerSizeStorer> _sizeStorer;
-        string _sizeStorerUri;
+        boost::scoped_ptr<WiredTigerSizeStorer> _sizeStorer;
+        std::string _sizeStorerUri;
         mutable ElapsedTracker _sizeStorerSyncTracker;
     };
 

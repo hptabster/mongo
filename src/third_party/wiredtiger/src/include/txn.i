@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -138,7 +139,7 @@ __wt_txn_visible(WT_SESSION_IMPL *session, uint64_t id)
 	 * schema and metadata locks) to protect access to in-flight updates.
 	 */
 	if (txn->isolation == TXN_ISO_READ_UNCOMMITTED ||
-	    S2BT_SAFE(session) == session->metafile)
+	    session->dhandle == session->meta_dhandle)
 		return (1);
 
 	/* Transactions see their own changes. */
@@ -226,6 +227,16 @@ __wt_txn_id_check(WT_SESSION_IMPL *session)
 	txn = &session->txn;
 
 	WT_ASSERT(session, F_ISSET(txn, TXN_RUNNING));
+
+	/*
+	 * If there is no transaction active in this thread and we haven't
+	 * checked if the cache is full, do it now.  If we have to block for
+	 * eviction, this is the best time to do it.
+	 */
+	if (F_ISSET(txn, TXN_RUNNING) &&
+	    !F_ISSET(txn, TXN_HAS_ID) && !F_ISSET(txn, TXN_HAS_SNAPSHOT))
+		WT_RET(__wt_cache_full_check(session));
+
 	if (!F_ISSET(txn, TXN_HAS_ID)) {
 		conn = S2C(session);
 		txn_global = &conn->txn_global;

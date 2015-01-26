@@ -1,5 +1,3 @@
-// rocks_engine.h
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -46,6 +44,7 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/bson/ordering.h"
 #include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/db/storage/rocks/rocks_transaction.h"
 #include "mongo/util/string_map.h"
 
 namespace rocksdb {
@@ -66,7 +65,7 @@ namespace mongo {
     class RocksEngine : public KVEngine {
         MONGO_DISALLOW_COPYING( RocksEngine );
     public:
-        RocksEngine( const std::string& path );
+        RocksEngine(const std::string& path, bool durable);
         virtual ~RocksEngine();
 
         virtual RecoveryUnit* newRecoveryUnit() override;
@@ -89,13 +88,20 @@ namespace mongo {
 
         virtual Status dropIdent(OperationContext* opCtx, const StringData& ident) override;
 
+        virtual bool hasIdent(OperationContext* opCtx, const StringData& ident) const {
+            return _identColumnFamilyMap.find(ident) != _identColumnFamilyMap.end();;
+        }
         virtual std::vector<std::string> getAllIdents( OperationContext* opCtx ) const override;
 
         virtual bool supportsDocLocking() const override {
             return true;
         }
 
-        virtual bool isDurable() const { return true; }
+        virtual bool supportsDirectoryPerDB() const override {
+            return false;
+        }
+
+        virtual bool isDurable() const override { return _durable; }
 
         virtual int64_t getIdentSize(OperationContext* opCtx,
                                       const StringData& ident) {
@@ -108,7 +114,7 @@ namespace mongo {
             return Status::OK();
         }
 
-        virtual void cleanShutdown(OperationContext* txn) {}
+        virtual void cleanShutdown() {}
 
         // rocks specific api
 
@@ -119,8 +125,6 @@ namespace mongo {
          * Returns a ReadOptions object that uses the snapshot contained in opCtx
          */
         static rocksdb::ReadOptions readOptionsWithSnapshot( OperationContext* opCtx );
-
-        static rocksdb::Options dbOptions();
 
     private:
         bool _existsColumnFamily(const StringData& ident);
@@ -136,11 +140,14 @@ namespace mongo {
         rocksdb::ColumnFamilyOptions _collectionOptions() const;
         rocksdb::ColumnFamilyOptions _indexOptions(const Ordering& order) const;
 
+        rocksdb::Options _dbOptions() const;
+
         static rocksdb::ColumnFamilyOptions _defaultCFOptions();
 
         std::string _path;
         boost::scoped_ptr<rocksdb::DB> _db;
-        boost::scoped_ptr<rocksdb::Comparator> _collectionComparator;
+
+        const bool _durable;
 
         // Default column family is owned by the rocksdb::DB instance.
         rocksdb::ColumnFamilyHandle* _defaultHandle;
@@ -148,6 +155,9 @@ namespace mongo {
         mutable boost::mutex _identColumnFamilyMapMutex;
         typedef StringMap<boost::shared_ptr<rocksdb::ColumnFamilyHandle> > IdentColumnFamilyMap;
         IdentColumnFamilyMap _identColumnFamilyMap;
+
+        // This is for concurrency control
+        RocksTransactionEngine _transactionEngine;
 
         static const std::string kOrderingPrefix;
         static const std::string kCollectionPrefix;

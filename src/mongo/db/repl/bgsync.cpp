@@ -40,15 +40,18 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
-#include "mongo/db/repl/repl_coordinator_impl.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_impl.h"
 #include "mongo/db/repl/rs_rollback.h"
 #include "mongo/db/repl/rs_sync.h"
 #include "mongo/db/stats/timer_stats.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::string;
 
 namespace repl {
 
@@ -105,7 +108,6 @@ namespace {
                                        _lastFetchedHash(0),
                                        _pause(true),
                                        _appliedBuffer(true),
-                                       _assumingPrimary(false),
                                        _replCoord(getGlobalReplicationCoordinator()),
                                        _initialSyncRequestedFlag(false),
                                        _indexPrefetchConfig(PREFETCH_ALL) {
@@ -121,6 +123,10 @@ namespace {
 
     void BackgroundSync::shutdown() {
         boost::lock_guard<boost::mutex> lock(_mutex);
+
+        // Clear the buffer in case the producerThread is waiting in push() due to a full queue.
+        invariant(inShutdown());
+        _buffer.clear();
 
         // Wake up producerThread so it notices that we're in shutdown
         _condvar.notify_all();
@@ -160,7 +166,7 @@ namespace {
     }
 
     void BackgroundSync::_producerThread() {
-        const MemberState state = _replCoord->getCurrentMemberState();
+        const MemberState state = _replCoord->getMemberState();
         // we want to pause when the state changes to primary
         if (_replCoord->isWaitingForApplierToDrain() || state.primary()) {
             if (!_pause) {
@@ -207,10 +213,10 @@ namespace {
             }
 
             // Wait until we've applied the ops we have before we choose a sync target
-            while (!_appliedBuffer && !inShutdown()) {
+            while (!_appliedBuffer && !inShutdownStrict()) {
                 _condvar.wait(lock);
             }
-            if (inShutdown()) {
+            if (inShutdownStrict()) {
                 return;
             }
         }
@@ -279,7 +285,7 @@ namespace {
                 // If we are transitioning to primary state, we need to leave
                 // this loop in order to go into bgsync-pause mode.
                 if (_replCoord->isWaitingForApplierToDrain() || 
-                    _replCoord->getCurrentMemberState().primary()) {
+                    _replCoord->getMemberState().primary()) {
                     return;
                 }
 
@@ -321,7 +327,7 @@ namespace {
             // If we are transitioning to primary state, we need to leave
             // this loop in order to go into bgsync-pause mode.
             if (_replCoord->isWaitingForApplierToDrain() ||
-                _replCoord->getCurrentMemberState().primary()) {
+                _replCoord->getMemberState().primary()) {
                 LOG(1) << "waiting for draining or we are primary, not adding more ops to buffer";
                 return;
             }
@@ -384,24 +390,6 @@ namespace {
         bufferSizeGauge.decrement(getSize(op));
     }
 
-    bool BackgroundSync::isStale(OpTime lastOpTimeFetched, 
-                                 OplogReader& r, 
-                                 BSONObj& remoteOldestOp) {
-        remoteOldestOp = r.findOne(rsoplog, Query());
-        OpTime remoteTs = remoteOldestOp["ts"]._opTime();
-        {
-            boost::unique_lock<boost::mutex> lock(_mutex);
-
-            if (lastOpTimeFetched >= remoteTs) {
-                return false;
-            }
-            log() << "replSet remoteOldestOp:    " << remoteTs.toStringLong();
-            log() << "replSet lastOpTimeFetched: " << lastOpTimeFetched.toStringLong();
-        }
-
-        return true;
-    }
-
     bool BackgroundSync::_rollbackIfNeeded(OperationContext* txn, OplogReader& r) {
         string hn = r.conn()->getServerAddress();
 
@@ -457,7 +445,6 @@ namespace {
         boost::unique_lock<boost::mutex> lock(_mutex);
 
         _pause = true;
-        _syncSourceReader.resetConnection();
         _syncSourceHost = HostAndPort();
         _lastOpTimeFetched = OpTime(0,0);
         _lastFetchedHash = 0;
@@ -478,25 +465,6 @@ namespace {
 
         LOG(1) << "replset bgsync fetch queue set to: " << _lastOpTimeFetched << 
             " " << _lastFetchedHash;
-    }
-
-    bool BackgroundSync::isAssumingPrimary_inlock() {
-        return _assumingPrimary;
-    }
-
-    void BackgroundSync::stopReplicationAndFlushBuffer() {
-        boost::unique_lock<boost::mutex> lck(_mutex);
-
-        // 1. Tell syncing to stop
-        _assumingPrimary = true;
-
-        // 2. Wait for syncing to stop and buffer to be applied
-        while (!(_pause && _appliedBuffer)) {
-            _condvar.wait(lck);
-        }
-
-        // 3. Now actually become primary
-        _assumingPrimary = false;
     }
 
     long long BackgroundSync::getLastAppliedHash() const {

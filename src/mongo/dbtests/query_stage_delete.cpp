@@ -30,6 +30,8 @@
  * This file tests db/exec/delete.cpp.
  */
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/dbdirectclient.h"
@@ -39,6 +41,9 @@
 #include "mongo/dbtests/dbtests.h"
 
 namespace QueryStageDelete {
+
+    using boost::scoped_ptr;
+    using std::vector;
 
     //
     // Stage-specific tests.
@@ -67,7 +72,7 @@ namespace QueryStageDelete {
 
         void getLocs(Collection* collection,
                      CollectionScanParams::Direction direction,
-                     vector<DiskLoc>* out) {
+                     vector<RecordId>* out) {
             WorkingSet ws;
 
             CollectionScanParams params;
@@ -110,8 +115,8 @@ namespace QueryStageDelete {
 
             Collection* coll = ctx.getCollection();
 
-            // Get the DiskLocs that would be returned by an in-order scan.
-            vector<DiskLoc> locs;
+            // Get the RecordIds that would be returned by an in-order scan.
+            vector<RecordId> locs;
             getLocs(coll, CollectionScanParams::FORWARD, &locs);
 
             // Configure the scan.

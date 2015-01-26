@@ -30,6 +30,8 @@
  * This file tests db/exec/update.cpp (UpdateStage).
  */
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/dbdirectclient.h"
@@ -47,6 +49,10 @@
 #include "mongo/dbtests/dbtests.h"
 
 namespace QueryStageUpdate {
+
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::vector;
 
     class QueryStageUpdateBase {
     public:
@@ -124,7 +130,7 @@ namespace QueryStageUpdate {
 
         void getLocs(Collection* collection,
                      CollectionScanParams::Direction direction,
-                     vector<DiskLoc>* out) {
+                     vector<RecordId>* out) {
             WorkingSet ws;
 
             CollectionScanParams params;
@@ -255,10 +261,10 @@ namespace QueryStageUpdate {
                 OpDebug* opDebug = &curOp.debug();
                 UpdateDriver driver( (UpdateDriver::Options()) );
                 Database* db = ctx.ctx().db();
-                Collection* coll = db->getCollection(&_txn, ns());
+                Collection* coll = db->getCollection(ns());
 
-                // Get the DiskLocs that would be returned by an in-order scan.
-                vector<DiskLoc> locs;
+                // Get the RecordIds that would be returned by an in-order scan.
+                vector<RecordId> locs;
                 getLocs(coll, CollectionScanParams::FORWARD, &locs);
 
                 UpdateRequest request(nsString());

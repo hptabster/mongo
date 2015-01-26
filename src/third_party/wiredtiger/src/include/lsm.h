@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -151,6 +152,7 @@ struct __wt_lsm_manager {
 	uint32_t	lsm_workers;	/* Current number of LSM workers */
 	uint32_t	lsm_workers_max;
 #define	WT_LSM_MAX_WORKERS	20
+#define	WT_LSM_MIN_WORKERS	3
 	WT_LSM_WORKER_ARGS lsm_worker_cookies[WT_LSM_MAX_WORKERS];
 };
 

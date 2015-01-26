@@ -60,7 +60,6 @@ files.forEach(function(x) {
      * copydbgetnonce
      * dbhash
      * medianKey
-     * clean (apitest_dbcollection)
      * logout and getnonce
      */
 
@@ -74,7 +73,6 @@ files.forEach(function(x) {
         'dbhash|' +
         'dbhash2|' +
         'median|' +
-        'apitest_dbcollection|' +
         'evalb|' +
         'evald|' +
         'eval_nolock|' +
@@ -107,6 +105,7 @@ files.forEach(function(x) {
         'fsync2|' +
         'geo.*|' +
         'indexh|' +
+        'index_bigkeys_nofail|' +
         'remove5|' +
         'update4|' +
         'loglong|' +

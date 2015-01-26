@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -145,7 +146,7 @@ setupfh:
 		WT_ERR(posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM));
 #endif
 
-	WT_ERR(__wt_calloc(session, 1, sizeof(WT_FH), &fh));
+	WT_ERR(__wt_calloc_one(session, &fh));
 	WT_ERR(__wt_strdup(session, name, &fh->name));
 	fh->fd = fd;
 	fh->ref = 1;

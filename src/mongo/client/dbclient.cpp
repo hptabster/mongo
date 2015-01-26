@@ -51,6 +51,14 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::endl;
+    using std::list;
+    using std::map;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
+
     AtomicInt64 DBClientBase::ConnectionIdSequence;
 
     const char* const saslCommandUserSourceFieldName = "userSource";
@@ -895,22 +903,35 @@ namespace mongo {
         list<BSONObj> infos;
 
         // first we're going to try the command
-        // it was only added in 2.8, so if we're talking to an older server
+        // it was only added in 3.0, so if we're talking to an older server
         // we'll fail back to querying system.namespaces
-        // TODO(spencer): remove fallback behavior after 2.8
+        // TODO(spencer): remove fallback behavior after 3.0 
 
         {
             BSONObj res;
             if (runCommand(db,
-                           BSON("listCollections" << 1 << "filter" << filter),
+                           BSON("listCollections" << 1 << "filter" << filter
+                                                       << "cursor" << BSONObj()),
                            res,
                            QueryOption_SlaveOk)) {
-                BSONObj collections = res["collections"].Obj();
+                BSONObj cursorObj = res["cursor"].Obj();
+                BSONObj collections = cursorObj["firstBatch"].Obj();
                 BSONObjIterator it( collections );
                 while ( it.more() ) {
                     BSONElement e = it.next();
                     infos.push_back( e.Obj().getOwned() );
                 }
+
+                const long long id = cursorObj["id"].Long();
+
+                if ( id != 0 ) {
+                    const std::string ns = cursorObj["ns"].String();
+                    auto_ptr<DBClientCursor> cursor = getMore(ns, id, 0, 0);
+                    while ( cursor->more() ) {
+                        infos.push_back(cursor->nextSafe().getOwned());
+                    }
+                }
+
                 return infos;
             }
 
@@ -1346,13 +1367,29 @@ namespace mongo {
         list<BSONObj> specs;
 
         {
-            BSONObj cmd = BSON( "listIndexes" << nsToCollectionSubstring( ns ) );
+            BSONObj cmd = BSON(
+                "listIndexes" << nsToCollectionSubstring( ns ) <<
+                "cursor" << BSONObj()
+            );
+
             BSONObj res;
             if ( runCommand( nsToDatabase( ns ), cmd, res, options ) ) {
-                BSONObjIterator i( res["indexes"].Obj() );
+                BSONObj cursorObj = res["cursor"].Obj();
+                BSONObjIterator i( cursorObj["firstBatch"].Obj() );
                 while ( i.more() ) {
                     specs.push_back( i.next().Obj().getOwned() );
                 }
+
+                const long long id = cursorObj["id"].Long();
+
+                if ( id != 0 ) {
+                    const std::string ns = cursorObj["ns"].String();
+                    auto_ptr<DBClientCursor> cursor = getMore(ns, id, 0, 0);
+                    while ( cursor->more() ) {
+                        specs.push_back(cursor->nextSafe().getOwned());
+                    }
+                }
+
                 return specs;
             }
             int code = res["code"].numberInt();
@@ -1370,7 +1407,7 @@ namespace mongo {
         }
 
         // fallback to querying system.indexes
-        // TODO(spencer): Remove fallback behavior after 2.8
+        // TODO(spencer): Remove fallback behavior after 3.0
         auto_ptr<DBClientCursor> cursor = query(NamespaceString(ns).getSystemIndexesCollection(),
                                                 BSON("ns" << ns), 0, 0, 0, options);
         while ( cursor->more() ) {

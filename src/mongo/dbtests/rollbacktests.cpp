@@ -28,17 +28,20 @@
  *    then also delete it in the license file.
  */
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/head_manager.h"
 #include "mongo/db/catalog/index_create.h"
-#include "mongo/db/diskloc.h"
 #include "mongo/db/operation_context_impl.h"
+#include "mongo/db/record_id.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/unittest/unittest.h"
 
+using boost::scoped_ptr;
 using std::list;
 using std::string;
 
@@ -80,38 +83,38 @@ namespace {
         return db->renameCollection( txn, source.ns(), target.ns(), false );
     }
     Status truncateCollection( OperationContext* txn, const NamespaceString& nss ) {
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
         return coll->truncate( txn );
     }
-    DiskLoc insertRecord( OperationContext* txn,
+    RecordId insertRecord( OperationContext* txn,
                           const NamespaceString& nss,
                           const BSONObj& data ) {
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
-        StatusWith<DiskLoc> status = coll->insertDocument( txn, data, false );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
+        StatusWith<RecordId> status = coll->insertDocument( txn, data, false );
         ASSERT_OK( status.getStatus() );
         return status.getValue();
     }
     void assertOnlyRecord( OperationContext* txn,
                            const NamespaceString& nss,
                            const BSONObj& data ) {
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
         scoped_ptr<RecordIterator> iter( coll->getIterator( txn ) );
         ASSERT( !iter->isEOF() );
-        DiskLoc loc = iter->getNext();
+        RecordId loc = iter->getNext();
         ASSERT( iter->isEOF() );
         ASSERT_EQ( data, coll->docFor( txn, loc ) );
     }
     void assertEmpty( OperationContext* txn, const NamespaceString& nss ) {
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
         scoped_ptr<RecordIterator> iter( coll->getIterator( txn ) );
         ASSERT( iter->isEOF() );
     }
     bool indexExists( OperationContext* txn, const NamespaceString& nss, const string& idxName ) {
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
         return coll->getIndexCatalog()->findIndexByName( txn, idxName, true ) != NULL;
     }
     bool indexReady( OperationContext* txn, const NamespaceString& nss, const string& idxName ) {
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
         return coll->getIndexCatalog()->findIndexByName( txn, idxName, false ) != NULL;
     }
     size_t getNumIndexEntries( OperationContext* txn,
@@ -119,7 +122,7 @@ namespace {
                                const string& idxName ) {
         size_t numEntries = 0;
 
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
         IndexCatalog* catalog = coll->getIndexCatalog();
         IndexDescriptor* desc = catalog->findIndexByName( txn, idxName, false );
 
@@ -141,7 +144,7 @@ namespace {
         return numEntries;
     }
     void dropIndex( OperationContext* txn, const NamespaceString& nss, const string& idxName ) {
-        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection( txn, nss.ns() );
+        Collection* coll = dbHolder().get( txn, nss.db() )->getCollection(nss.ns() );
         IndexDescriptor* desc = coll->getIndexCatalog()->findIndexByName( txn, idxName );
         ASSERT( desc );
         ASSERT_OK( coll->getIndexCatalog()->dropIndex( txn, desc ) );
@@ -477,11 +480,9 @@ namespace {
             createCollection( &txn, nss );
 
             ScopedTransaction transaction(&txn, MODE_IX);
-            Lock::DBLock dbIXLock( txn.lockState(), nss.db(), MODE_IX );
-            Lock::CollectionLock collXLock( txn.lockState(), ns, MODE_X );
+            AutoGetDb autoDb(&txn, nss.db(), MODE_X);
 
-            Client::Context ctx( &txn, ns );
-            Collection* coll = ctx.db()->getCollection( &txn, ns );
+            Collection* coll = autoDb.getDb()->getCollection( ns );
             IndexCatalog* catalog = coll->getIndexCatalog();
 
             string idxName = "a";
@@ -520,11 +521,9 @@ namespace {
             createCollection( &txn, nss );
 
             ScopedTransaction transaction(&txn, MODE_IX);
-            Lock::DBLock dbIXLock( txn.lockState(), nss.db(), MODE_IX );
-            Lock::CollectionLock collXLock( txn.lockState(), ns, MODE_X );
+            AutoGetDb autoDb(&txn, nss.db(), MODE_X);
 
-            Client::Context ctx( &txn, ns );
-            Collection* coll = ctx.db()->getCollection( &txn, ns );
+            Collection* coll = autoDb.getDb()->getCollection(ns);
             IndexCatalog* catalog = coll->getIndexCatalog();
 
             string idxName = "a";
@@ -575,11 +574,9 @@ namespace {
             createCollection( &txn, nss );
 
             ScopedTransaction transaction(&txn, MODE_IX);
-            Lock::DBLock dbIXLock( txn.lockState(), nss.db(), MODE_IX );
-            Lock::CollectionLock collXLock( txn.lockState(), ns, MODE_X );
+            AutoGetDb autoDb(&txn, nss.db(), MODE_X);
 
-            Client::Context ctx( &txn, ns );
-            Collection* coll = ctx.db()->getCollection( &txn, ns );
+            Collection* coll = autoDb.getDb()->getCollection(ns);
             IndexCatalog* catalog = coll->getIndexCatalog();
 
             string idxName = "a";
@@ -620,11 +617,9 @@ namespace {
             createCollection( &txn, nss );
 
             ScopedTransaction transaction(&txn, MODE_IX);
-            Lock::DBLock dbIXLock( txn.lockState(), nss.db(), MODE_IX );
-            Lock::CollectionLock collXLock( txn.lockState(), ns, MODE_X );
+            AutoGetDb autoDb(&txn, nss.db(), MODE_X);
 
-            Client::Context ctx( &txn, ns );
-            Collection* coll = ctx.db()->getCollection( &txn, ns );
+            Collection* coll = autoDb.getDb()->getCollection(ns);
             IndexCatalog* catalog = coll->getIndexCatalog();
 
             string idxName = "a";
@@ -642,10 +637,10 @@ namespace {
             invariant(ice);
             HeadManager* headManager = ice->headManager();
 
-            const DiskLoc oldHead = headManager->getHead(&txn);
+            const RecordId oldHead = headManager->getHead(&txn);
             ASSERT_EQ(oldHead, ice->head(&txn));
 
-            const DiskLoc dummyHead(123, 456);
+            const RecordId dummyHead(123, 456);
             ASSERT_NE(oldHead, dummyHead);
 
             // END SETUP / START TEST
@@ -682,9 +677,11 @@ namespace {
             OperationContextImpl txn;
             NamespaceString nss( ns );
             dropDatabase( &txn, nss );
+
             ScopedTransaction transaction(&txn, MODE_IX);
             Lock::DBLock dbXLock( txn.lockState(), nss.db(), MODE_X );
             Client::Context ctx( &txn, nss.ns() );
+
             string idxNameA = "indexA";
             string idxNameB = "indexB";
             string idxNameC = "indexC";
@@ -699,7 +696,7 @@ namespace {
                 ASSERT( !collectionExists( &ctx, nss.ns() ) );
                 ASSERT_OK( userCreateNS( &txn, ctx.db(), nss.ns(), BSONObj(), false, false ) );
                 ASSERT( collectionExists( &ctx, nss.ns() ) );
-                Collection* coll = ctx.db()->getCollection( &txn, ns );
+                Collection* coll = ctx.db()->getCollection( ns );
                 IndexCatalog* catalog = coll->getIndexCatalog();
 
                 ASSERT_OK( catalog->createIndexOnEmptyCollection( &txn, specA ) );

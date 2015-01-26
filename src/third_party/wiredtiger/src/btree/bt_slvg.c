@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -235,10 +236,8 @@ __wt_bt_salvage(WT_SESSION_IMPL *session, WT_CKPT *ckptbase, const char *cfg[])
 	 * Add unreferenced overflow page blocks to the free list so they are
 	 * reused immediately.
 	 */
-	if (ss->ovfl_next != 0) {
-		WT_ERR(__slvg_ovfl_reconcile(session, ss));
-		WT_ERR(__slvg_ovfl_discard(session, ss));
-	}
+	WT_ERR(__slvg_ovfl_reconcile(session, ss));
+	WT_ERR(__slvg_ovfl_discard(session, ss));
 
 	/*
 	 * Step 5:
@@ -324,7 +323,7 @@ __wt_bt_salvage(WT_SESSION_IMPL *session, WT_CKPT *ckptbase, const char *cfg[])
 	 */
 	if (ss->root_ref.page != NULL) {
 		btree->ckpt = ckptbase;
-		ret = __wt_rec_evict(session, &ss->root_ref, 1);
+		ret = __wt_evict(session, &ss->root_ref, 1);
 		ss->root_ref.page = NULL;
 		btree->ckpt = NULL;
 	}
@@ -343,8 +342,8 @@ err:	WT_TRET(bm->salvage_end(bm, session));
 	WT_TRET(__slvg_cleanup(session, ss));
 
 	/* Discard temporary buffers. */
-	__wt_scr_free(&ss->tmp1);
-	__wt_scr_free(&ss->tmp2);
+	__wt_scr_free(session, &ss->tmp1);
+	__wt_scr_free(session, &ss->tmp2);
 
 	/* Wrap up reporting. */
 	WT_TRET(__wt_progress(session, NULL, ss->fcnt));
@@ -473,8 +472,8 @@ __slvg_read(WT_SESSION_IMPL *session, WT_STUFF *ss)
 		}
 	}
 
-err:	__wt_scr_free(&as);
-	__wt_scr_free(&buf);
+err:	__wt_scr_free(session, &as);
+	__wt_scr_free(session, &buf);
 
 	return (ret);
 }
@@ -491,8 +490,8 @@ __slvg_trk_init(WT_SESSION_IMPL *session,
 	WT_DECL_RET;
 	WT_TRACK *trk;
 
-	WT_RET(__wt_calloc_def(session, 1, &trk));
-	WT_ERR(__wt_calloc_def(session, 1, &trk->shared));
+	WT_RET(__wt_calloc_one(session, &trk));
+	WT_ERR(__wt_calloc_one(session, &trk->shared));
 	trk->shared->ref = 1;
 
 	trk->ss = ss;
@@ -519,7 +518,7 @@ __slvg_trk_split(WT_SESSION_IMPL *session, WT_TRACK *orig, WT_TRACK **newp)
 {
 	WT_TRACK *trk;
 
-	WT_RET(__wt_calloc_def(session, 1, &trk));
+	WT_RET(__wt_calloc_one(session, &trk));
 
 	trk->shared = orig->shared;
 	trk->ss = orig->ss;
@@ -1181,7 +1180,7 @@ __slvg_col_build_internal(
 		ref->home = page;
 		ref->page = NULL;
 
-		WT_ERR(__wt_calloc(session, 1, sizeof(WT_ADDR), &addr));
+		WT_ERR(__wt_calloc_one(session, &addr));
 		WT_ERR(__wt_strndup(
 		    session, trk->trk_addr, trk->trk_addr_size, &addr->addr));
 		addr->size = trk->trk_addr_size;
@@ -1302,7 +1301,7 @@ __slvg_col_build_leaf(WT_SESSION_IMPL *session, WT_TRACK *trk, WT_REF *ref)
 
 	/* Write the new version of the leaf page to disk. */
 	WT_ERR(__slvg_modify_init(session, page));
-	WT_ERR(__wt_rec_write(session, ref, cookie, WT_SKIP_UPDATE_ERR));
+	WT_ERR(__wt_reconcile(session, ref, cookie, WT_SKIP_UPDATE_ERR));
 
 	/* Reset the page. */
 	page->pg_var_d = save_col_var;
@@ -1310,7 +1309,7 @@ __slvg_col_build_leaf(WT_SESSION_IMPL *session, WT_TRACK *trk, WT_REF *ref)
 
 	ret = __wt_page_release(session, ref, 0);
 	if (ret == 0)
-		ret = __wt_rec_evict(session, ref, 1);
+		ret = __wt_evict(session, ref, 1);
 
 	if (0) {
 err:		WT_TRET(__wt_page_release(session, ref, 0));
@@ -1787,8 +1786,8 @@ __slvg_row_trk_update_start(
 
 err:	if (page != NULL)
 		__wt_page_out(session, &page);
-	__wt_scr_free(&dsk);
-	__wt_scr_free(&key);
+	__wt_scr_free(session, &dsk);
+	__wt_scr_free(session, &key);
 
 	return (ret);
 }
@@ -1826,7 +1825,7 @@ __slvg_row_build_internal(
 		ref->home = page;
 		ref->page = NULL;
 
-		WT_ERR(__wt_calloc(session, 1, sizeof(WT_ADDR), &addr));
+		WT_ERR(__wt_calloc_one(session, &addr));
 		WT_ERR(__wt_strndup(
 		    session, trk->trk_addr, trk->trk_addr_size, &addr->addr));
 		addr->size = trk->trk_addr_size;
@@ -2009,7 +2008,7 @@ __slvg_row_build_leaf(
 
 	/* Write the new version of the leaf page to disk. */
 	WT_ERR(__slvg_modify_init(session, page));
-	WT_ERR(__wt_rec_write(session, ref, cookie, WT_SKIP_UPDATE_ERR));
+	WT_ERR(__wt_reconcile(session, ref, cookie, WT_SKIP_UPDATE_ERR));
 
 	/* Reset the page. */
 	page->pg_row_entries += skip_stop;
@@ -2020,12 +2019,12 @@ __slvg_row_build_leaf(
 	 */
 	ret = __wt_page_release(session, ref, 0);
 	if (ret == 0)
-		ret = __wt_rec_evict(session, ref, 1);
+		ret = __wt_evict(session, ref, 1);
 
 	if (0) {
 err:		WT_TRET(__wt_page_release(session, ref, 0));
 	}
-	__wt_scr_free(&key);
+	__wt_scr_free(session, &key);
 
 	return (ret);
 }

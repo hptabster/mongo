@@ -35,6 +35,8 @@
 
 namespace mongo {
 
+    using std::vector;
+
     MultiIteratorStage::MultiIteratorStage(OperationContext* txn,
                                            WorkingSet* ws,
                                            Collection* collection)
@@ -43,10 +45,10 @@ namespace mongo {
           _ws(ws),
           _wsidForFetch(_ws->allocate()) {
         // We pre-allocate a WSM and use it to pass up fetch requests. This should never be used
-        // for anything other than passing up NEED_FETCH. We use the loc and unowned obj state, but
+        // for anything other than passing up NEED_FETCH. We use the loc and owned obj state, but
         // the loc isn't really pointing at any obj. The obj field of the WSM should never be used.
         WorkingSetMember* member = _ws->get(_wsidForFetch);
-        member->state = WorkingSetMember::LOC_AND_UNOWNED_OBJ;
+        member->state = WorkingSetMember::LOC_AND_OWNED_OBJ;
     }
 
     void MultiIteratorStage::addIterator(RecordIterator* it) {
@@ -57,10 +59,10 @@ namespace mongo {
         if ( _collection == NULL )
             return PlanStage::DEAD;
 
-        // The DiskLoc we're about to look at it might not be in memory. In this case
+        // The RecordId we're about to look at it might not be in memory. In this case
         // we request a yield while we fetch the document.
         if (!_iterators.empty()) {
-            DiskLoc curr = _iterators.back()->curr();
+            RecordId curr = _iterators.back()->curr();
             if (!curr.isNull()) {
                 std::auto_ptr<RecordFetcher> fetcher(_collection->documentNeedsFetch(_txn, curr));
                 if (NULL != fetcher.get()) {
@@ -74,7 +76,7 @@ namespace mongo {
             }
         }
 
-        DiskLoc next = _advance();
+        RecordId next = _advance();
         if (next.isNull())
             return PlanStage::IS_EOF;
 
@@ -113,7 +115,7 @@ namespace mongo {
     }
 
     void MultiIteratorStage::invalidate(OperationContext* txn,
-                                        const DiskLoc& dl,
+                                        const RecordId& dl,
                                         InvalidationType type) {
         switch ( type ) {
         case INVALIDATION_DELETION:
@@ -132,16 +134,16 @@ namespace mongo {
         return empty;
     }
 
-    DiskLoc MultiIteratorStage::_advance() {
+    RecordId MultiIteratorStage::_advance() {
         while (!_iterators.empty()) {
-            DiskLoc out = _iterators.back()->getNext();
+            RecordId out = _iterators.back()->getNext();
             if (!out.isNull())
                 return out;
 
             _iterators.popAndDeleteBack();
         }
 
-        return DiskLoc();
+        return RecordId();
     }
 
 } // namespace mongo

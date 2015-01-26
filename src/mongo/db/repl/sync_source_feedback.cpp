@@ -42,12 +42,16 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/repl/bgsync.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/hostandport.h"
 
 namespace mongo {
+
+    using std::endl;
+    using std::string;
 
 namespace repl {
 
@@ -106,13 +110,13 @@ namespace repl {
 
     bool SyncSourceFeedback::replHandshake(OperationContext* txn) {
         ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
-        if (replCoord->getCurrentMemberState().primary()) {
+        if (replCoord->getMemberState().primary()) {
             // primary has no one to handshake to
             return true;
         }
         // construct a vector of handshake obj for us as well as all chained members
         std::vector<BSONObj> handshakeObjs;
-        replCoord->prepareReplSetUpdatePositionCommandHandshakes(txn, &handshakeObjs);
+        replCoord->prepareReplSetUpdatePositionCommandHandshakes(&handshakeObjs);
         LOG(1) << "handshaking upstream updater";
         for (std::vector<BSONObj>::iterator it = handshakeObjs.begin();
                 it != handshakeObjs.end();
@@ -131,7 +135,7 @@ namespace repl {
                         << errMsg;
 
                     // sleep half a second if we are not in our sync source's config
-                    // TODO(dannenberg) after 2.8, remove the string comparison 
+                    // TODO(dannenberg) after 3.0, remove the string comparison 
                     if (res["code"].numberInt() == ErrorCodes::NodeNotFound ||
                             errMsg.find("could not be found in replica set config while attempting "
                                         "to associate it with") != std::string::npos) {
@@ -193,7 +197,7 @@ namespace repl {
 
     Status SyncSourceFeedback::updateUpstream(OperationContext* txn) {
         ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
-        if (replCoord->getCurrentMemberState().primary()) {
+        if (replCoord->getMemberState().primary()) {
             // primary has no one to update to
             return Status::OK();
         }
@@ -205,7 +209,7 @@ namespace repl {
                 return Status(ErrorCodes::NodeNotFound,
                               "Need to send handshake before updating position upstream");
             }
-            replCoord->prepareReplSetUpdatePositionCommand(txn, &cmd);
+            replCoord->prepareReplSetUpdatePositionCommand(&cmd);
         }
         BSONObj res;
 
@@ -215,6 +219,10 @@ namespace repl {
         }
         catch (const DBException& e) {
             log() << "SyncSourceFeedback error sending update: " << e.what() << endl;
+            // blacklist sync target for .5 seconds and find a new one
+            replCoord->blacklistSyncSource(_syncTarget,
+                                           Date_t(curTimeMillis64() + 500));
+            BackgroundSync::get()->clearSyncTarget();
             _resetConnection();
             return e.toStatus();
         }
@@ -222,6 +230,10 @@ namespace repl {
         Status status = Command::getStatusFromCommandResult(res);
         if (!status.isOK()) {
             log() << "SyncSourceFeedback error sending update, response: " << res.toString() <<endl;
+            // blacklist sync target for .5 seconds and find a new one
+            replCoord->blacklistSyncSource(_syncTarget,
+                                           Date_t(curTimeMillis64() + 500));
+            BackgroundSync::get()->clearSyncTarget();
             _resetConnection();
         }
         return status;
@@ -257,7 +269,7 @@ namespace repl {
                 _handshakeNeeded = false;
             }
 
-            MemberState state = replCoord->getCurrentMemberState();
+            MemberState state = replCoord->getMemberState();
             if (state.primary() || state.startup()) {
                 _resetConnection();
                 continue;

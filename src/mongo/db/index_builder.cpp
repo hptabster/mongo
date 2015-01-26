@@ -38,7 +38,7 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/index_create.h"
-#include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
@@ -46,7 +46,25 @@
 
 namespace mongo {
 
+    using std::endl;
+
     AtomicUInt32 IndexBuilder::_indexBuildCount;
+
+namespace {
+    // Synchronization tools when replication spawns a background index in a new thread.
+    // The bool is 'true' when a new background index has started in a new thread but the
+    // parent thread has not yet synchronized with it.
+    bool _bgIndexStarting(false);
+    boost::mutex _bgIndexStartingMutex;
+    boost::condition_variable _bgIndexStartingCondVar;
+
+    void _setBgIndexStarting() {
+        boost::mutex::scoped_lock lk(_bgIndexStartingMutex);
+        invariant(_bgIndexStarting == false);
+        _bgIndexStarting = true;
+        _bgIndexStartingCondVar.notify_one();
+    }
+} // namespace
 
     IndexBuilder::IndexBuilder(const BSONObj& index) :
         BackgroundJob(true /* self-delete */), _index(index.getOwned()),
@@ -64,8 +82,7 @@ namespace mongo {
         LOG(2) << "IndexBuilder building index " << _index;
 
         OperationContextImpl txn;
-
-        Lock::ParallelBatchWriterMode::iAmABatchParticipant(txn.lockState());
+        txn.lockState()->setIsBatchWriter(true);
 
         txn.getClient()->getAuthorizationSession()->grantInternalAuthorization();
 
@@ -91,89 +108,134 @@ namespace mongo {
         return _build(txn, db, false, NULL);
     }
 
+    void IndexBuilder::waitForBgIndexStarting() {
+        boost::unique_lock<boost::mutex> lk(_bgIndexStartingMutex);
+        while (_bgIndexStarting == false) {
+            _bgIndexStartingCondVar.wait(lk);
+        }
+        // Reset for next time.
+        _bgIndexStarting = false;
+    }
+
     Status IndexBuilder::_build(OperationContext* txn,
                                 Database* db,
                                 bool allowBackgroundBuilding,
                                 Lock::DBLock* dbLock) const {
         const NamespaceString ns(_index["ns"].String());
 
-        Collection* c = db->getCollection( txn, ns.ns() );
+        Collection* c = db->getCollection( ns.ns() );
         if ( !c ) {
-            WriteUnitOfWork wunit(txn);
-            c = db->getOrCreateCollection( txn, ns.ns() );
-            verify(c);
-            wunit.commit();
+            while (true) {
+                try {
+                    WriteUnitOfWork wunit(txn);
+                    c = db->getOrCreateCollection( txn, ns.ns() );
+                    verify(c);
+                    wunit.commit();
+                    break;
+                }
+                catch (const WriteConflictException& wce) {
+                    LOG(2) << "WriteConflictException while creating collection in IndexBuilder"
+                           << ", retrying.";
+                    txn->recoveryUnit()->commitAndRestart();
+                    continue;
+                }
+            }
         }
 
         // Show which index we're building in the curop display.
         txn->getCurOp()->setQuery(_index);
 
-        MultiIndexBlock indexer(txn, c);
-        indexer.allowInterruption();
-        if (allowBackgroundBuilding)
-            indexer.allowBackgroundBuilding();
+        bool haveSetBgIndexStarting = false;
+        while (true) {
+            Status status = Status::OK();
+            try {
+                MultiIndexBlock indexer(txn, c);
+                indexer.allowInterruption();
 
-        Status status = Status::OK();
-        IndexDescriptor* descriptor(NULL);
-        try {
-            status = indexer.init(_index);
-            if ( status.code() == ErrorCodes::IndexAlreadyExists )
-                return Status::OK();
+                if (allowBackgroundBuilding)
+                    indexer.allowBackgroundBuilding();
 
-            if (status.isOK()) {
-                if (allowBackgroundBuilding) {
-                    descriptor = indexer.registerIndexBuild();
-                    invariant(dbLock);
-                    dbLock->relockWithMode(MODE_IX);
+
+                IndexDescriptor* descriptor(NULL);
+                try {
+                    status = indexer.init(_index);
+                    if ( status.code() == ErrorCodes::IndexAlreadyExists ) {
+                        if (allowBackgroundBuilding) {
+                            // Must set this in case anyone is waiting for this build.
+                            _setBgIndexStarting();
+                        }
+                        return Status::OK();
+                    }
+
+                    if (status.isOK()) {
+                        if (allowBackgroundBuilding) {
+                            descriptor = indexer.registerIndexBuild();
+                            if (!haveSetBgIndexStarting) {
+                                _setBgIndexStarting();
+                                haveSetBgIndexStarting = true;
+                            }
+                            invariant(dbLock);
+                            dbLock->relockWithMode(MODE_IX);
+                        }
+
+                        Lock::CollectionLock colLock(txn->lockState(), ns.ns(), MODE_IX);
+                        status = indexer.insertAllDocumentsInCollection();
+                    }
+
+                    if (status.isOK()) {
+                        if (allowBackgroundBuilding) {
+                            dbLock->relockWithMode(MODE_X);
+                        }
+                        WriteUnitOfWork wunit(txn);
+                        indexer.commit();
+                        wunit.commit();
+                    }
+                }
+                catch (const DBException& e) {
+                    status = e.toStatus();
                 }
 
-                Lock::CollectionLock colLock(txn->lockState(), ns.ns(), MODE_IX);
-                status = indexer.insertAllDocumentsInCollection();
-            }
-
-            if (status.isOK()) {
                 if (allowBackgroundBuilding) {
                     dbLock->relockWithMode(MODE_X);
+                    Database* db = dbHolder().get(txn, ns.db());
+                    fassert(28553, db);
+                    fassert(28554, db->getCollection(ns.ns()));
+                    indexer.unregisterIndexBuild(descriptor);
                 }
-                WriteUnitOfWork wunit(txn);
-                indexer.commit();
-                wunit.commit();
+
+                if (status.code() == ErrorCodes::InterruptedAtShutdown) {
+                    // leave it as-if kill -9 happened. This will be handled on restart.
+                    indexer.abortWithoutCleanup();
+                }
             }
-        }
-        catch (const DBException& e) {
-            status = e.toStatus();
-        }
+            catch (const WriteConflictException& wce) {
+                status = wce.toStatus();
+            }
 
-        if (allowBackgroundBuilding) {
-            dbLock->relockWithMode(MODE_X);
-            Database* db = dbHolder().get(txn, ns.db());
-            fassert(28553, db);
-            fassert(28554, db->getCollection(txn, ns.ns()));
-            indexer.unregisterIndexBuild(descriptor);
-        }
+            if (status.code() != ErrorCodes::WriteConflict)
+                return status;
 
-        if (status.code() == ErrorCodes::InterruptedAtShutdown) {
-            // leave it as-if kill -9 happened. This will be handled on restart.
-            indexer.abortWithoutCleanup();
-        }
 
-        return status;
+            LOG(2) << "WriteConflictException while creating index in IndexBuilder, retrying.";
+            txn->recoveryUnit()->commitAndRestart();
+        }
     }
 
-    std::vector<BSONObj> 
+    std::vector<BSONObj>
     IndexBuilder::killMatchingIndexBuilds(Collection* collection,
                                           const IndexCatalog::IndexKillCriteria& criteria) {
         invariant(collection);
         return collection->getIndexCatalog()->killMatchingIndexBuilds(criteria);
     }
 
-    void IndexBuilder::restoreIndexes(const std::vector<BSONObj>& indexes) {
-        log() << "restarting " << indexes.size() << " index build(s)" << endl;
+    void IndexBuilder::restoreIndexes(OperationContext* txn, const std::vector<BSONObj>& indexes) {
+        log() << "restarting " << indexes.size() << " background index build(s)" << endl;
         for (int i = 0; i < static_cast<int>(indexes.size()); i++) {
             IndexBuilder* indexBuilder = new IndexBuilder(indexes[i]);
             // This looks like a memory leak, but indexBuilder deletes itself when it finishes
             indexBuilder->go();
+            Lock::TempRelease release(txn->lockState());
+            IndexBuilder::waitForBgIndexStarting();
         }
     }
 }
-

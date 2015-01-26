@@ -30,10 +30,14 @@
 
 #include "mongo/db/storage/sorted_data_interface_test_harness.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
 
     // Call getDirection() on a forward cursor and verify the result equals +1.
     TEST( SortedDataInterface, GetCursorDirection ) {
@@ -73,7 +77,7 @@ namespace mongo {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             scoped_ptr<SortedDataInterface::Cursor> cursor( sorted->newCursor( opCtx.get(), 1 ) );
 
-            ASSERT( !cursor->locate( minKey, minDiskLoc ) );
+            ASSERT( !cursor->locate( minKey, RecordId::min() ) );
             ASSERT( cursor->isEOF() );
 
             // Cursor at EOF should remain at EOF when advanced
@@ -96,7 +100,7 @@ namespace mongo {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             scoped_ptr<SortedDataInterface::Cursor> cursor( sorted->newCursor( opCtx.get(), -1 ) );
 
-            ASSERT( !cursor->locate( maxKey, maxDiskLoc ) );
+            ASSERT( !cursor->locate( maxKey, RecordId::max() ) );
             ASSERT( cursor->isEOF() );
 
             // Cursor at EOF should remain at EOF when advanced
@@ -122,7 +126,7 @@ namespace mongo {
             {
                 WriteUnitOfWork uow( opCtx.get() );
                 BSONObj key = BSON( "" << i );
-                DiskLoc loc( 42, i * 2 );
+                RecordId loc( 42, i * 2 );
                 ASSERT_OK( sorted->insert( opCtx.get(), key, loc, true ) );
                 uow.commit();
             }
@@ -136,11 +140,11 @@ namespace mongo {
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             scoped_ptr<SortedDataInterface::Cursor> cursor( sorted->newCursor( opCtx.get(), 1 ) );
-            ASSERT( !cursor->locate( minKey, minDiskLoc ) );
+            ASSERT( !cursor->locate( minKey, RecordId::min() ) );
             for ( int i = 0; i < nToInsert; i++ ) {
                 ASSERT( !cursor->isEOF() );
                 ASSERT_EQUALS( BSON( "" << i ), cursor->getKey() );
-                ASSERT_EQUALS( DiskLoc( 42, i * 2 ), cursor->getDiskLoc() );
+                ASSERT_EQUALS( RecordId( 42, i * 2 ), cursor->getRecordId() );
                 cursor->advance();
             }
             ASSERT( cursor->isEOF() );
@@ -168,7 +172,7 @@ namespace mongo {
             {
                 WriteUnitOfWork uow( opCtx.get() );
                 BSONObj key = BSON( "" << i );
-                DiskLoc loc( 42, i * 2 );
+                RecordId loc( 42, i * 2 );
                 ASSERT_OK( sorted->insert( opCtx.get(), key, loc, true ) );
                 uow.commit();
             }
@@ -182,11 +186,11 @@ namespace mongo {
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             scoped_ptr<SortedDataInterface::Cursor> cursor( sorted->newCursor( opCtx.get(), -1 ) );
-            ASSERT( !cursor->locate( maxKey, maxDiskLoc ) );
+            ASSERT( !cursor->locate( maxKey, RecordId::max() ) );
             for ( int i = nToInsert - 1; i >= 0; i-- ) {
                 ASSERT( !cursor->isEOF() );
                 ASSERT_EQUALS( BSON( "" << i ), cursor->getKey() );
-                ASSERT_EQUALS( DiskLoc( 42, i * 2 ), cursor->getDiskLoc() );
+                ASSERT_EQUALS( RecordId( 42, i * 2 ), cursor->getRecordId() );
                 cursor->advance();
             }
             ASSERT( cursor->isEOF() );

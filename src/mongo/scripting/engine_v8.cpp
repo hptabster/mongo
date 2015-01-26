@@ -33,8 +33,11 @@
 
 #include "mongo/scripting/engine_v8.h"
 
+#include <iostream>
+
 #include "mongo/base/init.h"
 #include "mongo/db/global_environment_experiment.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/scripting/v8_db.h"
 #include "mongo/scripting/v8_utils.h"
@@ -45,6 +48,12 @@
 using namespace mongoutils;
 
 namespace mongo {
+
+    using std::cout;
+    using std::endl;
+    using std::map;
+    using std::string;
+    using std::stringstream;
 
 #ifndef _MSC_EXTENSIONS
     const int V8Scope::objectDepthLimit;
@@ -326,7 +335,7 @@ namespace mongo {
 
     template <typename _GCState>
     void gcCallback(v8::GCType type, v8::GCCallbackFlags flags) {
-        if (!logger::globalLogDomain()->shouldLog(logger::LogSeverity::Debug(1)))
+        if (!shouldLog(logger::LogSeverity::Debug(1)))
              // don't collect stats unless verbose
              return;
 
@@ -385,27 +394,27 @@ namespace mongo {
          }
      }
 
-     void V8Scope::registerOpId() {
+     void V8Scope::registerOperation(OperationContext* txn) {
          scoped_lock giLock(_engine->_globalInterruptLock);
-         if (_engine->haveGetCurrentOpIdCallback()) {
-             // this scope has an associated operation
-             _opId = _engine->getCurrentOpId();
-             _engine->_opToScopeMap[_opId] = this;
+         invariant(_opId == 0);
+         _opId = txn->getOpID();
+         _engine->_opToScopeMap[_opId] = this;
+         LOG(2) << "V8Scope " << static_cast<const void*>(this) << " registered for op " << _opId;
+         Status status = txn->checkForInterruptNoAssert();
+         if (!status.isOK()) {
+             kill();
          }
-         else
-             // no associated op id (e.g. running from shell)
-             _opId = 0;
-         LOG(2) << "V8Scope " << static_cast<const void*>(this) << " registered for op " << _opId << endl;
      }
 
-     void V8Scope::unregisterOpId() {
+     void V8Scope::unregisterOperation() {
          scoped_lock giLock(_engine->_globalInterruptLock);
          LOG(2) << "V8Scope " << static_cast<const void*>(this) << " unregistered for op " << _opId << endl;
-        if (_engine->haveGetCurrentOpIdCallback() || _opId != 0) {
+        if (_opId != 0) {
             // scope is currently associated with an operation id
             V8ScriptEngine::OpIdToScopeMap::iterator it = _engine->_opToScopeMap.find(_opId);
             if (it != _engine->_opToScopeMap.end())
                 _engine->_opToScopeMap.erase(it);
+            _opId = 0;
         }
     }
 
@@ -416,7 +425,7 @@ namespace mongo {
             LOG(2) << "v8 execution interrupted.  isolate: " << static_cast<const void*>(_isolate) << endl;
             return false;
         }
-        if (_pendingKill || globalScriptEngine->interrupted()) {
+        if (isKillPending()) {
             // kill flag was set before entering our callback
             LOG(2) << "marked for death while leaving callback.  isolate: " << static_cast<const void*>(_isolate) << endl;
             v8::V8::TerminateExecution(_isolate);
@@ -434,7 +443,7 @@ namespace mongo {
             LOG(2) << "v8 execution interrupted.  isolate: " << static_cast<const void*>(_isolate) << endl;
             return false;
         }
-        if (_pendingKill || globalScriptEngine->interrupted()) {
+        if (isKillPending()) {
             LOG(2) << "marked for death while leaving callback.  isolate: " << static_cast<const void*>(_isolate) << endl;
             v8::V8::TerminateExecution(_isolate);
             return false;
@@ -456,7 +465,7 @@ namespace mongo {
 
     /** check if there is a pending killOp request */
     bool V8Scope::isKillPending() const {
-        return _pendingKill || _engine->interrupted();
+        return _pendingKill;
     }
 
     OperationContext* V8Scope::getOpContext() const {
@@ -468,7 +477,7 @@ namespace mongo {
      */
     std::string V8ScriptEngine::printKnownOps_inlock() {
         stringstream out;
-        if (logger::globalLogDomain()->shouldLog(logger::LogSeverity::Debug(2))) {
+        if (shouldLog(logger::LogSeverity::Debug(2))) {
             out << "  known ops: " << endl;
             for(OpIdToScopeMap::iterator iSc = _opToScopeMap.begin();
                 iSc != _opToScopeMap.end(); ++iSc) {
@@ -486,6 +495,7 @@ namespace mongo {
           _interruptLock("ScopeInterruptLock"),
           _inNativeExecution(true),
           _pendingKill(false),
+          _opId(0),
           _opCtx(NULL) {
 
         // create new isolate and enter it via a scope
@@ -559,13 +569,10 @@ namespace mongo {
 
         // install global utility functions
         installGlobalUtils(*this);
-
-        // Don't add anything that can throw after this line otherwise we won't be unregistered.
-        registerOpId();
     }
 
     V8Scope::~V8Scope() {
-        unregisterOpId();
+        unregisterOperation();
     }
 
     bool V8Scope::hasOutOfMemoryException() {
@@ -1043,7 +1050,7 @@ namespace mongo {
 
         if (!nativeEpilogue()) {
             _error = "JavaScript execution terminated";
-            log() << _error << endl;
+            error() << _error << endl;
             uasserted(16711, _error);
         }
 
@@ -1059,7 +1066,7 @@ namespace mongo {
 
         if (!nativePrologue()) {
             _error = "JavaScript execution terminated";
-            log() << _error << endl;
+            error() << _error << endl;
             uasserted(16712, _error);
         }
 
@@ -1098,7 +1105,7 @@ namespace mongo {
         if (!nativeEpilogue()) {
             _error = "JavaScript execution terminated";
             if (reportError)
-                log() << _error << endl;
+                error() << _error << endl;
             if (assertOnError)
                 uasserted(13475, _error);
             return false;
@@ -1117,7 +1124,7 @@ namespace mongo {
         if (!nativePrologue()) {
             _error = "JavaScript execution terminated";
             if (reportError)
-                log() << _error << endl;
+                error() << _error << endl;
             if (assertOnError)
                 uasserted(16721, _error);
             return false;
@@ -1323,11 +1330,10 @@ namespace mongo {
 
     void V8Scope::reset() {
         V8_SIMPLE_HEADER
-        unregisterOpId();
+        unregisterOperation();
         _error = "";
         _pendingKill = false;
         _inNativeExecution = true;
-        registerOpId();
     }
 
     v8::Local<v8::Value> V8Scope::newFunction(const StringData& code) {
@@ -1402,7 +1408,7 @@ namespace mongo {
             return newFunction(elem.valueStringData());
         case CodeWScope:
             if (!elem.codeWScopeObject().isEmpty())
-                log() << "warning: CodeWScope doesn't transfer to db.eval" << endl;
+                warning() << "CodeWScope doesn't transfer to db.eval" << endl;
             return newFunction(StringData(elem.codeWScopeCode(), elem.codeWScopeCodeLen() - 1));
         case mongo::Symbol:
         case mongo::String:
@@ -1826,7 +1832,7 @@ namespace mongo {
 
         if (haveError) {
             if (reportError)
-                log() << _error << std::endl;
+                error() << _error << std::endl;
             if (assertOnError)
                 uasserted(16722, _error);
             return true;

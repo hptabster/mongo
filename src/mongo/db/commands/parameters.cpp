@@ -46,6 +46,7 @@
 #include "mongo/util/net/ssl_options.h"
 
 using std::string;
+using std::stringstream;
 
 namespace mongo {
 
@@ -586,6 +587,8 @@ namespace mongo {
                                                              &DBException::traceExceptions,
                                                              false, // allowedToChangeAtStartup
                                                              true); // allowedToChangeAtRuntime
+
+
     }
 
 }

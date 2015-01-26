@@ -39,6 +39,10 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::string;
+    using std::vector;
+
     // static
     const char* TextStage::kStageType = "TEXT";
 
@@ -56,6 +60,7 @@ namespace mongo {
           _currentIndexScanner(0) {
         _scoreIterator = _scores.end();
         _specificStats.indexPrefix = _params.indexPrefix;
+        _specificStats.indexName = _params.index->indexName();
     }
 
     TextStage::~TextStage() { }
@@ -127,7 +132,7 @@ namespace mongo {
         }
     }
 
-    void TextStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void TextStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
 
         // Propagate invalidate to children.
@@ -135,7 +140,7 @@ namespace mongo {
             _scanners.mutableVector()[i]->invalidate(txn, dl, type);
         }
 
-        // We store the score keyed by DiskLoc.  We have to toss out our state when the DiskLoc
+        // We store the score keyed by RecordId.  We have to toss out our state when the RecordId
         // changes.
         // TODO: If we're RETURNING_RESULTS we could somehow buffer the object.
         ScoreMap::iterator scoreIt = _scores.find(dl);
@@ -223,8 +228,7 @@ namespace mongo {
             invariant(1 == wsm->keyData.size());
             invariant(wsm->hasLoc());
             IndexKeyDatum& keyDatum = wsm->keyData.back();
-            addTerm(keyDatum.keyData, wsm->loc);
-            _ws->free(id);
+            addTerm(keyDatum.keyData, id);
             return PlanStage::NEED_TIME;
         }
         else if (PlanStage::IS_EOF == childState) {
@@ -269,28 +273,40 @@ namespace mongo {
         }
 
         // Filter for phrases and negative terms, score and truncate.
-        DiskLoc loc = _scoreIterator->first;
-        double score = _scoreIterator->second;
+        TextRecordData textRecordData = _scoreIterator->second;
+        WorkingSetMember* wsm = _ws->get(textRecordData.wsid);
         _scoreIterator++;
 
         // Ignore non-matched documents.
-        if (score < 0) {
+        if (textRecordData.score < 0) {
+            _ws->free(textRecordData.wsid);
             return PlanStage::NEED_TIME;
+        }
+
+        // Retrieve the document. We may already have the document due to force-fetching before
+        // a yield. If not, then we fetch the document here.
+        BSONObj doc;
+        if (wsm->hasObj()) {
+            doc = wsm->obj;
+        }
+        else {
+            doc = _params.index->getCollection()->docFor(_txn, wsm->loc);
+            wsm->obj = doc;
+            wsm->keyData.clear();
+            wsm->state = WorkingSetMember::LOC_AND_UNOWNED_OBJ;
         }
 
         // Filter for phrases and negated terms
         if (_params.query.hasNonTermPieces()) {
-            if (!_ftsMatcher.matchesNonTerm(_params.index->getCollection()->docFor(_txn, loc))) {
+            if (!_ftsMatcher.matchesNonTerm(doc)) {
+                _ws->free(textRecordData.wsid);
                 return PlanStage::NEED_TIME;
             }
         }
 
-        *out = _ws->allocate();
-        WorkingSetMember* member = _ws->get(*out);
-        member->loc = loc;
-        member->obj = _params.index->getCollection()->docFor(_txn, member->loc);
-        member->state = WorkingSetMember::LOC_AND_UNOWNED_OBJ;
-        member->addComputed(new TextScoreComputedData(score));
+        // Populate the working set member with the text score and return it.
+        wsm->addComputed(new TextScoreComputedData(textRecordData.score));
+        *out = textRecordData.wsid;
         return PlanStage::ADVANCED;
     }
 
@@ -299,7 +315,7 @@ namespace mongo {
         TextMatchableDocument(OperationContext* txn,
                               const BSONObj& keyPattern,
                               const BSONObj& key,
-                              DiskLoc loc,
+                              RecordId loc,
                               const Collection* collection,
                               bool *fetched)
             : _txn(txn),
@@ -348,12 +364,28 @@ namespace mongo {
         const Collection* _collection;
         BSONObj _keyPattern;
         BSONObj _key;
-        DiskLoc _loc;
+        RecordId _loc;
         bool* _fetched;
     };
 
-    void TextStage::addTerm(const BSONObj& key, const DiskLoc& loc) {
-        double *documentAggregateScore = &_scores[loc];
+    void TextStage::addTerm(const BSONObj key, WorkingSetID wsid) {
+        WorkingSetMember* wsm = _ws->get(wsid);
+        TextRecordData* textRecordData = &_scores[wsm->loc];
+
+        if (WorkingSet::INVALID_ID == textRecordData->wsid) {
+            // We haven't seen this RecordId before. Keep the working set member around
+            // (it may be force-fetched on saveState()).
+            textRecordData->wsid = wsid;
+        }
+        else {
+            // We already have a working set member for this RecordId. Free the old
+            // WSM and retrieve the new one.
+            invariant(wsid != textRecordData->wsid);
+            _ws->free(wsid);
+            wsm = _ws->get(textRecordData->wsid);
+        }
+
+        double* documentAggregateScore = &textRecordData->score;
 
         ++_specificStats.keysExamined;
 
@@ -367,7 +399,7 @@ namespace mongo {
 
         BSONElement scoreElement = keyIt.next();
         double documentTermScore = scoreElement.number();
-        
+
         // Handle filtering.
         if (*documentAggregateScore < 0) {
             // We have already rejected this document.
@@ -379,10 +411,10 @@ namespace mongo {
                 // We have not seen this document before and need to apply a filter.
                 bool fetched = false;
                 TextMatchableDocument tdoc(_txn,
-                                           _params.index->keyPattern(), 
-                                           key, 
-                                           loc, 
-                                           _params.index->getCollection(), 
+                                           _params.index->keyPattern(),
+                                           key,
+                                           wsm->loc,
+                                           _params.index->getCollection(),
                                            &fetched);
 
                 if (!_filter->matches(&tdoc)) {

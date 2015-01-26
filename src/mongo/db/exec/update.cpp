@@ -36,12 +36,18 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
+#include "mongo/db/global_environment_experiment.h"
 #include "mongo/db/ops/update_lifecycle.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/query/explain.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::string;
+    using std::vector;
 
     namespace mb = mutablebson;
 
@@ -50,14 +56,14 @@ namespace mongo {
         const char idFieldName[] = "_id";
         const FieldRef idFieldRef(idFieldName);
 
-        Status storageValid(const mb::Document&, const bool);
-        Status storageValid(const mb::ConstElement&, const bool);
-        Status storageValidChildren(const mb::ConstElement&, const bool);
+        Status storageValid(const mb::Document&, const bool = true);
+        Status storageValid(const mb::ConstElement&, const bool = true);
+        Status storageValidChildren(const mb::ConstElement&, const bool = true);
 
         /**
          * mutable::document storageValid check -- like BSONObj::_okForStorage
          */
-        Status storageValid(const mb::Document& doc, const bool deep = true) {
+        Status storageValid(const mb::Document& doc, const bool deep) {
             mb::ConstElement currElem = doc.root().leftChild();
             while (currElem.ok()) {
                 if (currElem.getFieldName() == idFieldName) {
@@ -89,7 +95,7 @@ namespace mongo {
         Status validateDollarPrefixElement(const mb::ConstElement elem, const bool deep) {
             mb::ConstElement curr = elem;
             StringData currName = elem.getFieldName();
-
+            LOG(5) << "validateDollarPrefixElement -- validating field '" << currName << "'";
             // Found a $db field
             if (currName == "$db") {
                 if (curr.getType() != String) {
@@ -146,7 +152,28 @@ namespace mongo {
             return Status::OK();
         }
 
-        Status storageValid(const mb::ConstElement& elem, const bool deep = true) {
+        /**
+         * Checks that all parents, of the element passed in, are valid for storage
+         *
+         * Note: The elem argument must be in a valid state when using this function
+         */
+        Status storageValidParents(const mb::ConstElement& elem) {
+            const mb::ConstElement& root = elem.getDocument().root();
+            if (elem != root) {
+                const mb::ConstElement& parent = elem.parent();
+                if (parent.ok() && parent != root) {
+                    Status s = storageValid(parent, false);
+                    if (s.isOK()) {
+                        s = storageValidParents(parent);
+                    }
+
+                    return s;
+                }
+            }
+            return Status::OK();
+        }
+
+        Status storageValid(const mb::ConstElement& elem, const bool deep) {
             if (!elem.ok())
                 return Status(ErrorCodes::BadValue, "Invalid elements cannot be stored.");
 
@@ -156,8 +183,8 @@ namespace mongo {
             // TODO: Revisit how mutable handles array field names. We going to need to make
             // this better if we ever want to support ordered updates that can alter the same
             // element repeatedly; see SERVER-12848.
-            const bool childOfArray = elem.parent().ok() ?
-                (elem.parent().getType() == mongo::Array) : false;
+            const mb::ConstElement& parent = elem.parent();
+            const bool childOfArray = parent.ok() ? (parent.getType() == mongo::Array) : false;
 
             if (!childOfArray) {
                 StringData fieldName = elem.getFieldName();
@@ -177,10 +204,12 @@ namespace mongo {
                 }
             }
 
-            // Check children if there are any.
-            Status s = storageValidChildren(elem, deep);
-            if (!s.isOK())
-                return s;
+            if (deep) {
+                // Check children if there are any.
+                Status s = storageValidChildren(elem, deep);
+                if (!s.isOK())
+                    return s;
+            }
 
             return Status::OK();
         }
@@ -261,9 +290,17 @@ namespace mongo {
 
                     // newElem might be missing if $unset/$renamed-away
                     if (newElem.ok()) {
+
+                        // Check element, and its children
                         Status s = storageValid(newElem, true);
                         if (!s.isOK())
                             return s;
+
+                        // Check parents to make sure they are valid as well.
+                        s = storageValidParents(newElem);
+                        if (!s.isOK())
+                            return s;
+
                     }
                     // Check if the updated field conflicts with immutable fields
                     immutableFieldRef.findConflicts(&current, &changedImmutableFields);
@@ -408,9 +445,13 @@ namespace mongo {
           _doc(params.driver->getDocument()) {
         // We are an update until we fall into the insert case.
         params.driver->setContext(ModifierInterface::ExecInfo::UPDATE_CONTEXT);
+
+        // Before we even start executing, we know whether or not this is a replacement
+        // style or $mod style update.
+        _specificStats.isDocReplacement = params.driver->isDocReplacement();
     }
 
-    void UpdateStage::transformAndUpdate(BSONObj& oldObj, DiskLoc& loc) {
+    void UpdateStage::transformAndUpdate(BSONObj& oldObj, RecordId& loc) {
         const UpdateRequest* request = _params.request;
         UpdateDriver* driver = _params.driver;
         CanonicalQuery* cq = _params.canonicalQuery;
@@ -418,17 +459,25 @@ namespace mongo {
 
         // Ask the driver to apply the mods. It may be that the driver can apply those "in
         // place", that is, some values of the old document just get adjusted without any
-        // change to the binary layout on the bson layer. It may be that a whole new
-        // document is needed to accomodate the new bson layout of the resulting document.
-        _doc.reset(oldObj, mutablebson::Document::kInPlaceEnabled);
+        // change to the binary layout on the bson layer. It may be that a whole new document
+        // is needed to accomodate the new bson layout of the resulting document. In any event,
+        // only enable in-place mutations if the underlying storage engine offers support for
+        // writing damage events.
+        _doc.reset(
+            oldObj,
+            (_collection->getRecordStore()->updateWithDamagesSupported() ?
+             mutablebson::Document::kInPlaceEnabled :
+             mutablebson::Document::kInPlaceDisabled));
+
         BSONObj logObj;
 
         FieldRefSet updatedFields;
+        bool docWasModified = false;
 
         Status status = Status::OK();
         if (!driver->needMatchDetails()) {
             // If we don't need match details, avoid doing the rematch
-            status = driver->update(StringData(), &_doc, &logObj, &updatedFields);
+            status = driver->update(StringData(), &_doc, &logObj, &updatedFields, &docWasModified);
         }
         else {
             // If there was a matched field, obtain it.
@@ -447,7 +496,7 @@ namespace mongo {
             // that check here in an else clause to the above conditional and remove the
             // checks from the mods.
 
-            status = driver->update(matchedField, &_doc, &logObj, &updatedFields);
+            status = driver->update(matchedField, &_doc, &logObj, &updatedFields, &docWasModified);
         }
 
         if (!status.isOK()) {
@@ -457,24 +506,24 @@ namespace mongo {
         // Ensure _id exists and is first
         uassertStatusOK(ensureIdAndFirst(_doc));
 
-        // If the driver applied the mods in place, we can ask the mutable for what
-        // changed. We call those changes "damages". :) We use the damages to inform the
-        // journal what was changed, and then apply them to the original document
-        // ourselves. If, however, the driver applied the mods out of place, we ask it to
-        // generate a new, modified document for us. In that case, the file manager will
-        // take care of the journaling details for us.
-        //
-        // This code flow is admittedly odd. But, right now, journaling is baked in the file
-        // manager. And if we aren't using the file manager, we have to do jounaling
-        // ourselves.
-        bool docWasModified = false;
-        BSONObj newObj;
+        // See if the changes were applied in place
         const char* source = NULL;
-        bool inPlace = _doc.getInPlaceUpdates(&_damages, &source);
+        const bool inPlace = _doc.getInPlaceUpdates(&_damages, &source);
 
-        // If something changed in the document, verify that no immutable fields were changed
-        // and data is valid for storage.
-        if ((!inPlace || !_damages.empty()) ) {
+        if (inPlace && _damages.empty()) {
+            // An interesting edge case. A modifier didn't notice that it was really a no-op
+            // during its 'prepare' phase. That represents a missed optimization, but we still
+            // shouldn't do any real work. Toggle 'docWasModified' to 'false'.
+            //
+            // Currently, an example of this is '{ $pushAll : { x : [] } }' when the 'x' array
+            // exists.
+            docWasModified = false;
+        }
+
+        if (docWasModified) {
+
+            // Verify that no immutable fields were changed and data is valid for storage.
+
             if (!(request->isFromReplication() || request->isFromMigration())) {
                 const std::vector<FieldRef*>* immutableFields = NULL;
                 if (lifecycle)
@@ -486,26 +535,24 @@ namespace mongo {
                                          immutableFields,
                                          driver->modOptions()) );
             }
-        }
 
-        {
+
+            // Prepare to write back the modified document
+            BSONObj newObj;
             WriteUnitOfWork wunit(_txn);
 
-            if (inPlace && !driver->modsAffectIndices()) {
-                // If a set of modifiers were all no-ops, we are still 'in place', but there
-                // is no work to do, in which case we want to consider the object unchanged.
-                if (!_damages.empty() ) {
-                    // Don't actually do the write if this is an explain.
-                    if (!request->isExplain()) {
-                        invariant(_collection);
-                        const RecordData oldRec(oldObj.objdata(), oldObj.objsize());
-                        _collection->updateDocumentWithDamages(_txn, loc, oldRec, source, _damages);
-                    }
-                    docWasModified = true;
-                    _specificStats.fastmod = true;
+            if (inPlace) {
+
+                // Don't actually do the write if this is an explain.
+                if (!request->isExplain()) {
+                    invariant(_collection);
+                    const RecordData oldRec(oldObj.objdata(), oldObj.objsize());
+                    _collection->updateDocumentWithDamages(_txn, loc, oldRec, source, _damages);
                 }
 
                 newObj = oldObj;
+                _specificStats.fastmod = true;
+
             }
             else {
                 // The updates were not in place. Apply them through the file manager.
@@ -515,18 +562,17 @@ namespace mongo {
                         str::stream() << "Resulting document after update is larger than "
                         << BSONObjMaxUserSize,
                         newObj.objsize() <= BSONObjMaxUserSize);
-                docWasModified = true;
 
                 // Don't actually do the write if this is an explain.
                 if (!request->isExplain()) {
                     invariant(_collection);
-                    StatusWith<DiskLoc> res = _collection->updateDocument(_txn,
-                                                                          loc,
-                                                                          newObj,
-                                                                          true,
-                                                                          _params.opDebug);
+                    StatusWith<RecordId> res = _collection->updateDocument(
+                        _txn,
+                        loc, oldObj, newObj,
+                        true, driver->modsAffectIndices(),
+                        _params.opDebug);
                     uassertStatusOK(res.getStatus());
-                    DiskLoc newLoc = res.getValue();
+                    RecordId newLoc = res.getValue();
 
                     // If the document moved, we might see it again in a collection scan (maybe it's
                     // a document after our current document).
@@ -551,12 +597,13 @@ namespace mongo {
                             NULL,
                             request->isFromMigration());
             }
+
             wunit.commit();
         }
 
         // Only record doc modifications if they wrote (exclude no-ops). Explains get
         // recorded as if they wrote.
-        if (docWasModified) {
+        if (docWasModified || request->isExplain()) {
             _specificStats.nModified++;
         }
     }
@@ -641,7 +688,7 @@ namespace mongo {
 
         WriteUnitOfWork wunit(_txn);
         invariant(_collection);
-        StatusWith<DiskLoc> newLoc = _collection->insertDocument(_txn,
+        StatusWith<RecordId> newLoc = _collection->insertDocument(_txn,
                                                                  newObj,
                                                                  !request->isGod()/*enforceQuota*/);
         uassertStatusOK(newLoc.getStatus());
@@ -707,17 +754,20 @@ namespace mongo {
 
         if (PlanStage::ADVANCED == status) {
             // Need to get these things from the result returned by the child.
-            DiskLoc loc;
+            RecordId loc;
             BSONObj oldObj;
 
             WorkingSetMember* member = _ws->get(id);
 
             if (!member->hasLoc()) {
+                // We expect to be here because of an invalidation causing a force-fetch, and
+                // doc-locking storage engines do not issue invalidations.
+                dassert(!supportsDocLocking());
+
                 _ws->free(id);
-                const std::string errmsg = "update stage failed to read member w/ loc from child";
-                *out = WorkingSetCommon::allocateStatusMember(_ws, Status(ErrorCodes::InternalError,
-                                                                          errmsg));
-                return PlanStage::FAILURE;
+                ++_specificStats.nInvalidateSkips;
+                ++_commonStats.needTime;
+                return PlanStage::NEED_TIME;
             }
             loc = member->loc;
 
@@ -726,8 +776,33 @@ namespace mongo {
             invariant(member->hasObj());
             oldObj = member->obj;
 
-            // If we're here, then we have retrieved both a DiskLoc and the corresponding
-            // unowned object from the child stage. Since we have the object and the diskloc,
+            // If the working set member is in the owned obj with loc state, then 'oldObj' may not
+            // be the latest version in the database. In this case, we must refetch the doc from the
+            // collection. We also must be tolerant of the possibility that the doc at the wsm's
+            // RecordId was deleted or updated after being force-fetched.
+            if (WorkingSetMember::LOC_AND_OWNED_OBJ == member->state) {
+                if (!_collection->findDoc(_txn, loc, &oldObj)) {
+                    // The doc was deleted after the force-fetch, so we just move on.
+                    ++_commonStats.needTime;
+                    return PlanStage::NEED_TIME;
+                }
+
+                // We need to make sure that the doc still matches the predicate, as it may have
+                // been updated since being force-fetched.
+                //
+                // 'cq' may be NULL in the case of idhack updates. In this case, doc-level locking
+                // storage engines will look up the key in the _id index and fetch the keyed
+                // document in a single work() cyle. Since yielding cannot happen between these
+                // two events, the OperationContext protects from the doc changing under our feet.
+                CanonicalQuery* cq = _params.canonicalQuery;
+                if (cq && !cq->root()->matchesBSON(oldObj, NULL)) {
+                    ++_commonStats.needTime;
+                    return PlanStage::NEED_TIME;
+                }
+            }
+
+            // If we're here, then we have retrieved both a RecordId and the corresponding
+            // object from the child stage. Since we have the object and the diskloc,
             // we can free the WSM.
             _ws->free(id);
 
@@ -745,21 +820,39 @@ namespace mongo {
 
             // Do the update and return.
             BSONObj reFetched;
-            while ( 1 ) {
+            uint64_t attempt = 1;
+
+            while ( attempt++ ) {
                 try {
                     transformAndUpdate(reFetched.isEmpty() ? oldObj : reFetched , loc);
                     break;
                 }
                 catch ( const WriteConflictException& de ) {
                     if ( !_params.request->isMulti() ) {
-                        // We don't handle this here as we handle at the top level
+                        // We don't handle this here as we handle at the top level.
                         throw;
                     }
 
-                    log() << "Had WriteConflict in the middle of a multi-update, "
-                          << "retrying the current update";
+                    _params.opDebug->writeConflicts++;
 
                     _txn->recoveryUnit()->commitAndRestart();
+
+                    _txn->checkForInterrupt();
+
+                    WriteConflictException::logAndBackoff( attempt,
+                                                           "multi-update",
+                                                           _collection->ns().ns() );
+
+                    if ( attempt > 2 ) {
+                        // This means someone else is in this same loop trying to update
+                        // the same doc.  Lets make sure we give them a chance to finish.
+#if !defined(_WIN32)
+                        sched_yield();
+#else
+                        SwitchToThread();
+#endif
+                    }
+
                     if ( !_collection->findDoc( _txn, loc, &reFetched ) ) {
                         // document was deleted, we're done here
                         break;
@@ -796,7 +889,7 @@ namespace mongo {
             // If a stage fails, it may create a status WSM to indicate why it failed, in which case
             // 'id' is valid.  If ID is invalid, we create our own error message.
             if (WorkingSet::INVALID_ID == id) {
-                const std::string errmsg = "delete stage failed to read in results from child";
+                const std::string errmsg = "update stage failed to read in results from child";
                 *out = WorkingSetCommon::allocateStatusMember(_ws, Status(ErrorCodes::InternalError,
                                                                           errmsg));
                 return PlanStage::FAILURE;
@@ -858,7 +951,7 @@ namespace mongo {
         uassertStatusOK(restoreUpdateState(opCtx));
     }
 
-    void UpdateStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void UpdateStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
         _child->invalidate(txn, dl, type);
     }
@@ -884,5 +977,43 @@ namespace mongo {
     const SpecificStats* UpdateStage::getSpecificStats() {
         return &_specificStats;
     }
+
+    // static
+    UpdateResult UpdateStage::makeUpdateResult(PlanExecutor* exec, OpDebug* opDebug) {
+        // Get stats from the root stage.
+        invariant(exec->getRootStage()->isEOF());
+        invariant(exec->getRootStage()->stageType() == STAGE_UPDATE);
+        UpdateStage* updateStage = static_cast<UpdateStage*>(exec->getRootStage());
+        const UpdateStats* updateStats =
+            static_cast<const UpdateStats*>(updateStage->getSpecificStats());
+
+        // Use stats from the root stage to fill out opDebug.
+        opDebug->nMatched = updateStats->nMatched;
+        opDebug->nModified = updateStats->nModified;
+        opDebug->upsert = updateStats->inserted;
+        opDebug->fastmodinsert = updateStats->fastmodinsert;
+        opDebug->fastmod = updateStats->fastmod;
+
+        // Historically, 'opDebug' considers 'nMatched' and 'nModified' to be 1 (rather than 0)
+        // if there is an upsert that inserts a document. The UpdateStage does not participate
+        // in this madness in order to have saner stats reporting for explain. This means that
+        // we have to set these values "manually" in the case of an insert.
+        if (updateStats->inserted) {
+            opDebug->nMatched = 1;
+            opDebug->nModified = 1;
+        }
+
+        // Get summary information about the plan.
+        PlanSummaryStats stats;
+        Explain::getSummaryStats(exec, &stats);
+        opDebug->nscanned = stats.totalKeysExamined;
+        opDebug->nscannedObjects = stats.totalDocsExamined;
+
+        return UpdateResult(updateStats->nMatched > 0 /* Did we update at least one obj? */,
+                            !updateStats->isDocReplacement /* $mod or obj replacement */,
+                            opDebug->nModified /* number of modified docs, no no-ops */,
+                            opDebug->nMatched /* # of docs matched/updated, even no-ops */,
+                            updateStats->objInserted);
+    };
 
 } // namespace mongo

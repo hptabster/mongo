@@ -52,7 +52,7 @@
 #include "mongo/db/db.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/wire_version.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/client/connpool.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/config.h"
@@ -67,6 +67,11 @@
 
 
 namespace mongo {
+
+    using std::endl;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     // -----ShardingState START ----
 
@@ -198,7 +203,7 @@ namespace mongo {
                                     const BSONObj& max,
                                     ChunkVersion version) {
         
-        txn->lockState()->assertWriteLocked( ns );
+        invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
         scoped_lock lk( _mutex );
 
         CollectionMetadataMap::const_iterator it = _collMetadata.find( ns );
@@ -227,8 +232,8 @@ namespace mongo {
     void ShardingState::undoDonateChunk(OperationContext* txn,
                                         const string& ns,
                                         CollectionMetadataPtr prevMetadata) {
-        
-        txn->lockState()->assertWriteLocked( ns );        
+
+        invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
         scoped_lock lk( _mutex );
         
         log() << "ShardingState::undoDonateChunk acquired _mutex" << endl;
@@ -245,7 +250,7 @@ namespace mongo {
                                      const OID& epoch,
                                      string* errMsg ) {
         
-        txn->lockState()->assertWriteLocked( ns );
+        invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
         scoped_lock lk( _mutex );
 
         CollectionMetadataMap::const_iterator it = _collMetadata.find( ns );
@@ -290,7 +295,7 @@ namespace mongo {
                                        const OID& epoch,
                                        string* errMsg ) {
         
-        txn->lockState()->assertWriteLocked( ns );
+        invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
         scoped_lock lk( _mutex );
 
         CollectionMetadataMap::const_iterator it = _collMetadata.find( ns );
@@ -335,7 +340,7 @@ namespace mongo {
                                     const vector<BSONObj>& splitKeys,
                                     ChunkVersion version ) {
         
-        txn->lockState()->assertWriteLocked( ns );
+        invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
         scoped_lock lk( _mutex );
 
         CollectionMetadataMap::const_iterator it = _collMetadata.find( ns );
@@ -359,7 +364,7 @@ namespace mongo {
                                      const BSONObj& maxKey,
                                      ChunkVersion mergedVersion ) {
 
-        txn->lockState()->assertWriteLocked( ns );
+        invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
         scoped_lock lk( _mutex );
 
         CollectionMetadataMap::const_iterator it = _collMetadata.find( ns );
@@ -984,6 +989,18 @@ namespace mongo {
         }
 
         bool run(OperationContext* txn, const string& , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
+
+            // Compatibility error for < v3.0 mongoses still active in the cluster
+            // TODO: Remove post-3.0
+            if (!cmdObj["serverID"].eoo()) {
+
+                // This mongos is too old to talk to us
+                string errMsg = stream() << "v3.0 mongod is incompatible with v2.6 mongos, "
+                                         << "a v2.6 mongos may be running in the v3.0 cluster at "
+                                         << txn->getClient()->clientAddress(false);
+                error() << errMsg;
+                return appendCommandStatus(result, Status(ErrorCodes::ProtocolError, errMsg));
+            }
 
             // Steps
             // 1. check basic config

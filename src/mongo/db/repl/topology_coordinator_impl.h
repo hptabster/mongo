@@ -34,10 +34,9 @@
 #include "mongo/bson/optime.h"
 #include "mongo/db/repl/member_heartbeat_data.h"
 #include "mongo/db/repl/member_state.h"
-#include "mongo/db/repl/repl_coordinator.h"
 #include "mongo/db/repl/replica_set_config.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/topology_coordinator.h"
-#include "mongo/util/concurrency/list.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -237,10 +236,10 @@ namespace repl {
         // Returns the current "ping" value for the given member by their address
         int _getPing(const HostAndPort& host);
 
-        // Determines if we will veto the member specified by "memberID", given that the last op
+        // Determines if we will veto the member specified by "args.id", given that the last op
         // we have applied locally is "lastOpApplied".
         // If we veto, the errmsg will be filled in with a reason
-        bool _shouldVetoMember(unsigned int memberID,
+        bool _shouldVetoMember(const ReplicationCoordinator::ReplSetFreshArgs& args,
                                const Date_t& now,
                                const OpTime& lastOpApplied,
                                std::string* errmsg) const;
@@ -308,6 +307,14 @@ namespace repl {
 
         MemberState _getMyState() const;
 
+        /**
+         * Looks up the provided member in the blacklist and returns true if the member's blacklist
+         * expire time is after 'now'.  If the member is found but the expire time is before 'now',
+         * the member is removed from _syncSourceBlacklist and the function returns false.
+         * If the member is not found in the blacklist, the function simply returns false.
+         **/
+        bool _memberIsBlacklisted(const MemberConfig& memberConfig, Date_t now);
+
         // This node's role in the replication protocol.
         Role _role;
 
@@ -341,7 +348,8 @@ namespace repl {
 
         int _selfIndex; // this node's index in _members and _currentConfig
 
-        ReplicaSetConfig _currentConfig; // The current config, including a vector of MemberConfigs
+        ReplicaSetConfig _rsConfig; // The current config, including a vector of MemberConfigs
+
         // heartbeat data for each member.  It is guaranteed that this vector will be maintained
         // in the same order as the MemberConfigs in _currentConfig, therefore the member config
         // index can be used to index into this vector as well.

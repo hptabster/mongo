@@ -35,6 +35,7 @@
 
 #include "boost/scoped_ptr.hpp"
 
+#include "mongo/base/checked_cast.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
@@ -57,11 +58,13 @@ namespace mongo {
     }
 
     BSONObj WiredTigerServerStatusSection::generateSection(
-        const BSONElement& configElement) const {
+                OperationContext* txn,
+                const BSONElement& configElement) const {
 
-        boost::scoped_ptr<WiredTigerRecoveryUnit> recoveryUnit(
-            dynamic_cast<WiredTigerRecoveryUnit*>(_engine->newRecoveryUnit()));
-        WiredTigerSession* session = recoveryUnit->getSession();
+        WiredTigerSession* session =
+            checked_cast<WiredTigerRecoveryUnit*>(txn->recoveryUnit())->getSession();
+        invariant(session);
+
         WT_SESSION* s = session->getSession();
         invariant(s);
         const string uri = "statistics:";

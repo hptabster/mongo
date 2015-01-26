@@ -29,7 +29,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/client/dbclientcursor.h"
 
@@ -38,9 +38,16 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/shard.h"
 #include "mongo/s/stale_exception.h"  // for RecvStaleConfigException
+#include "mongo/util/debug_util.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::endl;
+    using std::string;
+    using std::vector;
 
     void assembleRequest( const string &ns, BSONObj query, int nToReturn, int nToSkip, const BSONObj *fieldsToReturn, int queryOptions, Message &toSend );
 

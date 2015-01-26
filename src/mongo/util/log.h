@@ -150,6 +150,13 @@ namespace {
                                 componentValue);
     }
 
+    /**
+     * Runs the same logic as log()/warning()/error(), without actually outputting a stream.
+     */
+    inline bool shouldLog(logger::LogSeverity severity) {
+        return logger::globalLogDomain()->shouldLog(::MongoLogDefaultComponent_component, severity);
+    }
+
 }  // namespace
 
 // MONGO_LOG uses log component from MongoLogDefaultComponent from current or global namespace.
@@ -188,13 +195,6 @@ namespace {
         handy for use as parm in uassert/massert.
         */
     std::string errnoWithPrefix( const char * prefix );
-
-    // Guard that alters the indentation level used by log messages on the current thread.
-    // Used only by mongodump (mongo/tools/dump.cpp).  Do not introduce new uses.
-    struct LogIndentLevel {
-        LogIndentLevel();
-        ~LogIndentLevel();
-    };
 
     extern Tee* const warnings; // Things put here go in serverStatus
     extern Tee* const startupWarningsLog; // Things put here get reported in MMS

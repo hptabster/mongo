@@ -19,6 +19,7 @@ import datetime
 import imp
 import os
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -32,7 +33,7 @@ from buildscripts import moduleconfig
 
 import libdeps
 
-EnsureSConsVersion( 1, 1, 0 )
+EnsureSConsVersion( 2, 3, 0 )
 
 def findSettingsSetup():
     sys.path.append( "." )
@@ -226,8 +227,6 @@ add_option( "extrapath", "comma separated list of add'l paths  (--extrapath /opt
 add_option( "extrapathdyn", "comma separated list of add'l paths  (--extrapath /opt/foo/,/foo) dynamic linking" , 1 , False )
 add_option( "extralib", "comma separated list of libraries  (--extralib js_static,readline" , 1 , False )
 
-add_option( "no-glibc-check" , "don't check for new versions of glibc" , 0 , False )
-
 # experimental features
 add_option( "mm", "use main memory instead of memory mapped files" , 0 , True )
 add_option( "ssl" , "Enable SSL" , 0 , True )
@@ -299,6 +298,10 @@ boost_choices = ['1.49', '1.56']
 add_option( "internal-boost", "Specify internal boost version to use", 1, True,
            type='choice', default=boost_choices[0], choices=boost_choices)
 
+add_option( "system-boost-lib-search-suffixes",
+            "Comma delimited sequence of boost library suffixes to search",
+            1, False )
+
 add_option( "use-system-boost", "use system version of boost libraries", 0, True )
 
 add_option( "use-system-snappy", "use system version of snappy library", 0, True )
@@ -328,6 +331,9 @@ add_option('disable-warnings-as-errors', "Don't add -Werror to compiler command 
 add_option('propagate-shell-environment',
            "Pass shell environment to sub-processes (NEVER for production builds)",
            0, False)
+
+add_option('variables-help',
+           "Print the help text for SCons variables", 0, False)
 
 if darwin:
     osx_version_choices = ['10.7', '10.8', '10.9', '10.10']
@@ -368,6 +374,64 @@ add_option('cache',
 add_option('cache-dir',
            "Specify the directory to use for caching objects if --cache is in use",
            1, False, default="$BUILD_ROOT/scons/cache")
+
+# Setup the command-line variables
+def variable_shlex_converter(val):
+    return shlex.split(val)
+
+env_vars = Variables()
+
+env_vars.Add('ARFLAGS',
+    help='Sets flags for the archiver',
+    converter=variable_shlex_converter)
+
+env_vars.Add('CCFLAGS',
+    help='Sets flags for the C and C++ compiler',
+    converter=variable_shlex_converter)
+
+env_vars.Add('CFLAGS',
+    help='Sets flags for the C compiler',
+    converter=variable_shlex_converter)
+
+env_vars.Add('CPPDEFINES',
+    help='Sets pre-processor definitions for C and C++',
+    converter=variable_shlex_converter)
+
+env_vars.Add('CPPPATH',
+    help='Adds paths to the preprocessor search path',
+    converter=variable_shlex_converter)
+
+env_vars.Add('CXXFLAGS',
+    help='Sets flags for the C++ compiler',
+    converter=variable_shlex_converter)
+
+env_vars.Add('LIBPATH',
+    help='Adds paths to the linker search path',
+    converter=variable_shlex_converter)
+
+env_vars.Add('LIBS',
+    help='Adds extra libraries to link against',
+    converter=variable_shlex_converter)
+
+env_vars.Add('LINKFLAGS',
+    help='Sets flags for the linker',
+    converter=variable_shlex_converter)
+
+env_vars.Add('SHCCFLAGS',
+    help='Sets flags for the C and C++ compiler when building shared libraries',
+    converter=variable_shlex_converter)
+
+env_vars.Add('SHCFLAGS',
+    help='Sets flags for the C compiler when building shared libraries',
+    converter=variable_shlex_converter)
+
+env_vars.Add('SHCXXFLAGS',
+    help='Sets flags for the C++ compiler when building shared libraries',
+    converter=variable_shlex_converter)
+
+env_vars.Add('SHLINKFLAGS',
+    help='Sets flags for the linker when building shared libraries',
+    converter=variable_shlex_converter)
 
 # don't run configure if user calls --help
 if GetOption('help'):
@@ -460,6 +524,27 @@ v8suffix = '' if v8version == '3.12' else '-' + v8version
 
 usePCH = has_option( "usePCH" )
 
+# The Scons 'default' tool enables a lot of tools that we don't actually need to enable.
+# On platforms like Solaris, it actually does the wrong thing by enabling the sunstudio
+# toolchain first. As such it is simpler and more efficient to manually load the precise
+# set of tools we need for each platform.
+# If we aren't on a platform where we know the minimal set of tools, we fall back to loading
+# the 'default' tool.
+def decide_platform_tools():
+    if windows:
+        # we only support MS toolchain on windows
+        return ['msvc', 'mslink', 'mslib']
+    elif linux:
+        return ['gcc', 'g++', 'gnulink', 'ar']
+    elif solaris:
+        return ['gcc', 'g++', 'gnulink', 'ar']
+    elif darwin:
+        return ['gcc', 'g++', 'applelink', 'ar']
+    else:
+        return ["default"]
+
+tools = decide_platform_tools() + ["gch", "jsheader", "mergelib", "mongo_unittest", "textfile"]
+
 # We defer building the env until we have determined whether we want certain values. Some values
 # in the env actually have semantics for 'None' that differ from being absent, so it is better
 # to build it up via a dict, and then construct the Environment in one shot with kwargs.
@@ -478,7 +563,7 @@ envDict = dict(BUILD_ROOT=buildDir,
                ARCHIVE_ADDITIONS=[],
                PYTHON=utils.find_python(),
                SERVER_ARCHIVE='${SERVER_DIST_BASENAME}${DIST_ARCHIVE_SUFFIX}',
-               tools=["default", "gch", "jsheader", "mergelib", "mongo_unittest", "textfile"],
+               tools=tools,
                UNITTEST_ALIAS='unittests',
                # TODO: Move unittests.txt to $BUILD_DIR, but that requires
                # changes to MCI.
@@ -522,8 +607,37 @@ if windows:
             msvc_script = None
         envDict['MSVC_USE_SCRIPT'] = msvc_script
 
-env = Environment(**envDict)
+env = Environment(variables=env_vars, **envDict)
 del envDict
+
+if has_option('variables-help'):
+    print env_vars.GenerateHelpText(env)
+    Exit(0)
+
+unknown_vars = env_vars.UnknownVariables()
+if unknown_vars:
+    print "Unknown variables specified: {0}".format(", ".join(unknown_vars.keys()))
+    Exit(1)
+
+
+# Add any scons options that conflict with scons variables here.
+# The first item in each tuple is the option name and the second
+# is the variable name
+variable_conflicts = [
+    ('libpath', 'LIBPATH'),
+    ('cpppath', 'CPPPATH'),
+    ('extrapath', 'CPPPATH'),
+    ('extrapathdyn', 'CPPPATH'),
+    ('extrapath', 'LIBPATH'),
+    ('extrapathdyn', 'LIBPATH'),
+    ('extralib', 'LIBS')
+]
+
+for (opt_name, var_name) in variable_conflicts:
+    if has_option(opt_name) and var_name in env:
+        print("Both option \"--{0}\" and variable {1} were specified".
+            format(opt_name, var_name))
+        Exit(1)
 
 if has_option("cache"):
     EnsureSConsVersion( 2, 3, 0 )
@@ -534,20 +648,6 @@ if has_option("cache"):
         print("Mixing --cache and --gcov doesn't work correctly yet. See SERVER-11084")
         Exit(1)
     env.CacheDir(str(env.Dir(cacheDir)))
-
-# This could be 'if solaris', but unfortuantely that variable hasn't been set yet.
-if "sunos5" == os.sys.platform:
-    # SERVER-9890: On Solaris, SCons preferentially loads the sun linker tool 'sunlink' when
-    # using the 'default' tools as we do above. The sunlink tool sets -G as the flag for
-    # creating a shared library. But we don't want that, since we always drive our link step
-    # through CC or CXX. Instead, we want to let the compiler map GCC's '-shared' flag to the
-    # appropriate linker specs that it has compiled in. We could (and should in the future)
-    # select an empty set of tools above and then enable them as appropriate on a per platform
-    # basis. Until then the simplest solution, as discussed on the scons-users mailing list,
-    # appears to be to simply explicitly run the 'gnulink' tool to overwrite the Environment
-    # changes made by 'sunlink'. See the following thread for more detail:
-    #  http://four.pairlist.net/pipermail/scons-users/2013-June/001486.html
-    env.Tool('gnulink')
 
 if optBuild:
     env.Append( CPPDEFINES=["MONGO_OPTIMIZED_BUILD"] )
@@ -624,9 +724,14 @@ if has_option( "cc-use-shell-environment" ):
     env["CC"] = os.getenv("CC");
 
 if has_option( "cxx" ):
-    env["CC"] = get_option( "cxx" )
+    if not has_option( "cc" ):
+        print "Must specify C compiler when specifying C++ compiler"
+        exit(1)
     env["CXX"] = get_option( "cxx" )
 if has_option( "cc" ):
+    if not has_option( "cxx" ):
+        print "Must specify C++ compiler when specifying C compiler"
+        exit(1)
     env["CC"] = get_option( "cc" )
 
 if has_option( "ld" ):
@@ -653,8 +758,6 @@ elif env['PYSYSPLATFORM'].startswith('sunos'):
     env['RELOBJ_LIBDEPS_START'] = '-z allextract'
     env['RELOBJ_LIBDEPS_END'] = '-z defaultextract'
     env['RELOBJ_LIBDEPS_ITEM'] = ''
-
-env["LIBPATH"] = []
 
 if has_option( "libpath" ):
     env["LIBPATH"] = [get_option( "libpath" )]
@@ -883,7 +986,8 @@ elif windows:
                      'Psapi.lib',
                      'DbgHelp.lib',
                      'shell32.lib',
-                     'Iphlpapi.lib'])
+                     'Iphlpapi.lib',
+                     'version.lib'])
 
     # v8 calls timeGetTime()
     if usev8:
@@ -1004,6 +1108,21 @@ if not windows:
         keyfile = "jstests/libs/key%s" % keysuffix
         os.chmod( keyfile , stat.S_IWUSR|stat.S_IRUSR )
 
+# boostSuffixList is used when using system boost to select a search sequence
+# for boost libraries.
+boostSuffixList = ["-mt", ""]
+if get_option("system-boost-lib-search-suffixes") is not None:
+    if not use_system_version_of_library("boost"):
+        print("The --system-boost-lib-search-suffixes option is only valid with --use-system-boost")
+        Exit(1)
+    boostSuffixList = get_option("system-boost-lib-search-suffixes")
+    if boostSuffixList == "":
+        boostSuffixList = []
+    else:
+        boostSuffixList = boostSuffixList.split(',')
+
+# boostSuffix is used when using internal boost to select which version
+# of boost is in play.
 boostSuffix = "";
 if not use_system_version_of_library("boost"):
     if get_option( "internal-boost") != "1.49":
@@ -1129,17 +1248,14 @@ def doConfigure(myenv):
         }
         """ % compiler_minimum_string)
     elif using_gcc():
-        # TODO: Really, we want GCC 4.8.2 here, but we are admitting 4.8.1
-        # until our Solaris toolchain solution reaches 4.8.2. When our Solaris
-        # toolchain reaches 4.8.2, upgrade this string, and the check below.
-        compiler_minimum_string = "GCC 4.8.1"
+        compiler_minimum_string = "GCC 4.8.2"
         compiler_test_body = textwrap.dedent(
         """
         #if !defined(__GNUC__) || defined(__clang__)
         #error
         #endif
 
-        #if (__GNUC__ < 4) || (__GNUC__ == 4 && __GNUC_MINOR__ < 8) || (__GNUC__ == 4 && __GNUC_MINOR__ == 8 && __GNUC_PATCHLEVEL__ < 1)
+        #if (__GNUC__ < 4) || (__GNUC__ == 4 && __GNUC_MINOR__ < 8) || (__GNUC__ == 4 && __GNUC_MINOR__ == 8 && __GNUC_PATCHLEVEL__ < 2)
         #error %s or newer is required to build MongoDB
         #endif
 
@@ -1397,6 +1513,10 @@ def doConfigure(myenv):
         # in boost/date_time/format_date_parser.hpp which does not work for compilers
         # GCC >= 4.6. Error explained in https://svn.boost.org/trac/boost/ticket/6136 .
         AddToCCFLAGSIfSupported(myenv, "-Wno-unused-but-set-variable")
+
+        # This has been suppressed in gcc 4.8, due to false positives, but not in clang.  So
+        # we explicitly disable it here.
+        AddToCCFLAGSIfSupported(myenv, "-Wno-missing-braces")
 
     # Check if we need to disable null-conversion warnings
     if using_clang():
@@ -1720,7 +1840,7 @@ def doConfigure(myenv):
             print("Using the leak sanitizer requires a valid symbolizer")
             Exit(1)
 
-    if using_msvc():
+    if using_msvc() and optBuild:
         # http://blogs.msdn.com/b/vcblog/archive/2013/09/11/introducing-gw-compiler-switch.aspx
         #
         myenv.Append( CCFLAGS=["/Gw", "/Gy"] )
@@ -1747,6 +1867,39 @@ def doConfigure(myenv):
             # and link lines.
             if AddToCCFLAGSIfSupported(myenv, '-flto'):
                 myenv.Append(LINKFLAGS=['-flto'])
+
+                def LinkHelloWorld(context, adornment = None):
+                    test_body = """
+                    #include <iostream>
+                    int main() {
+                        std::cout << "Hello, World!" << std::endl;
+                        return 0;
+                    }
+                    """
+                    message = "Trying to link with LTO"
+                    if adornment:
+                        message = message + " " + adornment
+                    message = message + "..."
+                    context.Message(message)
+                    ret = context.TryLink(textwrap.dedent(test_body), ".cpp")
+                    context.Result(ret)
+                    return ret
+
+                conf = Configure(myenv, help=False, custom_tests = {
+                    'LinkHelloWorld' : LinkHelloWorld,
+                })
+
+                # Some systems (clang, on a system with the BFD linker by default) may need to
+                # explicitly request the gold linker for LTO to work. If we can't LTO link a
+                # simple program, see if -fuse=ld=gold helps.
+                if not conf.LinkHelloWorld():
+                    conf.env.Append(LINKFLAGS=["-fuse-ld=gold"])
+                    if not conf.LinkHelloWorld("(with -fuse-ld=gold)"):
+                        print("Error: Couldn't link with LTO")
+                        Exit(1)
+
+                myenv = conf.Finish()
+
             else:
                 print( "Link time optimization requested, " +
                        "but selected compiler does not honor -flto" )
@@ -1961,11 +2114,18 @@ def doConfigure(myenv):
 
         conf.env.Append(CPPDEFINES=[("BOOST_THREAD_VERSION", "2")])
 
-        # Note that on Windows with using-system-boost builds, the following 
+        # Note that on Windows with using-system-boost builds, the following
         # FindSysLibDep calls do nothing useful (but nothing problematic either)
-        for b in boostLibs:
-            boostlib = "boost_" + b
-            conf.FindSysLibDep( boostlib, [ boostlib + "-mt", boostlib ], language='C++' )
+        #
+        # NOTE: Pass --system-boost-lib-search-suffixes= to suppress these checks, which you
+        # might want to do if using autolib linking on Windows, for example.
+        if boostSuffixList:
+            for b in boostLibs:
+                boostlib = "boost_" + b
+                conf.FindSysLibDep(
+                    boostlib,
+                    [boostlib + suffix for suffix in boostSuffixList],
+                    language='C++')
 
     if posix_system:
         conf.env.Append(CPPDEFINES=['MONGO_HAVE_HEADER_UNISTD_H'])
@@ -2044,8 +2204,6 @@ def doConfigure(myenv):
 env = doConfigure( env )
 
 env['PDB'] = '${TARGET.base}.pdb'
-
-enforce_glibc = linux and releaseBuild and not has_option("no-glibc-check")
 
 def checkErrorCodes():
     import buildscripts.errorcodes as x
@@ -2225,7 +2383,6 @@ env.AlwaysBuild( "s3shell" )
 def s3dist( env , target , source ):
     s3push( str(source[0]) , "mongodb" )
 
-env.Alias( "dist" , '$SERVER_ARCHIVE' )
 env.AlwaysBuild(env.Alias( "s3dist" , [ '$SERVER_ARCHIVE' ] , [ s3dist ] ))
 
 # --- an uninstall target ---
@@ -2256,7 +2413,6 @@ Export("boostSuffix")
 Export("darwin windows solaris linux freebsd nix openbsd")
 Export('module_sconscripts')
 Export("debugBuild optBuild")
-Export("enforce_glibc")
 Export("s3push")
 Export("use_clang")
 Export("wiredtiger")

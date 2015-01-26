@@ -28,7 +28,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <boost/smart_ptr.hpp>
+#include <boost/scoped_ptr.hpp>
+#include <boost/shared_ptr.hpp>
 #include <vector>
 
 #include "mongo/db/auth/action_set.h"
@@ -53,33 +54,19 @@
 
 namespace mongo {
 
-    static bool isCursorCommand(BSONObj cmdObj) {
-        BSONElement cursorElem = cmdObj["cursor"];
-        if (cursorElem.eoo())
-            return false;
+    using boost::intrusive_ptr;
+    using boost::scoped_ptr;
+    using boost::shared_ptr;
+    using std::auto_ptr;
+    using std::string;
+    using std::stringstream;
+    using std::endl;
 
-        uassert(16954, "cursor field must be missing or an object",
-                cursorElem.type() == Object);
-
-        BSONObj cursor = cursorElem.embeddedObject();
-        BSONElement batchSizeElem = cursor["batchSize"];
-        if (batchSizeElem.eoo()) {
-            uassert(16955, "cursor object can't contain fields other than batchSize",
-                cursor.isEmpty());
-        }
-        else {
-            uassert(16956, "cursor.batchSize must be a number",
-                    batchSizeElem.isNumber());
-
-            // This can change in the future, but for now all negatives are reserved.
-            uassert(16957, "Cursor batchSize must not be negative",
-                    batchSizeElem.numberLong() >= 0);
-        }
-
-        return true;
-    }
-
-    static void handleCursorCommand(OperationContext* txn,
+    /**
+     * Returns true if we need to keep a ClientCursor saved for this pipeline (for future getMore
+     * requests).  Otherwise, returns false.
+     */
+    static bool handleCursorCommand(OperationContext* txn,
                                     const string& ns,
                                     ClientCursorPin* pin,
                                     PlanExecutor* exec,
@@ -90,13 +77,12 @@ namespace mongo {
         if (pin) {
             invariant(cursor);
             invariant(cursor->getExecutor() == exec);
-            invariant(cursor->isAggCursor);
+            invariant(cursor->isAggCursor());
         }
 
-        BSONElement batchSizeElem = cmdObj.getFieldDotted("cursor.batchSize");
-        const long long batchSize = batchSizeElem.isNumber()
-                                    ? batchSizeElem.numberLong()
-                                    : 101; // same as query
+        const long long defaultBatchSize = 101; // Same as query.
+        long long batchSize;
+        uassertStatusOK(Command::parseCommandCursorOptions(cmdObj, defaultBatchSize, &batchSize));
 
         // can't use result BSONObjBuilder directly since it won't handle exceptions correctly.
         BSONArrayBuilder resultsArray;
@@ -106,7 +92,6 @@ namespace mongo {
             // The initial getNext() on a PipelineProxyStage may be very expensive so we don't
             // do it when batchSize is 0 since that indicates a desire for a fast return.
             if (exec->getNext(&next, NULL) != PlanExecutor::ADVANCED) {
-                if (pin) pin->deleteUnderlying();
                 // make it an obvious error to use cursor or executor after this point
                 cursor = NULL;
                 exec = NULL;
@@ -146,20 +131,20 @@ namespace mongo {
 
             // We stash away the RecoveryUnit in the ClientCursor.  It's used for subsequent
             // getMore requests.  The calling OpCtx gets a fresh RecoveryUnit.
+            txn->recoveryUnit()->commitAndRestart();
             cursor->setOwnedRecoveryUnit(txn->releaseRecoveryUnit());
             StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
-            txn->setRecoveryUnit(storageEngine->newRecoveryUnit(txn));
+            txn->setRecoveryUnit(storageEngine->newRecoveryUnit());
 
             // Cursor needs to be in a saved state while we yield locks for getmore. State
-            // will be restored in newGetMore().
+            // will be restored in getMore().
             exec->saveState();
         }
 
-        BSONObjBuilder cursorObj(result.subobjStart("cursor"));
-        cursorObj.append("id", cursor ? cursor->cursorid() : 0LL);
-        cursorObj.append("ns", ns);
-        cursorObj.append("firstBatch", resultsArray.arr());
-        cursorObj.done();
+        const long long cursorId = cursor ? cursor->cursorid() : 0LL;
+        Command::appendCursorResponseObject(cursorId, ns, resultsArray.arr(), &result);
+
+        return static_cast<bool>(cursor);
     }
 
 
@@ -277,34 +262,72 @@ namespace mongo {
 
                 if (collection) {
                     // XXX
-                    ClientCursor* cursor = new ClientCursor(collection, execHolder.release());
-                    cursor->isAggCursor = true; // enable special locking behavior
-                    pin.reset(new ClientCursorPin(collection, cursor->cursorid()));
+                    const bool isAggCursor = true; // enable special locking behavior
+                    ClientCursor* cursor = new ClientCursor(collection->getCursorManager(),
+                                                            execHolder.release(),
+                                                            nss.ns(),
+                                                            0,
+                                                            BSONObj(),
+                                                            isAggCursor);
+                    pin.reset(new ClientCursorPin(collection->getCursorManager(),
+                                                  cursor->cursorid()));
                     // Don't add any code between here and the start of the try block.
                 }
+
+                // At this point, it is safe to release the collection lock.
+                // - In the case where we have a collection: we will need to reacquire the
+                //   collection lock later when cleaning up our ClientCursorPin.
+                // - In the case where we don't have a collection: our PlanExecutor won't be
+                //   registered, so it will be safe to clean it up outside the lock.
+                invariant(NULL == execHolder.get() || NULL == execHolder->collection());
             }
 
             try {
                 // Unless set to true, the ClientCursor created above will be deleted on block exit.
                 bool keepCursor = false;
 
+                const bool isCursorCommand = !cmdObj["cursor"].eoo();
+
                 // If both explain and cursor are specified, explain wins.
                 if (pPipeline->isExplain()) {
                     result << "stages" << Value(pPipeline->writeExplainOps());
                 }
-                else if (isCursorCommand(cmdObj)) {
-                    handleCursorCommand(txn, nss.ns(), pin.get(), exec, cmdObj, result);
-                    keepCursor = true;
+                else if (isCursorCommand) {
+                    keepCursor = handleCursorCommand(txn,
+                                                     nss.ns(),
+                                                     pin.get(),
+                                                     exec,
+                                                     cmdObj,
+                                                     result);
                 }
                 else {
                     pPipeline->run(result);
                 }
 
-                if (!keepCursor && pin) pin->deleteUnderlying();
+                // Clean up our ClientCursorPin, if needed.  We must reacquire the collection lock
+                // in order to do so.
+                if (pin) {
+                    // We acquire locks here with DBLock and CollectionLock instead of using
+                    // AutoGetCollectionForRead.  AutoGetCollectionForRead will throw if the
+                    // sharding version is out of date, and we don't care if the sharding version
+                    // has changed.
+                    Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
+                    Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_IS);
+                    if (keepCursor) {
+                        pin->release();
+                    }
+                    else {
+                        pin->deleteUnderlying();
+                    }
+                }
             }
             catch (...) {
-                // Clean up cursor on way out of scope.
-                if (pin) pin->deleteUnderlying();
+                // On our way out of scope, we clean up our ClientCursorPin if needed.
+                if (pin) {
+                    Lock::DBLock dbLock(txn->lockState(), nss.db(), MODE_IS);
+                    Lock::CollectionLock collLock(txn->lockState(), nss.ns(), MODE_IS);
+                    pin->deleteUnderlying();
+                }
                 throw;
             }
             // Any code that needs the cursor pinned must be inside the try block, above.

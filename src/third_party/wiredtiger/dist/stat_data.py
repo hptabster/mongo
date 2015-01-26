@@ -18,52 +18,81 @@ import sys
 
 class Stat:
     def __init__(self, name, tag, desc, flags=''):
-	self.name = name
-	self.desc = tag + ': ' + desc
-	self.flags = flags
+        self.name = name
+        self.desc = tag + ': ' + desc
+        self.flags = flags
 
     def __cmp__(self, other):
-	return cmp(self.desc.lower(), other.desc.lower())
+        return cmp(self.desc.lower(), other.desc.lower())
 
 class AsyncStat(Stat):
+    prefix = 'async'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'async', desc, flags)
+        Stat.__init__(self, name, AsyncStat.prefix, desc, flags)
 class BlockStat(Stat):
+    prefix = 'block-manager'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'block-manager', desc, flags)
+        Stat.__init__(self, name, BlockStat.prefix, desc, flags)
 class BtreeStat(Stat):
+    prefix = 'btree'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'btree', desc, flags)
+        Stat.__init__(self, name, BtreeStat.prefix, desc, flags)
 class CacheStat(Stat):
+    prefix = 'cache'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'cache', desc, flags)
+        Stat.__init__(self, name, CacheStat.prefix, desc, flags)
 class CompressStat(Stat):
+    prefix = 'compression'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'compression', desc, flags)
-class CursorStat(Stat):
-    def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'cursor', desc, flags)
+        Stat.__init__(self, name, CompressStat.prefix, desc, flags)
 class ConnStat(Stat):
+    prefix = 'connection'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'connection', desc, flags)
+        Stat.__init__(self, name, ConnStat.prefix, desc, flags)
+class CursorStat(Stat):
+    prefix = 'cursor'
+    def __init__(self, name, desc, flags=''):
+        Stat.__init__(self, name, CursorStat.prefix, desc, flags)
 class DhandleStat(Stat):
+    prefix = 'data-handle'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'data-handle', desc, flags)
+        Stat.__init__(self, name, DhandleStat.prefix, desc, flags)
 class LogStat(Stat):
+    prefix = 'log'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'log', desc, flags)
+        Stat.__init__(self, name, LogStat.prefix, desc, flags)
 class LSMStat(Stat):
+    prefix = 'LSM'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'LSM', desc, flags)
+        Stat.__init__(self, name, LSMStat.prefix, desc, flags)
 class RecStat(Stat):
+    prefix = 'reconciliation'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'reconciliation', desc, flags)
+        Stat.__init__(self, name, RecStat.prefix, desc, flags)
 class SessionStat(Stat):
+    prefix = 'session'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'session', desc, flags)
+        Stat.__init__(self, name, SessionStat.prefix, desc, flags)
 class TxnStat(Stat):
+    prefix = 'transaction'
     def __init__(self, name, desc, flags=''):
-	Stat.__init__(self, name, 'transaction', desc, flags)
+        Stat.__init__(self, name, TxnStat.prefix, desc, flags)
+class YieldStat(Stat):
+    prefix = 'thread-yield'
+    def __init__(self, name, desc, flags=''):
+        Stat.__init__(self, name, YieldStat.prefix, desc, flags)
+
+##########################################
+# Groupings of useful statistics:
+# A pre-defined dictionary containing the group name as the key and the
+# list of prefix tags that comprise that group.
+##########################################
+groups = {}
+groups['cursor'] = [CursorStat.prefix, SessionStat.prefix]
+groups['evict'] = [CacheStat.prefix, ConnStat.prefix, BlockStat.prefix]
+groups['lsm'] = [LSMStat.prefix, TxnStat.prefix]
+groups['memory'] = [CacheStat.prefix, ConnStat.prefix, RecStat.prefix]
+groups['system'] = [ConnStat.prefix, DhandleStat.prefix, SessionStat.prefix]
 
 ##########################################
 # CONNECTION statistics
@@ -123,6 +152,7 @@ connection_stats = [
         'maximum bytes configured', 'no_clear,no_scale'),
     CacheStat('cache_bytes_read', 'bytes read into cache'),
     CacheStat('cache_bytes_write', 'bytes written from cache'),
+    CacheStat('cache_eviction_app', 'pages evicted by application threads'),
     CacheStat('cache_eviction_clean', 'unmodified pages evicted'),
     CacheStat('cache_eviction_deepen',
         'page split during eviction deepened the tree'),
@@ -132,10 +162,14 @@ connection_stats = [
         'pages selected for eviction unable to be evicted'),
     CacheStat('cache_eviction_force',
         'pages evicted because they exceeded the in-memory maximum'),
+    CacheStat('cache_eviction_force_delete',
+        'pages evicted because they had chains of deleted items'),
     CacheStat('cache_eviction_force_fail',
         'failed eviction of pages that exceeded the in-memory maximum'),
     CacheStat('cache_eviction_hazard', 'hazard pointer blocked page eviction'),
     CacheStat('cache_eviction_internal', 'internal pages evicted'),
+    CacheStat('cache_eviction_maximum_page_size',
+        'maximum page size at eviction', 'max_aggregate,no_scale'),
     CacheStat('cache_eviction_queue_empty',
         'eviction server candidate queue empty when topping up'),
     CacheStat('cache_eviction_queue_not_empty',
@@ -148,6 +182,7 @@ connection_stats = [
         'eviction server unable to reach eviction goal'),
     CacheStat('cache_eviction_split', 'pages split during eviction'),
     CacheStat('cache_eviction_walk', 'pages walked for eviction'),
+    CacheStat('cache_inmem_split', 'in-memory page splits'),
     CacheStat('cache_pages_dirty',
         'tracked dirty pages in the cache', 'no_scale'),
     CacheStat('cache_pages_inuse',
@@ -158,6 +193,10 @@ connection_stats = [
     ##########################################
     # Dhandle statistics
     ##########################################
+    DhandleStat('dh_conn_handles', 'connection dhandles swept'),
+    DhandleStat('dh_conn_ref', 'connection candidate referenced'),
+    DhandleStat('dh_conn_sweeps', 'connection sweeps'),
+    DhandleStat('dh_conn_tod', 'connection time-of-death sets'),
     DhandleStat('dh_session_handles', 'session dhandles swept'),
     DhandleStat('dh_session_sweeps', 'session sweep attempts'),
 
@@ -169,7 +208,15 @@ connection_stats = [
     LogStat('log_bytes_payload', 'log bytes of payload data'),
     LogStat('log_bytes_written', 'log bytes written'),
     LogStat('log_close_yields', 'yields waiting for previous log file close'),
-    LogStat('log_max_filesize', 'maximum log file size', 'no_clear'),
+    LogStat('log_compress_len', 'total size of compressed records'),
+    LogStat('log_compress_mem', 'total in-memory size of compressed records'),
+    LogStat('log_compress_small', 'log records too small to compress'),
+    LogStat('log_compress_writes', 'log records compressed'),
+    LogStat('log_compress_write_fails', 'log records not compressed'),
+    LogStat('log_max_filesize', 'maximum log file size', 'no_clear,no_scale'),
+    LogStat('log_prealloc_files', 'pre-allocated log files prepared'),
+    LogStat('log_prealloc_max', 'number of pre-allocated log files to create'),
+    LogStat('log_prealloc_used', 'pre-allocated log files used'),
     LogStat('log_reads', 'log read operations'),
     LogStat('log_scan_records', 'records processed by log scan'),
     LogStat('log_scan_rereads', 'log scan records requiring two reads'),
@@ -251,17 +298,26 @@ connection_stats = [
     SessionStat('session_open', 'open session count', 'no_clear,no_scale'),
 
     ##########################################
-    # Total Btree cursor operations
+    # Total cursor operations
     ##########################################
-    BtreeStat('cursor_create', 'cursor create calls'),
-    BtreeStat('cursor_insert', 'cursor insert calls'),
-    BtreeStat('cursor_next', 'cursor next calls'),
-    BtreeStat('cursor_prev', 'cursor prev calls'),
-    BtreeStat('cursor_remove', 'cursor remove calls'),
-    BtreeStat('cursor_reset', 'cursor reset calls'),
-    BtreeStat('cursor_search', 'cursor search calls'),
-    BtreeStat('cursor_search_near', 'cursor search near calls'),
-    BtreeStat('cursor_update', 'cursor update calls'),
+    CursorStat('cursor_create', 'cursor create calls'),
+    CursorStat('cursor_insert', 'cursor insert calls'),
+    CursorStat('cursor_next', 'cursor next calls'),
+    CursorStat('cursor_prev', 'cursor prev calls'),
+    CursorStat('cursor_remove', 'cursor remove calls'),
+    CursorStat('cursor_reset', 'cursor reset calls'),
+    CursorStat('cursor_search', 'cursor search calls'),
+    CursorStat('cursor_search_near', 'cursor search near calls'),
+    CursorStat('cursor_update', 'cursor update calls'),
+
+    ##########################################
+    # Yield statistics
+    ##########################################
+    YieldStat('page_busy_blocked', 'page acquire busy blocked'),
+    YieldStat('page_forcible_evict_blocked', 'page acquire eviction blocked'),
+    YieldStat('page_locked_blocked', 'page acquire locked blocked'),
+    YieldStat('page_read_blocked', 'page acquire read blocked'),
+    YieldStat('page_sleep', 'page acquire time sleeping (usecs)'),
 ]
 
 connection_stats = sorted(connection_stats, key=attrgetter('name'))
@@ -311,14 +367,16 @@ dsrc_stats = [
     BtreeStat('btree_fixed_len', 'fixed-record size', 'no_aggregate,no_scale'),
     BtreeStat('btree_maximum_depth',
         'maximum tree depth', 'max_aggregate,no_scale'),
-    BtreeStat('btree_maxintlitem',
-        'maximum internal page item size', 'no_aggregate,no_scale'),
+    BtreeStat('btree_maxintlkey',
+        'maximum internal page key size', 'no_aggregate,no_scale'),
     BtreeStat('btree_maxintlpage',
         'maximum internal page size', 'no_aggregate,no_scale'),
-    BtreeStat('btree_maxleafitem',
-        'maximum leaf page item size', 'no_aggregate,no_scale'),
+    BtreeStat('btree_maxleafkey',
+        'maximum leaf page key size', 'no_aggregate,no_scale'),
     BtreeStat('btree_maxleafpage',
         'maximum leaf page size', 'no_aggregate,no_scale'),
+    BtreeStat('btree_maxleafvalue',
+        'maximum leaf page value size', 'no_aggregate,no_scale'),
     BtreeStat('btree_overflow', 'overflow pages', 'no_scale'),
     BtreeStat('btree_row_internal', 'row-store internal pages', 'no_scale'),
     BtreeStat('btree_row_leaf', 'row-store leaf pages', 'no_scale'),
@@ -371,6 +429,7 @@ dsrc_stats = [
         'data source pages selected for eviction unable to be evicted'),
     CacheStat('cache_eviction_hazard', 'hazard pointer blocked page eviction'),
     CacheStat('cache_eviction_internal', 'internal pages evicted'),
+    CacheStat('cache_inmem_split', 'in-memory page splits'),
     CacheStat('cache_overflow_value',
         'overflow values cached in memory', 'no_scale'),
     CacheStat('cache_read', 'pages read into cache'),

@@ -32,6 +32,7 @@
 #include "mongo/client/dbclient_rs.h"
 
 #include <memory>
+#include <boost/shared_ptr.hpp>
 
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/connpool.h"
@@ -43,6 +44,14 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using boost::shared_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::map;
+    using std::set;
+    using std::string;
+    using std::vector;
 
 namespace {
 
@@ -192,6 +201,13 @@ namespace {
             return str::stream() << _setName << "/" ;
         }
         return rsm->getServerAddress();
+    }
+
+    HostAndPort DBClientReplicaSet::getSuspectedPrimaryHostAndPort() const {
+        if (!_master) {
+            return HostAndPort();
+        }
+        return _master->getServerHostAndPort();
     }
 
     void DBClientReplicaSet::setRunCommandHook(DBClientWithCommands::RunCommandHookFunc func) {

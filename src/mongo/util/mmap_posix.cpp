@@ -29,7 +29,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -45,6 +45,10 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/startup_test.h"
+
+using std::endl;
+using std::numeric_limits;
+using std::vector;
 
 using namespace mongoutils;
 

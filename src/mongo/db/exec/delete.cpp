@@ -35,11 +35,15 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
+#include "mongo/db/global_environment_experiment.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::vector;
 
     // static
     const char* DeleteStage::kStageType = "DELETE";
@@ -83,13 +87,28 @@ namespace mongo {
         if (PlanStage::ADVANCED == status) {
             WorkingSetMember* member = _ws->get(id);
             if (!member->hasLoc()) {
+                // We expect to be here because of an invalidation causing a force-fetch, and
+                // doc-locking storage engines do not issue invalidations.
+                dassert(!supportsDocLocking());
+
                 _ws->free(id);
-                const std::string errmsg = "delete stage failed to read member w/ loc from child";
-                *out = WorkingSetCommon::allocateStatusMember(_ws, Status(ErrorCodes::InternalError,
-                                                                          errmsg));
-                return PlanStage::FAILURE;
+                ++_specificStats.nInvalidateSkips;
+                ++_commonStats.needTime;
+                return PlanStage::NEED_TIME;
             }
-            DiskLoc rloc = member->loc;
+            RecordId rloc = member->loc;
+
+            // If the working set member is in the owned obj with loc state, then the document may
+            // have already been deleted after-being force-fetched.
+            if (WorkingSetMember::LOC_AND_OWNED_OBJ == member->state) {
+                BSONObj deletedDoc;
+                if (!_collection->findDoc(_txn, rloc, &deletedDoc)) {
+                    // Doc is already deleted. Nothing more to do.
+                    ++_commonStats.needTime;
+                    return PlanStage::NEED_TIME;
+                }
+            }
+
             _ws->free(id);
 
             BSONObj deletedDoc;
@@ -177,7 +196,7 @@ namespace mongo {
                 repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(ns.db()));
     }
 
-    void DeleteStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void DeleteStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
         _child->invalidate(txn, dl, type);
     }
@@ -202,6 +221,16 @@ namespace mongo {
 
     const SpecificStats* DeleteStage::getSpecificStats() {
         return &_specificStats;
+    }
+
+    // static
+    long long DeleteStage::getNumDeleted(PlanExecutor* exec) {
+        invariant(exec->getRootStage()->isEOF());
+        invariant(exec->getRootStage()->stageType() == STAGE_DELETE);
+        DeleteStage* deleteStage = static_cast<DeleteStage*>(exec->getRootStage());
+        const DeleteStats* deleteStats =
+            static_cast<const DeleteStats*>(deleteStage->getSpecificStats());
+        return deleteStats->docsDeleted;
     }
 
 }  // namespace mongo

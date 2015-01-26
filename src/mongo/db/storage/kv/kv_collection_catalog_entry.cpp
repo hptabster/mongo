@@ -35,6 +35,9 @@
 #include "mongo/db/storage/kv/kv_engine.h"
 
 namespace mongo {
+
+    using std::string;
+
     class KVCollectionCatalogEntry::AddIndexChange : public RecoveryUnit::Change {
     public:
         AddIndexChange(OperationContext* opCtx, KVCollectionCatalogEntry* cce,
@@ -108,7 +111,7 @@ namespace mongo {
 
     void KVCollectionCatalogEntry::setIndexHead( OperationContext* txn,
                                                  const StringData& indexName,
-                                                 const DiskLoc& newHead ) {
+                                                 const RecordId& newHead ) {
         MetaData md = _getMetaData( txn );
         int offset = md.findIndexOffset( indexName );
         invariant( offset >= 0 );
@@ -118,9 +121,13 @@ namespace mongo {
 
     Status KVCollectionCatalogEntry::removeIndex( OperationContext* txn,
                                                   const StringData& indexName ) {
-        string ident = _catalog->getIndexIdent( txn, ns().ns(), indexName );
-
         MetaData md = _getMetaData( txn );
+        
+        if (md.findIndexOffset(indexName) < 0)
+            return Status::OK(); // never had the index so nothing to do.
+
+        const string ident = _catalog->getIndexIdent( txn, ns().ns(), indexName );
+
         md.eraseIndex( indexName );
         _catalog->putMetaData( txn, ns().toString(), md );
 
@@ -132,7 +139,7 @@ namespace mongo {
     Status KVCollectionCatalogEntry::prepareForIndexBuild( OperationContext* txn,
                                                            const IndexDescriptor* spec ) {
         MetaData md = _getMetaData( txn );
-        md.indexes.push_back( IndexMetaData( spec->infoObj(), false, DiskLoc(), false ) );
+        md.indexes.push_back( IndexMetaData( spec->infoObj(), false, RecordId(), false ) );
         _catalog->putMetaData( txn, ns().toString(), md );
 
         string ident = _catalog->getIndexIdent( txn, ns().ns(), spec->indexName() );

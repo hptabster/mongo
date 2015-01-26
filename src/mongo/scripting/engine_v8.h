@@ -58,6 +58,7 @@ namespace mongo {
     class V8ScriptEngine;
     class V8Scope;
     class BSONHolder;
+    class JSThreadConfig;
 
     typedef v8::Handle<v8::Value> (*v8Function)(V8Scope* scope, const v8::Arguments& args);
 
@@ -159,6 +160,18 @@ namespace mongo {
 
         /** check if there is a pending killOp request */
         bool isKillPending() const;
+
+        /**
+         * Register this scope with the mongo op id.  If executing outside the
+         * context of a mongo operation (e.g. from the shell), killOp will not
+         * be supported.
+         */
+        virtual void registerOperation(OperationContext* txn);
+
+        /**
+         * Unregister this scope with the mongo op id.
+         */
+        virtual void unregisterOperation();
 
         /**
          * Obtains the operation context associated with this Scope, so it can be given to the
@@ -323,6 +336,7 @@ namespace mongo {
                 : conn(conn), cursor(cursor) { }
         };
         ObjTracker<DBConnectionAndCursor> dbConnectionAndCursor;
+        ObjTracker<JSThreadConfig> jsThreadConfigTracker;
 
         // These are all named after the JS constructor name + FT
         v8::Handle<v8::FunctionTemplate> ObjectIdFT()       const { return _ObjectIdFT; }
@@ -410,18 +424,6 @@ namespace mongo {
         bool nativeEpilogue();
 
         /**
-         * Register this scope with the mongo op id.  If executing outside the
-         * context of a mongo operation (e.g. from the shell), killOp will not
-         * be supported.
-         */
-        void registerOpId();
-
-        /**
-         * Unregister this scope with the mongo op id.
-         */
-        void unregisterOpId();
-
-        /**
          * Create a new function; primarily used for BSON/V8 conversion.
          */
         v8::Local<v8::Value> newFunction(const StringData& code);
@@ -496,7 +498,7 @@ namespace mongo {
         mongo::mutex _interruptLock; // protects interruption-related flags
         bool _inNativeExecution;     // protected by _interruptLock
         bool _pendingKill;           // protected by _interruptLock
-        int _opId;                   // op id for this scope
+        unsigned int _opId;                   // op id for this scope
         OperationContext* _opCtx;    // Op context for DbEval
     };
 

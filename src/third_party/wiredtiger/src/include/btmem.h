@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -187,6 +188,9 @@ struct __wt_page_modify {
 	/* The largest update transaction ID (approximate). */
 	uint64_t update_txn;
 
+	/* In-memory split transaction ID. */
+	uint64_t inmem_split_txn;
+
 	/* Dirty bytes added to the cache. */
 	uint64_t bytes_dirty;
 
@@ -344,7 +348,7 @@ struct __wt_page_modify {
 	__wt_spin_lock((s), &S2C(s)->page_lock[(p)->modify->page_lock])
 #define	WT_PAGE_UNLOCK(s, p)						\
 	__wt_spin_unlock((s), &S2C(s)->page_lock[(p)->modify->page_lock])
-	uint8_t page_lock;    /* Page's spinlock */
+	uint8_t page_lock;		/* Page's spinlock */
 
 #define	WT_PM_REC_EMPTY		0x01	/* Reconciliation: no replacement */
 #define	WT_PM_REC_MULTIBLOCK	0x02	/* Reconciliation: multiple blocks */
@@ -421,17 +425,15 @@ struct __wt_page {
 #define	WT_INTL_FOREACH_BEGIN(session, page, ref) do {			\
 	WT_PAGE_INDEX *__pindex;					\
 	WT_REF **__refp;						\
-	WT_SESSION_IMPL *__session = (session);				\
 	uint32_t __entries;						\
-	WT_ENTER_PAGE_INDEX(session);					\
+	WT_ASSERT(session, session->split_gen != 0);			\
 	for (__pindex = WT_INTL_INDEX_COPY(page),			\
 	    __refp = __pindex->index,					\
 	    __entries = __pindex->entries; __entries > 0; --__entries) {\
 		(ref) = *__refp++;
 #define	WT_INTL_FOREACH_END						\
-		}							\
-		WT_LEAVE_PAGE_INDEX(__session);				\
-	} while (0)
+	}								\
+} while (0)
 
 		/* Row-store leaf page. */
 		struct {
@@ -548,8 +550,10 @@ struct __wt_page {
 #define	WT_PAGE_DISK_ALLOC	0x02	/* Disk image in allocated memory */
 #define	WT_PAGE_DISK_MAPPED	0x04	/* Disk image in mapped memory */
 #define	WT_PAGE_EVICT_LRU	0x08	/* Page is on the LRU queue */
-#define	WT_PAGE_SCANNING	0x10	/* Obsolete updates are being scanned */
-#define	WT_PAGE_SPLITTING	0x20	/* An internal page is growing. */
+#define	WT_PAGE_REFUSE_DEEPEN	0x10	/* Don't deepen the tree at this page */
+#define	WT_PAGE_SCANNING	0x20	/* Obsolete updates are being scanned */
+#define	WT_PAGE_SPLIT_INSERT	0x40	/* A leaf page was split for append */
+#define	WT_PAGE_SPLITTING	0x80	/* An internal page is growing */
 	uint8_t flags_atomic;		/* Atomic flags, use F_*_ATOMIC */
 };
 

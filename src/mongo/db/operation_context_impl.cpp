@@ -37,37 +37,29 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/global_environment_experiment.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/platform/random.h"
 #include "mongo/util/log.h"
 #include "mongo/util/fail_point_service.h"
 
 namespace mongo {
-namespace {
-    // Dispenses unique OperationContext identifiers
-    AtomicUInt64 idCounter(0);
-}
 
-    OperationContextImpl::OperationContextImpl() : _client(currentClient.get()) {
-        invariant(_client);
+    using std::string;
 
+    OperationContextImpl::OperationContextImpl()
+        : _client(currentClient.get()),
+          _locker(_client->getLocker()) {
+        invariant(_locker);
         StorageEngine* storageEngine = getGlobalEnvironment()->getGlobalStorageEngine();
         invariant(storageEngine);
-        _recovery.reset(storageEngine->newRecoveryUnit(this));
-
-        if (storageEngine->isMmapV1()) {
-            _locker.reset(new MMAPV1LockerImpl(idCounter.addAndFetch(1)));
-        }
-        else {
-            _locker.reset(new LockerImpl<false>(idCounter.addAndFetch(1)));
-        }
-
-        getGlobalEnvironment()->registerOperationContext(this);
+        _recovery.reset(storageEngine->newRecoveryUnit());
+        _client->setOperationContext(this);
     }
 
     OperationContextImpl::~OperationContextImpl() {
-        getGlobalEnvironment()->unregisterOperationContext(this);
+        _locker->assertEmpty();
+        _client->resetOperationContext();
     }
 
     RecoveryUnit* OperationContextImpl::recoveryUnit() const {
@@ -87,7 +79,7 @@ namespace {
     }
 
     Locker* OperationContextImpl::lockState() const {
-        return _locker.get();
+        return _locker;
     }
 
     ProgressMeter* OperationContextImpl::setMessage(const char * msg,

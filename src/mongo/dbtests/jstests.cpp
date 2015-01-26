@@ -33,6 +33,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/scoped_ptr.hpp>
+#include <iostream>
 #include <limits>
 
 #include "mongo/base/parse_number.h"
@@ -45,7 +47,13 @@
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 
+using boost::scoped_ptr;
+using std::auto_ptr;
+using std::cout;
+using std::endl;
 using std::string;
+using std::stringstream;
+using std::vector;
 
 namespace JSTests {
 

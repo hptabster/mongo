@@ -36,15 +36,17 @@
 #include <memory>
 
 #include "mongo/db/global_environment_experiment.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/util/concurrency/synchronization.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/timer.h"
 
 using std::auto_ptr;
+using std::endl;
 using std::set;
 using std::pair;
 using std::string;
@@ -212,7 +214,8 @@ namespace mongo {
         }
     }
 
-    bool RangeDeleter::queueDelete(const RangeDeleterOptions& options,
+    bool RangeDeleter::queueDelete(OperationContext* txn,
+                                   const RangeDeleterOptions& options,
                                    Notification* notifyDone,
                                    std::string* errMsg) {
         string dummy;
@@ -241,8 +244,7 @@ namespace mongo {
         }
 
         if (options.waitForOpenCursors) {
-            boost::scoped_ptr<OperationContext> txn(getGlobalEnvironment()->newOpCtx());
-            _env->getCursorIds(txn.get(), ns, &toDelete->cursorsToWait);
+            _env->getCursorIds(txn, ns, &toDelete->cursorsToWait);
         }
 
         toDelete->stats.queueStartTS = jsTime();
@@ -280,18 +282,18 @@ namespace {
         repl::ReplicationCoordinator::Milliseconds elapsedTime = replStatus.duration;
         if (replStatus.status.code() == ErrorCodes::ExceededTimeLimit) {
             *errMsg = str::stream() << "rangeDeleter timed out after "
-                                    << elapsedTime.seconds() << " seconds while waiting"
+                                    << elapsedTime.total_seconds() << " seconds while waiting"
                                     << " for deletions to be replicated to majority nodes";
             log() << *errMsg;
         }
         else if (replStatus.status.code() == ErrorCodes::NotMaster) {
             *errMsg = str::stream() << "rangeDeleter no longer PRIMARY after "
-                                    << elapsedTime.seconds() << " seconds while waiting"
+                                    << elapsedTime.total_seconds() << " seconds while waiting"
                                     << " for deletions to be replicated to majority nodes";
         }
         else {
-            LOG(elapsedTime.seconds() < 30 ? 1 : 0)
-                << "rangeDeleter took " << elapsedTime.seconds() << " seconds "
+            LOG(elapsedTime.total_seconds() < 30 ? 1 : 0)
+                << "rangeDeleter took " << elapsedTime.total_seconds() << " seconds "
                 << " waiting for deletes to be replicated to majority nodes";
 
             fassert(18512, replStatus.status);
@@ -412,7 +414,7 @@ namespace {
         stats->reserve(kDeleteJobsHistory);
 
         scoped_lock sl(_statsHistoryMutex);
-        for (deque<DeleteJobStats*>::const_iterator it = _statsHistory.begin();
+        for (std::deque<DeleteJobStats*>::const_iterator it = _statsHistory.begin();
                 it != _statsHistory.end(); ++it) {
             stats->push_back(new DeleteJobStats(**it));
         }
@@ -446,6 +448,8 @@ namespace {
         while (!inShutdown() && !stopRequested()) {
             string errMsg;
 
+            boost::scoped_ptr<OperationContext> txn(getGlobalEnvironment()->newOpCtx());
+
             RangeDeleteEntry* nextTask = NULL;
 
             {
@@ -469,8 +473,6 @@ namespace {
 
                             set<CursorId> cursorsNow;
                             {
-                                boost::scoped_ptr<OperationContext> txn(
-                                        getGlobalEnvironment()->newOpCtx());
                                 if (entry->options.waitForOpenCursors) {
                                     _env->getCursorIds(txn.get(),
                                                        entry->options.range.ns,
@@ -514,8 +516,6 @@ namespace {
             }
 
             {
-                boost::scoped_ptr<OperationContext> txn(getGlobalEnvironment()->newOpCtx());
-
                 nextTask->stats.deleteStartTS = jsTime();
                 bool delResult = _env->deleteRange(txn.get(),
                                                    *nextTask,

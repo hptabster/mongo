@@ -37,11 +37,13 @@
 #include "mongo/base/counter.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/client.h"
+#include "mongo/db/global_environment_experiment.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/db/storage/mmap_v1/data_file.h"
 #include "mongo/db/storage/mmap_v1/record.h"
 #include "mongo/db/storage/mmap_v1/extent.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
+#include "mongo/db/storage/mmap_v1/mmap_v1_engine.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/record_fetcher.h"
 #include "mongo/db/operation_context.h"
@@ -51,6 +53,12 @@
 #include "mongo/util/mmap.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::endl;
+    using std::max;
+    using std::string;
+    using std::stringstream;
 
     // Turn on this failpoint to force the system to yield for a fetch. Setting to "alwaysOn"
     // will cause yields for fetching to occur on every 'kNeedsFetchFailFreq'th call to
@@ -106,10 +114,13 @@ namespace mongo {
           _path(path.toString()),
           _directoryPerDB(directoryPerDB),
           _rid(RESOURCE_METADATA, dbname) {
-
+        StorageEngine* engine = getGlobalEnvironment()->getGlobalStorageEngine();
+        invariant(engine->isMmapV1());
+        MMAPV1Engine* mmapEngine = static_cast<MMAPV1Engine*>(engine);
+        _recordAccessTracker = &mmapEngine->getRecordAccessTracker();
     }
 
-    boost::filesystem::path MmapV1ExtentManager::fileName( int n ) const {
+    boost::filesystem::path MmapV1ExtentManager::_fileName(int n) const {
         stringstream ss;
         ss << _dbname << '.' << n;
         boost::filesystem::path fullName( _path );
@@ -121,14 +132,15 @@ namespace mongo {
 
 
     Status MmapV1ExtentManager::init(OperationContext* txn) {
-        verify(_files.empty());
+        invariant(_files.empty());
 
-        for ( int n = 0; n < DiskLoc::MaxFiles; n++ ) {
-            boost::filesystem::path fullName = fileName( n );
-            if ( !boost::filesystem::exists( fullName ) )
+        for (int n = 0; n < DiskLoc::MaxFiles; n++) {
+            const boost::filesystem::path fullName = _fileName(n);
+            if (!boost::filesystem::exists(fullName)) {
                 break;
+            }
 
-            string fullNameString = fullName.string();
+            const std::string fullNameString = fullName.string();
 
             {
                 // If the file is uninitialized we exit the loop because it is just prealloced. We
@@ -138,22 +150,25 @@ namespace mongo {
                 File preview;
                 preview.open(fullNameString.c_str(), /*readOnly*/ true);
                 invariant(preview.is_open());
-                if (preview.len() < sizeof(DataFileHeader))
-                    break; // can't be initialized if too small.
+
+                // File can't be initialized if too small.
+                if (preview.len() < sizeof(DataFileHeader)) {
+                    break;
+                }
 
                 // This is the equivalent of DataFileHeader::uninitialized().
                 int version;
                 preview.read(0, reinterpret_cast<char*>(&version), sizeof(version));
                 invariant(!preview.bad());
-                if (version == 0)
+                if (version == 0) {
                     break;
-
+                }
             }
 
-            auto_ptr<DataFile> df( new DataFile(n) );
+            auto_ptr<DataFile> df(new DataFile(n));
 
             Status s = df->openExisting(fullNameString.c_str());
-            if ( !s.isOK() ) {
+            if (!s.isOK()) {
                 return s;
             }
 
@@ -163,6 +178,18 @@ namespace mongo {
             df->getHeader()->checkUpgrade(txn);
 
             _files.push_back( df.release() );
+        }
+
+        // If this is a new database being created, instantiate the first file and one extent so
+        // we can have a coherent database.
+        if (_files.empty()) {
+            WriteUnitOfWork wuow(txn);
+            _createExtent(txn, initialSize(128), false);
+            wuow.commit();
+
+            // Commit the journal and all changes to disk so that even if exceptions occur during
+            // subsequent initialization, we won't have uncommited changes during file close.
+            getDur().commitNow(txn);
         }
 
         return Status::OK();
@@ -190,7 +217,9 @@ namespace mongo {
                                              int sizeNeeded,
                                              bool preallocateNextFile) {
 
-        invariant(txn->lockState()->isWriteLocked(_dbname));
+        // Database must be stable and we need to be in some sort of an update operation in order
+        // to add a new file.
+        invariant(txn->lockState()->isDbLockedForMode(_dbname, MODE_IX));
 
         const int allocFileId = _files.size();
 
@@ -206,7 +235,7 @@ namespace mongo {
 
         {
             auto_ptr<DataFile> allocFile(new DataFile(allocFileId));
-            const string allocFileName = fileName(allocFileId).string();
+            const string allocFileName = _fileName(allocFileId).string();
 
             Timer t;
 
@@ -225,7 +254,7 @@ namespace mongo {
         // Preallocate is asynchronous
         if (preallocateNextFile) {
             auto_ptr<DataFile> nextFile(new DataFile(allocFileId + 1));
-            const string nextFileName = fileName(allocFileId + 1).string();
+            const string nextFileName = _fileName(allocFileId + 1).string();
 
             nextFile->open(txn, nextFileName.c_str(), minSize, false);
         }
@@ -239,9 +268,11 @@ namespace mongo {
     }
 
     long long MmapV1ExtentManager::fileSize() const {
-        long long size=0;
-        for ( int n = 0; boost::filesystem::exists( fileName(n) ); n++)
-            size += boost::filesystem::file_size( fileName(n) );
+        long long size = 0;
+        for (int n = 0; boost::filesystem::exists(_fileName(n)); n++) {
+            size += boost::filesystem::file_size(_fileName(n));
+        }
+
         return size;
     }
 
@@ -259,7 +290,7 @@ namespace mongo {
 
     Record* MmapV1ExtentManager::recordForV1( const DiskLoc& loc ) const {
         Record* record = _recordForV1( loc );
-        _recordAccessTracker.markAccessed( record );
+        _recordAccessTracker->markAccessed( record );
         return record;
     }
 
@@ -275,7 +306,7 @@ namespace mongo {
             }
         }
 
-        if ( !_recordAccessTracker.checkAccessedAndMark( record ) ) {
+        if ( !_recordAccessTracker->checkAccessedAndMark( record ) ) {
             return new MmapV1RecordFetcher( record );
         }
 
@@ -298,7 +329,7 @@ namespace mongo {
         if ( doSanityCheck )
             e->assertOk();
 
-        _recordAccessTracker.markAccessed( e );
+        _recordAccessTracker->markAccessed( e );
 
         return e;
     }

@@ -28,13 +28,17 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/json.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/s/chunk.h"
 
 namespace mongo {
+
+    using std::set;
+    using std::string;
+    using std::vector;
 
     class TestableChunkManager : public ChunkManager {
     public:
@@ -57,8 +61,7 @@ namespace mongo {
                 Shard shard(name,
                             name,
                             0 /* maxSize */,
-                            false /* draining */,
-                            BSONArray() /* tags */);
+                            false /* draining */);
                 shards.insert( shard );
                 
                 ChunkPtr chunk( new Chunk( this, mySplitPoints[ i-1 ], mySplitPoints[ i ],

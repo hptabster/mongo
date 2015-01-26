@@ -82,6 +82,7 @@ var firstDbName = "roles_commands_1";
 var secondDbName = "roles_commands_2";
 var adminDbName = "admin";
 var authErrCode = 13;
+var commandNotSupportedCode = 115;
 var shard0name = "shard0000";
 
 // useful shorthand when defining the tests below
@@ -372,6 +373,23 @@ var authCommandsLib = {
                         { resource: {db: secondDbName, collection: "x"}, actions: ["find"] }
                     ]
                 }
+            ]
+        },
+        {
+            testname: "cleanupOrphaned",
+            command: {cleanupOrphaned: firstDbName + ".x"},
+            skipSharded: true,
+            testcases: [
+                {
+                    runOnDb: adminDbName,
+                    roles: roles_clusterManager,
+                    privileges: [
+                        { resource: {cluster: true}, actions: ["cleanupOrphaned"] }
+                    ],
+                    expectFail: true
+                },
+                { runOnDb: firstDbName, roles: {} },
+                { runOnDb: secondDbName, roles: {} }
             ]
         },
         {
@@ -2389,28 +2407,6 @@ var authCommandsLib = {
                 }
             ]
         }, */
-        {
-            testname: "text",
-            command: {text: "x"},
-            testcases: [
-                {
-                    runOnDb: firstDbName,
-                    roles: roles_read,
-                    privileges: [
-                        { resource: {db: firstDbName, collection: "x"}, actions: ["find"] }
-                    ],
-                    expectFail: true
-                },
-                {
-                    runOnDb: secondDbName,
-                    roles: roles_readAny,
-                    privileges: [
-                        { resource: {db: secondDbName, collection: "x"}, actions: ["find"] }
-                    ],
-                    expectFail: true
-                }
-            ]
-        },
         {
             testname: "top",
             command: {top: 1},

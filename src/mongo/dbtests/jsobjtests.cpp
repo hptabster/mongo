@@ -31,7 +31,9 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
+
+#include <iostream>
 
 #include "mongo/bson/util/builder.h"
 #include "mongo/db/jsobj.h"
@@ -45,6 +47,14 @@
 #include "mongo/util/stringutils.h"
 
 namespace mongo {
+
+    using std::cout;
+    using std::endl;
+    using std::numeric_limits;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
+
     typedef std::map<std::string, BSONElement> BSONMap;
     BSONMap bson2map(const BSONObj& obj) {
         BSONMap m;
@@ -804,6 +814,9 @@ namespace JsobjTests {
 
                 b.append( "g" , -123.456 );
 
+                b.append( "h" , 0.0 );
+                b.append( "i" , -0.0 );
+
                 BSONObj x = b.obj();
                 keyTest(x);
 
@@ -817,6 +830,8 @@ namespace JsobjTests {
 
                 ASSERT_EQUALS( "-123.456" , x["g"].toString( false , true ) );
 
+                ASSERT_EQUALS( "0.0" , x["h"].toString( false , true ) );
+                ASSERT_EQUALS( "-0.0" , x["i"].toString( false , true ) );
             }
         };
 
@@ -1679,21 +1694,21 @@ namespace JsobjTests {
     class CompatBSON {
     public:
 
-#define JSONBSONTEST(j,s,m) ASSERT_EQUALS( fromjson( j ).objsize() , s ); ASSERT_EQUALS( fromjson( j ).md5() , m );
-#define RAWBSONTEST(j,s,m) ASSERT_EQUALS( j.objsize() , s ); ASSERT_EQUALS( j.md5() , m );
+#define JSONBSONTEST(j,s) ASSERT_EQUALS( fromjson( j ).objsize() , s );
+#define RAWBSONTEST(j,s) ASSERT_EQUALS( j.objsize() , s );
 
         void run() {
 
-            JSONBSONTEST( "{ 'x' : true }" , 9 , "6fe24623e4efc5cf07f027f9c66b5456" );
-            JSONBSONTEST( "{ 'x' : null }" , 8 , "12d43430ff6729af501faf0638e68888" );
-            JSONBSONTEST( "{ 'x' : 5.2 }" , 16 , "aaeeac4a58e9c30eec6b0b0319d0dff2" );
-            JSONBSONTEST( "{ 'x' : 'eliot' }" , 18 , "331a3b8b7cbbe0706c80acdb45d4ebbe" );
-            JSONBSONTEST( "{ 'x' : 5.2 , 'y' : 'truth' , 'z' : 1.1 }" , 40 , "7c77b3a6e63e2f988ede92624409da58" );
-            JSONBSONTEST( "{ 'a' : { 'b' : 1.1 } }" , 24 , "31887a4b9d55cd9f17752d6a8a45d51f" );
-            JSONBSONTEST( "{ 'x' : 5.2 , 'y' : { 'a' : 'eliot' , b : true } , 'z' : null }" , 44 , "b3de8a0739ab329e7aea138d87235205" );
-            JSONBSONTEST( "{ 'x' : 5.2 , 'y' : [ 'a' , 'eliot' , 'b' , true ] , 'z' : null }" , 62 , "cb7bad5697714ba0cbf51d113b6a0ee8" );
+            JSONBSONTEST( "{ 'x' : true }" , 9 );
+            JSONBSONTEST( "{ 'x' : null }" , 8 );
+            JSONBSONTEST( "{ 'x' : 5.2 }" , 16 );
+            JSONBSONTEST( "{ 'x' : 'eliot' }" , 18 );
+            JSONBSONTEST( "{ 'x' : 5.2 , 'y' : 'truth' , 'z' : 1.1 }" , 40 );
+            JSONBSONTEST( "{ 'a' : { 'b' : 1.1 } }" , 24 );
+            JSONBSONTEST( "{ 'x' : 5.2 , 'y' : { 'a' : 'eliot' , b : true } , 'z' : null }" , 44 );
+            JSONBSONTEST( "{ 'x' : 5.2 , 'y' : [ 'a' , 'eliot' , 'b' , true ] , 'z' : null }" , 62 );
 
-            RAWBSONTEST( BSON( "x" << 4 ) , 12 , "d1ed8dbf79b78fa215e2ded74548d89d" );
+            RAWBSONTEST( BSON( "x" << 4 ) , 12 );
 
         }
     };
@@ -2162,32 +2177,6 @@ namespace JsobjTests {
         }
     };
 
-    class HashingTest {
-    public:
-        void run() {
-            int N = 100000;
-            BSONObj x = BSON( "name" << "eliot was here"
-                              << "x" << 5
-                              << "asdasdasdas" << "asldkasldjasldjasldjlasjdlasjdlasdasdasdasdasdasdasd" );
-
-            {
-	        //Timer t;
-                for ( int i=0; i<N; i++ )
-                    x.md5();
-                //int millis = t.millis();
-                //cout << "md5 : " << millis << endl;
-            }
-
-            {
-	        //Timer t;
-                for ( int i=0; i<N; i++ )
-                    x.toString();
-                //int millis = t.millis();
-                //cout << "toString : " << millis << endl;
-            }
-        }
-    };
-
     class NestedBuilderOversize {
     public:
         void run() {
@@ -2307,7 +2296,6 @@ namespace JsobjTests {
             add< BuilderPartialItearte >();
             add< BSONForEachTest >();
             add< CompareOps >();
-            add< HashingTest >();
             add< NestedBuilderOversize >();
         }
     };

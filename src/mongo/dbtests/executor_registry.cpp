@@ -47,6 +47,8 @@
 
 namespace ExecutorRegistry {
 
+    using std::auto_ptr;
+
     class ExecutorRegistryBase {
     public:
         ExecutorRegistryBase()
@@ -80,7 +82,7 @@ namespace ExecutorRegistry {
                                                ws.release(),
                                                scan.release(),
                                                cq,
-                                               _ctx->ctx().db()->getCollection(&_opCtx, ns()),
+                                               _ctx->ctx().db()->getCollection(ns()),
                                                PlanExecutor::YIELD_MANUAL,
                                                &exec);
             ASSERT_OK(status);
@@ -90,7 +92,7 @@ namespace ExecutorRegistry {
         void registerExecutor( PlanExecutor* exec ) {
             WriteUnitOfWork wuow(&_opCtx);
             _ctx->ctx().db()->getOrCreateCollection(&_opCtx, ns())
-                            ->cursorCache()
+                            ->getCursorManager()
                             ->registerExecutor(exec);
             wuow.commit();
         }
@@ -98,7 +100,7 @@ namespace ExecutorRegistry {
         void deregisterExecutor( PlanExecutor* exec ) {
             WriteUnitOfWork wuow(&_opCtx);
             _ctx->ctx().db()->getOrCreateCollection(&_opCtx, ns())
-                            ->cursorCache()
+                            ->getCursorManager()
                             ->deregisterExecutor(exec);
             wuow.commit();
         }
@@ -106,7 +108,7 @@ namespace ExecutorRegistry {
         int N() { return 50; }
 
         Collection* collection() {
-            return _ctx->ctx().db()->getCollection( &_opCtx, ns() );
+            return _ctx->ctx().db()->getCollection( ns() );
         }
 
         static const char* ns() { return "unittests.ExecutorRegistryDiskLocInvalidation"; }

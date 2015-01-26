@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -14,6 +15,7 @@ struct __wt_data_handle_cache {
 	WT_DATA_HANDLE *dhandle;
 
 	SLIST_ENTRY(__wt_data_handle_cache) l;
+	SLIST_ENTRY(__wt_data_handle_cache) hashl;
 };
 
 /*
@@ -57,10 +59,17 @@ struct __wt_session_impl {
 
 	WT_DATA_HANDLE *dhandle;	/* Current data handle */
 
+	/*
+	 * Each session keeps a cache of data handles. The set of handles
+	 * can grow quite large so we maintain both a simple list and a hash
+	 * table of lists. The hash table key is based on a hash of the table
+	 * URI. The hash table list is kept in allocated memory that lives
+	 * across session close - so it is declared further down.
+	 */
 					/* Session handle reference list */
 	SLIST_HEAD(__dhandles, __wt_data_handle_cache) dhandles;
-#define	WT_DHANDLE_SWEEP_WAIT	60	/* Wait before discarding */
-#define	WT_DHANDLE_SWEEP_PERIOD	20	/* Only sweep every 20 seconds */
+#define	WT_DHANDLE_SWEEP_WAIT	30	/* Idle wait before discarding */
+#define	WT_DHANDLE_SWEEP_PERIOD	10	/* Sweep interim */
 	time_t last_sweep;		/* Last sweep for dead handles */
 
 	WT_CURSOR *cursor;		/* Current cursor */
@@ -70,7 +79,7 @@ struct __wt_session_impl {
 	WT_CURSOR_BACKUP *bkp_cursor;	/* Hot backup cursor */
 	WT_COMPACT	 *compact;	/* Compact state */
 
-	WT_BTREE *metafile;		/* Metadata file */
+	WT_DATA_HANDLE *meta_dhandle;	/* Metadata file */
 	void	*meta_track;		/* Metadata operation tracking */
 	void	*meta_track_next;	/* Current position */
 	void	*meta_track_sub;	/* Child transaction / save point */
@@ -78,10 +87,17 @@ struct __wt_session_impl {
 	int	 meta_track_nest;	/* Nesting level of meta transaction */
 #define	WT_META_TRACKING(session)	(session->meta_track_next != NULL)
 
-	TAILQ_HEAD(__tables, __wt_table) tables;
+	/*
+	 * Each session keeps a cache of table handles. The set of handles
+	 * can grow quite large so we maintain both a simple list and a hash
+	 * table of lists. The hash table list is kept in allocated memory
+	 * that lives across session close - so it is declared further down.
+	 */
+	SLIST_HEAD(__tables, __wt_table) tables;
 
 	WT_ITEM	**scratch;		/* Temporary memory for any function */
 	u_int	scratch_alloc;		/* Currently allocated */
+	size_t scratch_cached;		/* Scratch bytes cached */
 #ifdef HAVE_DIAGNOSTIC
 	/*
 	 * It's hard to figure out from where a buffer was allocated after it's
@@ -137,6 +153,11 @@ struct __wt_session_impl {
 	(WT_PTRDIFF(&(s)->rnd[0], s))
 
 	uint32_t rnd[2];		/* Random number generation state */
+
+					/* Hashed handle reference list array */
+	SLIST_HEAD(__dhandles_hash, __wt_data_handle_cache) *dhhash;
+					/* Hashed table reference list array */
+	SLIST_HEAD(__tables_hash, __wt_table) *tablehash;
 
 	/*
 	 * Splits can "free" memory that may still be in use, and we use a

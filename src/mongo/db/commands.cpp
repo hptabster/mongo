@@ -55,11 +55,15 @@
 
 namespace mongo {
 
+    using std::string;
+    using std::stringstream;
+    using std::endl;
+
     using logger::LogComponent;
 
-    map<string,Command*> * Command::_commandsByBestName;
-    map<string,Command*> * Command::_webCommands;
-    map<string,Command*> * Command::_commands;
+    Command::CommandMap* Command::_commandsByBestName;
+    Command::CommandMap* Command::_webCommands;
+    Command::CommandMap* Command::_commands;
 
     int Command::testCommandsEnabled = 0;
 
@@ -84,6 +88,18 @@ namespace mongo {
                 first.type() == mongo::String &&
                 NamespaceString::validCollectionComponent(first.valuestr()));
         return first.String();
+    }
+
+    string Command::parseNsCollectionRequired(const string& dbname, const BSONObj& cmdObj) const {
+        // Accepts both BSON String and Symbol for collection name per SERVER-16260
+        // TODO(kangas) remove Symbol support in MongoDB 3.0 after Ruby driver audit
+        BSONElement first = cmdObj.firstElement();
+        uassert(17009,
+                "no collection name specified",
+                first.canonicalType() == canonicalizeBSONType(mongo::String)
+                && first.valuestrsize() > 0);
+        std::string coll = first.valuestr();
+        return dbname + '.' + coll;
     }
 
     /*virtual*/ string Command::parseNs(const string& dbname, const BSONObj& cmdObj) const {
@@ -121,7 +137,7 @@ namespace mongo {
             helpStr = h.str();
         }
         ss << "\n<tr><td>";
-        bool web = _webCommands->count(name) != 0;
+        bool web = _webCommands->find(name) != _webCommands->end();
         if( web ) ss << "<a href=\"/" << name << "?text=1\">";
         ss << name;
         if( web ) ss << "</a>";
@@ -160,7 +176,7 @@ namespace mongo {
                         ss << *q++;
                     ss << "\">";
                     q = p;
-                    if( startsWith(q, "http://www.mongodb.org/display/") )
+                    if( str::startsWith(q, "http://www.mongodb.org/display/") )
                         q += 31;
                     while( *q && *q != ' ' && *q != '\n' ) {
                         ss << (*q == '+' ? ' ' : *q);
@@ -187,9 +203,9 @@ namespace mongo {
         _commandsFailedMetric("commands."+ _name.toString()+".failed", &_commandsFailed) {
         // register ourself.
         if ( _commands == 0 )
-            _commands = new map<string,Command*>;
+            _commands = new CommandMap();
         if( _commandsByBestName == 0 )
-            _commandsByBestName = new map<string,Command*>;
+            _commandsByBestName = new CommandMap();
         Command*& c = (*_commands)[name];
         if ( c )
             log() << "warning: 2 commands with name: " << _name << endl;
@@ -198,7 +214,7 @@ namespace mongo {
 
         if( web ) {
             if( _webCommands == 0 )
-                _webCommands = new map<string,Command*>;
+                _webCommands = new CommandMap();
             (*_webCommands)[name] = this;
         }
 
@@ -216,8 +232,8 @@ namespace mongo {
         return std::vector<BSONObj>();
     }
 
-    Command* Command::findCommand( const string& name ) {
-        map<string,Command*>::iterator i = _commands->find( name );
+    Command* Command::findCommand( const StringData& name ) {
+        CommandMap::const_iterator i = _commands->find( name );
         if ( i == _commands->end() )
             return 0;
         return i->second;
@@ -247,6 +263,59 @@ namespace mongo {
 
     Status Command::getStatusFromCommandResult(const BSONObj& result) {
         return mongo::getStatusFromCommandResult(result);
+    }
+
+    Status Command::parseCommandCursorOptions(const BSONObj& cmdObj,
+                                              long long defaultBatchSize,
+                                              long long* batchSize) {
+        invariant(batchSize);
+        *batchSize = defaultBatchSize;
+
+        BSONElement cursorElem = cmdObj["cursor"];
+        if (cursorElem.eoo()) {
+            return Status::OK();
+        }
+
+        if (cursorElem.type() != mongo::Object) {
+            return Status(ErrorCodes::TypeMismatch, "cursor field must be missing or an object");
+        }
+
+        BSONObj cursor = cursorElem.embeddedObject();
+        BSONElement batchSizeElem = cursor["batchSize"];
+
+        const int expectedNumberOfCursorFields = batchSizeElem.eoo() ? 0 : 1;
+        if (cursor.nFields() != expectedNumberOfCursorFields) {
+            return Status(ErrorCodes::BadValue,
+                          "cursor object can't contain fields other than batchSize");
+        }
+
+        if (batchSizeElem.eoo()) {
+            return Status::OK();
+        }
+
+        if (!batchSizeElem.isNumber()) {
+            return Status(ErrorCodes::TypeMismatch, "cursor.batchSize must be a number");
+        }
+
+        // This can change in the future, but for now all negatives are reserved.
+        if (batchSizeElem.numberLong() < 0) {
+            return Status(ErrorCodes::BadValue, "cursor.batchSize must not be negative");
+        }
+
+        *batchSize = batchSizeElem.numberLong();
+
+        return Status::OK();
+    }
+
+    void Command::appendCursorResponseObject(long long cursorId,
+                                             StringData cursorNamespace,
+                                             BSONArray firstBatch,
+                                             BSONObjBuilder* builder) {
+        BSONObjBuilder cursorObj(builder->subobjStart("cursor"));
+        cursorObj.append("id", cursorId);
+        cursorObj.append("ns", cursorNamespace);
+        cursorObj.append("firstBatch", firstBatch);
+        cursorObj.done();
     }
 
     Status Command::checkAuthForCommand(ClientBasic* client,
@@ -320,11 +389,10 @@ namespace mongo {
         if (!status.isOK()) {
             log(LogComponent::kAccessControl) << status << std::endl;
         }
-        mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
-        c->redactForLogging(&cmdToLog);
         audit::logCommandAuthzCheck(client,
-                                    NamespaceString(c->parseNs(dbname, cmdObj)),
-                                    cmdToLog,
+                                    dbname,
+                                    cmdObj,
+                                    c,
                                     status.code());
         return status;
     }

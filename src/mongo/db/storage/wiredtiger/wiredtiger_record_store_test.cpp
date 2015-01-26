@@ -30,9 +30,14 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/scoped_ptr.hpp>
 #include <sstream>
 #include <string>
 
+#include "mongo/base/string_data.h"
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/base/checked_cast.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/json.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/storage/record_store_test_harness.h"
@@ -46,22 +51,36 @@
 
 namespace mongo {
 
+    using boost::scoped_ptr;
     using std::string;
     using std::stringstream;
 
     class WiredTigerHarnessHelper : public HarnessHelper {
     public:
-        WiredTigerHarnessHelper() : _dbpath( "wt_test" ), _conn( NULL ) {
+        static WT_CONNECTION* createConnection(StringData dbpath, StringData extraStrings) {
+            WT_CONNECTION* conn = NULL;
 
             std::stringstream ss;
             ss << "create,";
             ss << "statistics=(all),";
+            ss << extraStrings;
             string config = ss.str();
-            int ret = wiredtiger_open( _dbpath.path().c_str(), NULL, config.c_str(), &_conn);
-            invariantWTOK( ret );
+            int ret = wiredtiger_open(dbpath.toString().c_str(), NULL, config.c_str(), &conn);
+            ASSERT_OK(wtRCToStatus(ret));
+            ASSERT(conn);
 
-            _sessionCache = new WiredTigerSessionCache( _conn );
+            return conn;
         }
+
+        WiredTigerHarnessHelper()
+            : _dbpath("wt_test"),
+              _conn(createConnection(_dbpath.path(), "")),
+              _sessionCache(new WiredTigerSessionCache(_conn)) { }
+
+        WiredTigerHarnessHelper(StringData extraStrings)
+            : _dbpath("wt_test"),
+              _conn(createConnection(_dbpath.path(), extraStrings)),
+              _sessionCache(new WiredTigerSessionCache(_conn)) { }
 
         ~WiredTigerHarnessHelper() {
             delete _sessionCache;
@@ -150,15 +169,15 @@ namespace mongo {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
 
-        DiskLoc loc1;
-        DiskLoc loc2;
+        RecordId loc1;
+        RecordId loc2;
 
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
 
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(), "a", 2, false );
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(), "a", 2, false );
                 ASSERT_OK( res.getStatus() );
                 loc1 = res.getValue();
 
@@ -201,15 +220,15 @@ namespace mongo {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
 
-        DiskLoc loc1;
-        DiskLoc loc2;
+        RecordId loc1;
+        RecordId loc2;
 
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
 
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(), "a", 2, false );
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(), "a", 2, false );
                 ASSERT_OK( res.getStatus() );
                 loc1 = res.getValue();
 
@@ -255,10 +274,10 @@ namespace mongo {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
 
-        string uri = dynamic_cast<WiredTigerRecordStore*>( rs.get() )->GetURI();
+        string uri = checked_cast<WiredTigerRecordStore*>( rs.get() )->getURI();
 
         WiredTigerSizeStorer ss;
-        dynamic_cast<WiredTigerRecordStore*>( rs.get() )->setSizeStorer( &ss );
+        checked_cast<WiredTigerRecordStore*>( rs.get() )->setSizeStorer( &ss );
 
         int N = 12;
 
@@ -267,7 +286,7 @@ namespace mongo {
             {
                 WriteUnitOfWork uow( opCtx.get() );
                 for ( int i = 0; i < N; i++ ) {
-                    StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(), "a", 2, false );
+                    StatusWith<RecordId> res = rs->insertRecord( opCtx.get(), "a", 2, false );
                     ASSERT_OK( res.getStatus() );
                 }
                 uow.commit();
@@ -303,7 +322,7 @@ namespace mongo {
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             WiredTigerRecoveryUnit* ru =
-                dynamic_cast<WiredTigerRecoveryUnit*>( opCtx->recoveryUnit() );
+                checked_cast<WiredTigerRecoveryUnit*>( opCtx->recoveryUnit() );
 
             {
                 WriteUnitOfWork uow( opCtx.get() );
@@ -332,17 +351,159 @@ namespace mongo {
         rs.reset( NULL ); // this has to be deleted before ss
     }
 
-    StatusWith<DiskLoc> insertBSON(scoped_ptr<OperationContext>& opCtx,
+namespace {
+
+    class GoodValidateAdaptor : public ValidateAdaptor {
+    public:
+        virtual Status validate(const RecordData& record, size_t* dataSize) {
+            *dataSize = static_cast<size_t>(record.size());
+            return Status::OK();
+        }
+    };
+
+    class BadValidateAdaptor : public ValidateAdaptor {
+    public:
+        virtual Status validate(const RecordData& record, size_t* dataSize) {
+            *dataSize = static_cast<size_t>(record.size());
+            return Status(ErrorCodes::UnknownError, "");
+        }
+    };
+
+    class SizeStorerValidateTest : public mongo::unittest::Test {
+    private:
+        virtual void setUp() {
+            harnessHelper.reset(new WiredTigerHarnessHelper());
+            sizeStorer.reset(new WiredTigerSizeStorer());
+            rs.reset(harnessHelper->newNonCappedRecordStore());
+            WiredTigerRecordStore* wtrs = checked_cast<WiredTigerRecordStore*>(rs.get());
+            wtrs->setSizeStorer(sizeStorer.get());
+            uri = wtrs->getURI();
+
+            expectedNumRecords = WiredTigerRecordStore::kCollectionScanOnCreationThreshold;
+            expectedDataSize = expectedNumRecords * 2;
+            {
+                scoped_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+                WriteUnitOfWork uow( opCtx.get() );
+                for (int i=0; i < expectedNumRecords; i++) {
+                    ASSERT_OK(rs->insertRecord( opCtx.get(), "a", 2, false ).getStatus());
+                }
+                uow.commit();
+            }
+            ASSERT_EQUALS(expectedNumRecords, rs->numRecords(NULL));
+            ASSERT_EQUALS(expectedDataSize, rs->dataSize(NULL));
+            sizeStorer->store(uri, 0, 0);
+        }
+        virtual void tearDown() {
+            expectedNumRecords = 0;
+            expectedDataSize = 0;
+
+            rs.reset(NULL);
+            sizeStorer.reset(NULL);
+            harnessHelper.reset(NULL);
+            rs.reset(NULL);
+        }
+
+    protected:
+        long long getNumRecords() const {
+            long long numRecords;
+            long long unused;
+            sizeStorer->load(uri, &numRecords, &unused);
+            return numRecords;
+        }
+
+        long long getDataSize() const {
+            long long unused;
+            long long dataSize;
+            sizeStorer->load(uri, &unused, &dataSize);
+            return dataSize;
+        }
+
+        boost::scoped_ptr<WiredTigerHarnessHelper> harnessHelper;
+        boost::scoped_ptr<WiredTigerSizeStorer> sizeStorer;
+        boost::scoped_ptr<RecordStore> rs;
+        std::string uri;
+
+        long long expectedNumRecords;
+        long long expectedDataSize;
+    };
+
+    // Basic validation - size storer data is not updated.
+    TEST_F(SizeStorerValidateTest, Basic) {
+        scoped_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        ValidateResults results;
+        BSONObjBuilder output;
+        ASSERT_OK(rs->validate(opCtx.get(), false, false, NULL, &results, &output));
+        BSONObj obj = output.obj();
+        ASSERT_EQUALS(expectedNumRecords, obj.getIntField("nrecords"));
+        ASSERT_EQUALS(0, getNumRecords());
+        ASSERT_EQUALS(0, getDataSize());
+    }
+
+    // Full validation - size storer data is updated.
+    TEST_F(SizeStorerValidateTest, FullWithGoodAdaptor) {
+        scoped_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        GoodValidateAdaptor adaptor;
+        ValidateResults results;
+        BSONObjBuilder output;
+        ASSERT_OK(rs->validate(opCtx.get(), true, true, &adaptor, &results, &output));
+        BSONObj obj = output.obj();
+        ASSERT_EQUALS(expectedNumRecords, obj.getIntField("nrecords"));
+        ASSERT_EQUALS(expectedNumRecords, getNumRecords());
+        ASSERT_EQUALS(expectedDataSize, getDataSize());
+    }
+
+    // Full validation with a validation adaptor that fails - size storer data is not updated.
+    TEST_F(SizeStorerValidateTest, FullWithBadAdapter) {
+        scoped_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        BadValidateAdaptor adaptor;
+        ValidateResults results;
+        BSONObjBuilder output;
+        ASSERT_OK(rs->validate(opCtx.get(), true, true, &adaptor, &results, &output));
+        BSONObj obj = output.obj();
+        ASSERT_EQUALS(expectedNumRecords, obj.getIntField("nrecords"));
+        ASSERT_EQUALS(0, getNumRecords());
+        ASSERT_EQUALS(0, getDataSize());
+    }
+
+    // Load bad _numRecords and _dataSize values at record store creation.
+    TEST_F(SizeStorerValidateTest, InvalidSizeStorerAtCreation) {
+        rs.reset(NULL);
+
+        scoped_ptr<OperationContext> opCtx(harnessHelper->newOperationContext());
+        sizeStorer->store(uri, expectedNumRecords*2, expectedDataSize*2);
+        rs.reset(new WiredTigerRecordStore(opCtx.get(), "a.b", uri, false, -1, -1, NULL,
+                                           sizeStorer.get()));
+        ASSERT_EQUALS(expectedNumRecords*2, rs->numRecords(NULL));
+        ASSERT_EQUALS(expectedDataSize*2, rs->dataSize(NULL));
+
+        // Full validation should fix record and size counters.
+        GoodValidateAdaptor adaptor;
+        ValidateResults results;
+        BSONObjBuilder output;
+        ASSERT_OK(rs->validate(opCtx.get(), true, true, &adaptor, &results, &output));
+        BSONObj obj = output.obj();
+        ASSERT_EQUALS(expectedNumRecords, obj.getIntField("nrecords"));
+        ASSERT_EQUALS(expectedNumRecords, getNumRecords());
+        ASSERT_EQUALS(expectedDataSize, getDataSize());
+
+        ASSERT_EQUALS(expectedNumRecords, rs->numRecords(NULL));
+        ASSERT_EQUALS(expectedDataSize, rs->dataSize(NULL));
+}
+
+}  // namespace
+
+
+    StatusWith<RecordId> insertBSON(scoped_ptr<OperationContext>& opCtx,
                                    scoped_ptr<RecordStore>& rs,
                                    const OpTime& opTime) {
         BSONObj obj = BSON( "ts" << opTime );
         WriteUnitOfWork wuow(opCtx.get());
-        WiredTigerRecordStore* wrs = dynamic_cast<WiredTigerRecordStore*>(rs.get());
+        WiredTigerRecordStore* wrs = checked_cast<WiredTigerRecordStore*>(rs.get());
         invariant( wrs );
         Status status = wrs->oplogDiskLocRegister( opCtx.get(), opTime );
         if (!status.isOK())
-            return StatusWith<DiskLoc>( status );
-        StatusWith<DiskLoc> res = rs->insertRecord(opCtx.get(),
+            return StatusWith<RecordId>( status );
+        StatusWith<RecordId> res = rs->insertRecord(opCtx.get(),
                                                    obj.objdata(),
                                                    obj.objsize(),
                                                    false);
@@ -380,52 +541,52 @@ namespace mongo {
 
             // success cases
             ASSERT_EQ(insertBSON(opCtx, rs, OpTime(1,1)).getValue(),
-                      DiskLoc(1,1));
+                      RecordId(1,1));
 
             ASSERT_EQ(insertBSON(opCtx, rs, OpTime(1,2)).getValue(),
-                      DiskLoc(1,2));
+                      RecordId(1,2));
 
             ASSERT_EQ(insertBSON(opCtx, rs, OpTime(2,2)).getValue(),
-                      DiskLoc(2,2));
+                      RecordId(2,2));
         }
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
             // find start
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(0,1)), DiskLoc()); // nothing <=
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(2,1)), DiskLoc(1,2)); // between
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(2,2)), DiskLoc(2,2)); // ==
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(2,3)), DiskLoc(2,2)); // > highest
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(0,1)), RecordId()); // nothing <=
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(2,1)), RecordId(1,2)); // between
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(2,2)), RecordId(2,2)); // ==
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(2,3)), RecordId(2,2)); // > highest
         }
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
-            rs->temp_cappedTruncateAfter(opCtx.get(), DiskLoc(2,2),  false); // no-op
+            rs->temp_cappedTruncateAfter(opCtx.get(), RecordId(2,2),  false); // no-op
         }
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(2,3)), DiskLoc(2,2));
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(2,3)), RecordId(2,2));
         }
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
-            rs->temp_cappedTruncateAfter(opCtx.get(), DiskLoc(1,2),  false); // deletes 2,2
+            rs->temp_cappedTruncateAfter(opCtx.get(), RecordId(1,2),  false); // deletes 2,2
         }
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(2,3)), DiskLoc(1,2));
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(2,3)), RecordId(1,2));
         }
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
-            rs->temp_cappedTruncateAfter(opCtx.get(), DiskLoc(1,2),  true); // deletes 1,2
+            rs->temp_cappedTruncateAfter(opCtx.get(), RecordId(1,2),  true); // deletes 1,2
         }
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(2,3)), DiskLoc(1,1));
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(2,3)), RecordId(1,1));
         }
 
         {
@@ -437,7 +598,7 @@ namespace mongo {
 
         {
             scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
-            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(2,3)), DiskLoc());
+            ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(2,3)), RecordId());
         }
     }
 
@@ -454,20 +615,20 @@ namespace mongo {
                                        obj.objsize(), false ).getStatus());
             wuow.commit();
         }
-        ASSERT_EQ(rs->oplogStartHack(opCtx.get(), DiskLoc(0,1)), DiskLoc().setInvalid());
+        ASSERT_EQ(rs->oplogStartHack(opCtx.get(), RecordId(0,1)), boost::none);
     }
 
     TEST(WiredTigerRecordStoreTest, CappedOrder) {
         scoped_ptr<WiredTigerHarnessHelper> harnessHelper( new WiredTigerHarnessHelper() );
         scoped_ptr<RecordStore> rs(harnessHelper->newCappedRecordStore("a.b", 100000,10000));
 
-        DiskLoc loc1;
+        RecordId loc1;
 
         { // first insert a document
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(), "a", 2, false );
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(), "a", 2, false );
                 ASSERT_OK( res.getStatus() );
                 loc1 = res.getValue();
                 uow.commit();
@@ -523,15 +684,15 @@ namespace mongo {
         }
     }
 
-    DiskLoc _oplogOrderInsertOplog( OperationContext* txn,
+    RecordId _oplogOrderInsertOplog( OperationContext* txn,
                                     scoped_ptr<RecordStore>& rs,
                                     int inc ) {
         OpTime opTime = OpTime(5,inc);
-        WiredTigerRecordStore* wrs = dynamic_cast<WiredTigerRecordStore*>(rs.get());
+        WiredTigerRecordStore* wrs = checked_cast<WiredTigerRecordStore*>(rs.get());
         Status status = wrs->oplogDiskLocRegister( txn, opTime );
         ASSERT_OK( status );
         BSONObj obj = BSON( "ts" << opTime );
-        StatusWith<DiskLoc> res = rs->insertRecord( txn, obj.objdata(), obj.objsize(), false );
+        StatusWith<RecordId> res = rs->insertRecord( txn, obj.objdata(), obj.objsize(), false );
         ASSERT_OK( res.getStatus() );
         return res.getValue();
     }
@@ -540,15 +701,15 @@ namespace mongo {
         scoped_ptr<WiredTigerHarnessHelper> harnessHelper( new WiredTigerHarnessHelper() );
         scoped_ptr<RecordStore> rs(harnessHelper->newCappedRecordStore("local.oplog.foo",
                                                                        100000,
-                                                                       10000));
+                                                                       -1));
 
         {
-            const WiredTigerRecordStore* wrs = dynamic_cast<WiredTigerRecordStore*>(rs.get());
+            const WiredTigerRecordStore* wrs = checked_cast<WiredTigerRecordStore*>(rs.get());
             ASSERT( wrs->isOplog() );
             ASSERT( wrs->usingOplogHack() );
         }
 
-        DiskLoc loc1;
+        RecordId loc1;
 
         { // first insert a document
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
@@ -608,5 +769,37 @@ namespace mongo {
         }
     }
 
+    TEST(WiredTigerRecordStoreTest, StorageSizeStatisticsDisabled) {
+        WiredTigerHarnessHelper harnessHelper("statistics=(none)");
+        scoped_ptr<RecordStore> rs(harnessHelper.newNonCappedRecordStore("a.b"));
 
-}
+        scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
+        ASSERT_THROWS(rs->storageSize(opCtx.get()), UserException);
+    }
+
+    TEST(WiredTigerRecordStoreTest, AppendCustomStatsMetadata) {
+        WiredTigerHarnessHelper harnessHelper;
+        scoped_ptr<RecordStore> rs(harnessHelper.newNonCappedRecordStore("a.b"));
+
+        scoped_ptr<OperationContext> opCtx(harnessHelper.newOperationContext());
+        BSONObjBuilder builder;
+        rs->appendCustomStats(opCtx.get(), &builder, 1.0);
+        BSONObj customStats = builder.obj();
+
+        BSONElement wiredTigerElement = customStats.getField(kWiredTigerEngineName);
+        ASSERT_TRUE(wiredTigerElement.isABSONObj());
+        BSONObj wiredTiger = wiredTigerElement.Obj();
+
+        BSONElement metadataElement = wiredTiger.getField("metadata");
+        ASSERT_TRUE(metadataElement.isABSONObj());
+        BSONObj metadata = metadataElement.Obj();
+
+        BSONElement versionElement = metadata.getField("formatVersion");
+        ASSERT_TRUE(versionElement.isNumber());
+
+        BSONElement creationStringElement = wiredTiger.getField("creationString");
+        ASSERT_EQUALS(creationStringElement.type(), String);
+    }
+
+
+}  // namespace mongo

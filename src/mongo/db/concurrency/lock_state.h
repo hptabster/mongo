@@ -31,8 +31,8 @@
 #include <queue>
 
 #include "mongo/db/concurrency/fast_map_noalloc.h"
-#include "mongo/util/concurrency/spin_lock.h"
 #include "mongo/db/concurrency/locker.h"
+#include "mongo/util/concurrency/spin_lock.h"
 
 namespace mongo {
 
@@ -89,7 +89,7 @@ namespace mongo {
          * Instantiates new locker. Must be given a unique identifier for disambiguation. Lockers
          * having the same identifier will not conflict on lock acquisition.
          */
-        LockerImpl(LockerId id);
+        LockerImpl();
 
         virtual ~LockerImpl();
 
@@ -98,6 +98,7 @@ namespace mongo {
         virtual LockResult lockGlobal(LockMode mode, unsigned timeoutMs = UINT_MAX);
         virtual LockResult lockGlobalBegin(LockMode mode);
         virtual LockResult lockGlobalComplete(unsigned timeoutMs);
+        virtual void lockMMAPV1Flush();
 
         virtual void downgradeGlobalXtoSForMMAPV1();
         virtual bool unlockAll();
@@ -146,15 +147,25 @@ namespace mongo {
          *
          * In other words for each call to lockBegin, which does not return LOCK_OK, there needs to
          * be a corresponding call to either lockComplete or unlock.
+         *
+         * NOTE: These methods are not public and should only be used inside the class
+         * implementation and for unit-tests and not called directly.
          */
         LockResult lockBegin(ResourceId resId, LockMode mode);
 
         /**
          * Waits for the completion of a lock, previously requested through lockBegin or
-         * lockGlobalBegin. Must only be called, if lockBegin returned LOCK_WAITING. The resId
-         * argument must match what was previously passed to lockBegin.
+         * lockGlobalBegin. Must only be called, if lockBegin returned LOCK_WAITING.
+         *
+         * @param resId Resource id which was passed to an earlier lockBegin call. Must match.
+         * @param mode Mode which was passed to an earlier lockBegin call. Must match.
+         * @param timeoutMs How long to wait for the lock acquisition to complete.
+         * @param checkDeadlock whether to perform deadlock detection while waiting.
          */
-        LockResult lockComplete(ResourceId resId, unsigned timeoutMs, bool checkDeadlock);
+        LockResult lockComplete(ResourceId resId,
+                                LockMode mode,
+                                unsigned timeoutMs,
+                                bool checkDeadlock);
 
     private:
 
@@ -192,13 +203,18 @@ namespace mongo {
         // and condition variable every time.
         CondVarLockGrantNotification _notify;
 
+        // Timer for measuring duration and timeouts. This value is set when lock acquisition is
+        // about to wait and is sampled at grant time.
+        uint64_t _requestStartTime;
+
+        // Per-locker locking statistics. Reported in the slow-query log message and through
+        // db.currentOp. Complementary to the per-instance locking statistics.
+        LockStats _stats;
+
         // Delays release of exclusive/intent-exclusive locked resources until the write unit of
         // work completes. Value of 0 means we are not inside a write unit of work.
         int _wuowNestingLevel;
         std::queue<ResourceId> _resourcesToUnlockAtEndOfUnitOfWork;
-
-        // For maintaining locking timing statistics
-        Timer _timer;
 
 
         //////////////////////////////////////////////////////////////////////////////////////////
@@ -211,30 +227,16 @@ namespace mongo {
 
         virtual void dump() const;
 
-        virtual unsigned recursiveCount() const { return _recursive; }
-
         virtual bool isW() const;
         virtual bool isR() const;
-        virtual bool hasAnyReadLock() const;
 
         virtual bool isLocked() const;
         virtual bool isWriteLocked() const;
-        virtual bool isWriteLocked(const StringData& ns) const;
-        virtual bool isRecursive() const;
+        virtual bool isReadLocked() const;
 
-        virtual void assertWriteLocked(const StringData& ns) const;
+        virtual void assertEmpty() const;
 
-        /** 
-         * Pending means we are currently trying to get a lock.
-         */
         virtual bool hasLockPending() const { return getWaitingResource().isValid() || _lockPendingParallelWriter; }
-
-        // ----
-
-        // Those are only used for TempRelease. Eventually they should be removed.
-        virtual void enterScopedLock(Lock::ScopedLock* lock);
-        virtual Lock::ScopedLock* getCurrentScopedLock() const;
-        virtual void leaveScopedLock(Lock::ScopedLock* lock);
 
         virtual void setIsBatchWriter(bool newValue) { _batchWriter = newValue; }
         virtual bool isBatchWriter() const { return _batchWriter; }
@@ -246,15 +248,9 @@ namespace mongo {
 
         bool _batchWriter;
         bool _lockPendingParallelWriter;
-
-        unsigned _recursive;           // we allow recursively asking for a lock; we track that here
-
-        // for temprelease
-        // for the nonrecursive case. otherwise there would be many
-        // the first lock goes here, which is ok since we can't yield recursive locks
-        Lock::ScopedLock* _scopedLk;
     };
 
+    typedef LockerImpl<false> DefaultLockerImpl;
     typedef LockerImpl<true> MMAPV1LockerImpl;
 
 
@@ -271,7 +267,7 @@ namespace mongo {
         ~AutoYieldFlushLockForMMAPV1Commit();
 
     private:
-        MMAPV1LockerImpl* _locker;
+        MMAPV1LockerImpl* const _locker;
     };
 
 
@@ -315,8 +311,8 @@ namespace mongo {
         void release();
 
     private:
-        MMAPV1LockerImpl* _locker;
-        bool _isReleased;;
+        Locker* const _locker;
+        bool _released;
     };
 
 

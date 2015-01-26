@@ -33,6 +33,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* SkipStage::kStageType = "SKIP";
 
@@ -101,7 +104,7 @@ namespace mongo {
         _child->restoreState(opCtx);
     }
 
-    void SkipStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void SkipStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
         _child->invalidate(txn, dl, type);
     }

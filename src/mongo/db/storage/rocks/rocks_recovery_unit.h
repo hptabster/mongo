@@ -1,5 +1,3 @@
-// rocks_recovery_unit.h
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -41,7 +39,10 @@
 #include <boost/shared_ptr.hpp>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/base/owned_pointer_vector.h"
+#include "mongo/db/record_id.h"
 #include "mongo/db/storage/recovery_unit.h"
+#include "mongo/db/storage/rocks/rocks_transaction.h"
 
 namespace rocksdb {
     class DB;
@@ -61,7 +62,7 @@ namespace mongo {
     class RocksRecoveryUnit : public RecoveryUnit {
         MONGO_DISALLOW_COPYING(RocksRecoveryUnit);
     public:
-        RocksRecoveryUnit(rocksdb::DB* db, bool defaultCommit = false);
+        RocksRecoveryUnit(RocksTransactionEngine* transactionEngine, rocksdb::DB* db, bool durable);
         virtual ~RocksRecoveryUnit();
 
         virtual void beginUnitOfWork();
@@ -73,22 +74,20 @@ namespace mongo {
 
         virtual void commitAndRestart();
 
-        virtual void* writingPtr(void* data, size_t len);
+        virtual void* writingPtr(void* data, size_t len) { invariant(!"don't call writingPtr"); }
 
         virtual void registerChange(Change* change);
 
-        // local api
+        virtual void setRollbackWritesDisabled() {}
 
-        // we need to call this during cleanShutdown(), to make sure that the destructor doesn't try
-        // to commit (or rollback) the changes
-        void destroy();
+        // local api
 
         rocksdb::WriteBatchWithIndex* writeBatch();
 
         const rocksdb::Snapshot* snapshot();
+        bool hasSnapshot() { return _snapshot != nullptr; }
 
-        // to support tailable cursors
-        void releaseSnapshot();
+        RocksTransaction* transaction() { return &_transaction; }
 
         rocksdb::Status Get(rocksdb::ColumnFamilyHandle* columnFamily, const rocksdb::Slice& key,
                             std::string* value);
@@ -99,6 +98,13 @@ namespace mongo {
                               std::atomic<long long>* counter, long long delta);
 
         long long getDeltaCounter(const rocksdb::Slice& counterKey);
+
+        void setOplogReadTill(const RecordId& loc);
+        RecordId getOplogReadTill() const { return _oplogReadTill; }
+
+        RocksRecoveryUnit* newRocksRecoveryUnit() {
+            return new RocksRecoveryUnit(_transactionEngine, _db, _durable);
+        }
 
         struct Counter {
             std::atomic<long long>* _value;
@@ -112,12 +118,17 @@ namespace mongo {
         static RocksRecoveryUnit* getRocksRecoveryUnit(OperationContext* opCtx);
 
     private:
-        void _destroyInternal();
+        void _releaseSnapshot();
+
+        void _commit();
 
         void _abort();
-
+        RocksTransactionEngine* _transactionEngine;  // not owned
         rocksdb::DB* _db; // not owned
-        bool _defaultCommit;
+
+        const bool _durable;
+
+        RocksTransaction _transaction;
 
         boost::scoped_ptr<rocksdb::WriteBatchWithIndex> _writeBatch; // owned
 
@@ -126,11 +137,12 @@ namespace mongo {
 
         CounterMap _deltaCounters;
 
-        std::vector<Change*> _changes;
-
-        bool _destroyed;
+        typedef OwnedPointerVector<Change> Changes;
+        Changes _changes;
 
         int _depth;
+
+        RecordId _oplogReadTill;
     };
 
 }

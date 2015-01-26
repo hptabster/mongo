@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -79,6 +80,21 @@ struct __wt_named_extractor {
 	WT_CONN_CHECK_PANIC(S2C(session))
 
 /*
+ * Macros to ensure the dhandle is inserted or removed from both the
+ * main queue and the hashed queue.
+ */
+#define	WT_CONN_DHANDLE_INSERT(conn, dhandle, bucket) do {		\
+	SLIST_INSERT_HEAD(&(conn)->dhlh, dhandle, l);			\
+	SLIST_INSERT_HEAD(&(conn)->dhhash[bucket], dhandle, hashl);	\
+} while (0)
+
+#define	WT_CONN_DHANDLE_REMOVE(conn, dhandle, bucket) do {		\
+	SLIST_REMOVE(&(conn)->dhlh, dhandle, __wt_data_handle, l);	\
+	SLIST_REMOVE(&(conn)->dhhash[bucket],				\
+	    dhandle, __wt_data_handle, hashl);				\
+} while (0)
+
+/*
  * WT_CONNECTION_IMPL --
  *	Implementation of WT_CONNECTION
  */
@@ -132,6 +148,15 @@ struct __wt_connection_impl {
 
 	uint64_t  split_gen;		/* Generation number for splits */
 
+	/*
+	 * The connection keeps a cache of data handles. The set of handles
+	 * can grow quite large so we maintain both a simple list and a hash
+	 * table of lists. The hash table key is based on a hash of the table
+	 * URI.
+	 */
+					/* Locked: data handle hash array */
+#define	WT_HASH_ARRAY_SIZE	512
+	SLIST_HEAD(__wt_dhhash, __wt_data_handle) dhhash[WT_HASH_ARRAY_SIZE];
 					/* Locked: data handle list */
 	SLIST_HEAD(__wt_dhandle_lh, __wt_data_handle) dhlh;
 					/* Locked: LSM handle list. */
@@ -161,6 +186,8 @@ struct __wt_connection_impl {
 	WT_SESSION_IMPL	*sessions;	/* Session reference */
 	uint32_t	 session_size;	/* Session array size */
 	uint32_t	 session_cnt;	/* Session count */
+
+	size_t     session_scratch_max;	/* Max scratch memory per session */
 
 	/*
 	 * WiredTiger allocates space for a fixed number of hazard pointers
@@ -247,16 +274,25 @@ struct __wt_connection_impl {
 	const char	*stat_stamp;	/* Statistics log entry timestamp */
 	long		 stat_usecs;	/* Statistics log period */
 
-	int		 logging;	/* Global logging configuration */
-	int		 archive;	/* Global archive configuration */
-	WT_CONDVAR	*arch_cond;	/* Log archive wait mutex */
-	WT_SESSION_IMPL *arch_session;	/* Log archive session */
-	wt_thread_t	 arch_tid;	/* Log archive thread */
-	int		 arch_tid_set;	/* Log archive thread set */
+#define	WT_CONN_LOG_ARCHIVE	0x01	/* Archive is enabled */
+#define	WT_CONN_LOG_ENABLED	0x02	/* Logging is enabled */
+#define	WT_CONN_LOG_EXISTED	0x04	/* Log files found */
+#define	WT_CONN_LOG_PREALLOC	0x08	/* Pre-allocation is enabled */
+	uint32_t	 log_flags;	/* Global logging configuration */
+	WT_CONDVAR	*log_cond;	/* Log server wait mutex */
+	WT_SESSION_IMPL *log_session;	/* Log server session */
+	wt_thread_t	 log_tid;	/* Log server thread */
+	int		 log_tid_set;	/* Log server thread set */
+	WT_CONDVAR	*log_close_cond;/* Log close thread wait mutex */
+	WT_SESSION_IMPL *log_close_session;/* Log close thread session */
+	wt_thread_t	 log_close_tid;	/* Log close thread thread */
+	int		 log_close_tid_set;/* Log close thread set */
 	WT_LOG		*log;		/* Logging structure */
+	WT_COMPRESSOR	*log_compressor;/* Logging compressor */
 	wt_off_t	 log_file_max;	/* Log file max size */
 	const char	*log_path;	/* Logging path format */
-	uint32_t	txn_logsync;	/* Log sync configuration */
+	uint32_t	 log_prealloc;	/* Log file pre-allocation */
+	uint32_t	 txn_logsync;	/* Log sync configuration */
 
 	WT_SESSION_IMPL *sweep_session;	/* Handle sweep session */
 	wt_thread_t	 sweep_tid;	/* Handle sweep thread */

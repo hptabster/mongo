@@ -28,11 +28,13 @@
 
 #pragma once
 
-#include "mongo/db/diskloc.h"
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/index/index_cursor.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/record_id.h"
 
 namespace mongo {
 
@@ -63,22 +65,22 @@ namespace mongo {
          * 'loc') into the index.  'obj' is the object at the location 'loc'.  If not NULL,
          * 'numInserted' will be set to the number of keys added to the index for the document.  If
          * there is more than one key for 'obj', either all keys will be inserted or none will.
-         * 
-         * The behavior of the insertion can be specified through 'options'.  
+         *
+         * The behavior of the insertion can be specified through 'options'.
          */
         virtual Status insert(OperationContext* txn,
                               const BSONObj& obj,
-                              const DiskLoc& loc,
+                              const RecordId& loc,
                               const InsertDeleteOptions& options,
                               int64_t* numInserted) = 0;
 
-        /** 
+        /**
          * Analogous to above, but remove the records instead of inserting them.  If not NULL,
          * numDeleted will be set to the number of keys removed from the index for the document.
          */
         virtual Status remove(OperationContext* txn,
                               const BSONObj& obj,
-                              const DiskLoc& loc,
+                              const RecordId& loc,
                               const InsertDeleteOptions& options,
                               int64_t* numDeleted) = 0;
 
@@ -95,7 +97,7 @@ namespace mongo {
         virtual Status validateUpdate(OperationContext* txn,
                                       const BSONObj& from,
                                       const BSONObj& to,
-                                      const DiskLoc& loc,
+                                      const RecordId& loc,
                                       const InsertDeleteOptions& options,
                                       UpdateTicket* ticket) = 0;
 
@@ -156,6 +158,16 @@ namespace mongo {
                                 BSONObjBuilder* output) = 0;
 
         /**
+         * Add custom statistics about this index to BSON object builder, for display.
+         *
+         * 'scale' is a scaling factor to apply to all byte statistics.
+         *
+         * Returns true if stats were appended.
+         */
+        virtual bool appendCustomStats(OperationContext* txn, BSONObjBuilder* result, double scale)
+            const = 0;
+
+        /**
          * @return The number of bytes consumed by this index.
          *         Exactly what is counted is not defined based on padding, re-use, etc...
          */
@@ -191,12 +203,12 @@ namespace mongo {
          * @param mayInterrupt - is this commit interruptable (will cancel)
          * @param dupsAllowed - if false, error or fill 'dups' if any duplicate values are found
          * @param dups - if NULL, error out on dups if not allowed
-         *               if not NULL, put the bad DiskLocs there
+         *               if not NULL, put the bad RecordIds there
          */
         virtual Status commitBulk( IndexAccessMethod* bulk,
                                    bool mayInterrupt,
                                    bool dupsAllowed,
-                                   std::set<DiskLoc>* dups ) = 0;
+                                   std::set<RecordId>* dups ) = 0;
     };
 
     /**
@@ -216,7 +228,7 @@ namespace mongo {
         bool _isValid;
 
         // This is meant to be filled out only by the friends above.
-        scoped_ptr<PrivateUpdateData> _indexSpecificUpdateData;
+        boost::scoped_ptr<PrivateUpdateData> _indexSpecificUpdateData;
     };
 
     class UpdateTicket::PrivateUpdateData {

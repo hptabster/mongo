@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 #include "mongo/client/connpool.h"
 #include "mongo/client/export_macros.h"
 #include "mongo/client/syncclusterconnection.h"

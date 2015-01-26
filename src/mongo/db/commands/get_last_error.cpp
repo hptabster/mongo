@@ -37,11 +37,14 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/field_parser.h"
 #include "mongo/db/lasterror.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::string;
+    using std::stringstream;
 
     /* reset any errors so that getlasterror comes back clean.
 
@@ -175,20 +178,18 @@ namespace mongo {
                 (nFields == 2 && lastOpTimePresent) ||
                 (nFields == 3 && lastOpTimePresent && electionIdPresent);
 
+            WriteConcernOptions writeConcern;
+
             if (useDefaultGLEOptions) {
-                BSONObj getLastErrorDefault =
-                        repl::getGlobalReplicationCoordinator()->getGetLastErrorDefault();
-                if (!getLastErrorDefault.isEmpty()) {
-                    writeConcernDoc = getLastErrorDefault;
-                }
+                writeConcern = repl::getGlobalReplicationCoordinator()->getGetLastErrorDefault();
             }
+
+            Status status = writeConcern.parse( writeConcernDoc );
 
             //
             // Validate write concern no matter what, this matches 2.4 behavior
             //
 
-            WriteConcernOptions writeConcern;
-            Status status = writeConcern.parse( writeConcernDoc );
 
             if ( status.isOK() ) {
                 // Ensure options are valid for this host

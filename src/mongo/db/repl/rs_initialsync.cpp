@@ -46,13 +46,17 @@
 #include "mongo/db/repl/minvalid.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplogreader.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 namespace repl {
 namespace {
+
+    using std::list;
+    using std::string;
 
     /**
      * Truncates the oplog (removes any documents) and resets internal variables that were
@@ -64,7 +68,9 @@ namespace {
     void truncateAndResetOplog(OperationContext* txn, 
                                ReplicationCoordinator* replCoord,
                                BackgroundSync* bgsync) {
-        Client::WriteContext ctx(txn, rsoplog);
+        AutoGetDb autoDb(txn, "local", MODE_X);
+        massert(28585, "no local database found", autoDb.getDb());
+        invariant(txn->lockState()->isCollectionLockedForMode(rsoplog, MODE_X));
         // Note: the following order is important.
         // The bgsync thread uses an empty optime as a sentinel to know to wait
         // for initial sync; thus, we must
@@ -72,12 +78,12 @@ namespace {
         // via stop().
         // We must clear the sync source blacklist after calling stop()
         // because the bgsync thread, while running, may update the blacklist.
-        replCoord->setMyLastOptime(txn, OpTime());
+        replCoord->setMyLastOptime(OpTime());
         bgsync->stop();
         replCoord->clearSyncSourceBlacklist();
 
         // Truncate the oplog in case there was a prior initial sync that failed.
-        Collection* collection = ctx.getCollection();
+        Collection* collection = autoDb.getDb()->getCollection(rsoplog);
         fassert(28565, collection);
         WriteUnitOfWork wunit(txn);
         Status status = collection->truncate(txn);
@@ -184,7 +190,7 @@ namespace {
         catch (const DBException&) {
             log() << "replSet initial sync failed during oplog application phase, and will retry";
 
-            getGlobalReplicationCoordinator()->setMyLastOptime(ctx, OpTime());
+            getGlobalReplicationCoordinator()->setMyLastOptime(OpTime());
             BackgroundSync::get()->setLastAppliedHash(0);
 
             sleepsecs(5);
@@ -296,7 +302,9 @@ namespace {
             // prime oplog
             try {
                 _tryToApplyOpWithRetry(&txn, &init, lastOp);
-                _logOpObjRS(&txn, lastOp);
+                std::deque<BSONObj> ops;
+                ops.push_back(lastOp);
+                writeOpsToOplog(&txn, ops);
                 return Status::OK();
             } catch (DBException& e) {
                 // Return if in shutdown
@@ -326,7 +334,9 @@ namespace {
 
         // prime oplog
         _tryToApplyOpWithRetry(&txn, &init, lastOp);
-        _logOpObjRS(&txn, lastOp);
+        std::deque<BSONObj> ops;
+        ops.push_back(lastOp);
+        writeOpsToOplog(&txn, ops);
 
         std::string msg = "oplog sync 1 of 3";
         log() << msg;
@@ -373,6 +383,7 @@ namespace {
         log() << "initial sync finishing up";
 
         {
+            ScopedTransaction scopedXact(&txn, MODE_IX);
             AutoGetDb autodb(&txn, "local", MODE_X);
             OpTime lastOpTimeWritten(getGlobalReplicationCoordinator()->getMyLastOptime());
             log() << "replSet set minValid=" << lastOpTimeWritten;

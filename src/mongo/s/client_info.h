@@ -29,7 +29,7 @@
  */
 #pragma once
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include <map>
 #include <set>

@@ -29,7 +29,7 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/db.h"
 #include "mongo/db/json.h"
@@ -43,8 +43,10 @@ namespace PdfileTests {
     namespace Insert {
         class Base {
         public:
-            Base() : _lk(_txn.lockState()),
+            Base() : _scopedXact(&_txn, MODE_X),
+                     _lk(_txn.lockState()),
                      _context(&_txn, ns()) {
+
             }
 
             virtual ~Base() {
@@ -60,10 +62,11 @@ namespace PdfileTests {
                 return "unittests.pdfiletests.Insert";
             }
             Collection* collection() {
-                return _context.db()->getCollection( &_txn, ns() );
+                return _context.db()->getCollection( ns() );
             }
 
             OperationContextImpl _txn;
+            ScopedTransaction _scopedXact;
             Lock::GlobalWrite _lk;
             Client::Context _context;
         };
@@ -75,7 +78,7 @@ namespace PdfileTests {
                 BSONObj x = BSON( "x" << 1 );
                 ASSERT( x["_id"].type() == 0 );
                 Collection* collection = _context.db()->getOrCreateCollection( &_txn, ns() );
-                StatusWith<DiskLoc> dl = collection->insertDocument( &_txn, x, true );
+                StatusWith<RecordId> dl = collection->insertDocument( &_txn, x, true );
                 ASSERT( !dl.isOK() );
 
                 StatusWith<BSONObj> fixed = fixDocumentForInsert( x );

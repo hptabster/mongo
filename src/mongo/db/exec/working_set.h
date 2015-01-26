@@ -32,9 +32,9 @@
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
-#include "mongo/db/diskloc.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/platform/unordered_map.h"
+#include "mongo/db/record_id.h"
+#include "mongo/platform/unordered_set.h"
 
 namespace mongo {
 
@@ -84,7 +84,7 @@ namespace mongo {
         void free(const WorkingSetID& i);
 
         /**
-         * The DiskLoc in WSM 'i' was invalidated while being processed.  Any predicates over the
+         * The RecordId in WSM 'i' was invalidated while being processed.  Any predicates over the
          * WSM could not be fully evaluated, so the WSM may or may not satisfy them.  As such, if we
          * wish to output the WSM, we must do some clean-up work later.  Adds the WSM with id 'i' to
          * the list of flagged WSIDs.
@@ -107,6 +107,58 @@ namespace mongo {
          * Removes and deallocates all members of this working set.
          */
         void clear();
+
+        //
+        // Iteration
+        //
+
+        /**
+         * Forward iterates over the list of working set members, skipping any entries
+         * that are on the free list.
+         */
+        class iterator {
+        public:
+            iterator(WorkingSet* ws, size_t index);
+
+            void operator++();
+
+            bool operator==(const WorkingSet::iterator& other) const;
+            bool operator!=(const WorkingSet::iterator& other) const;
+
+            WorkingSetMember& operator*();
+
+            WorkingSetMember* operator->();
+
+            /**
+             * Free the WSM we are currently pointing to. Does not advance the iterator.
+             *
+             * It is invalid to dereference the iterator after calling free until the iterator is
+             * next incremented.
+             */
+            void free();
+
+        private:
+            /**
+             * Move the iterator forward to the next allocated WSM.
+             */
+            void advance();
+
+            /**
+             * Returns true if the MemberHolder currently pointed at by the iterator is free, and
+             * false if it contains an allocated working set member.
+             */
+            bool isFree() const;
+
+            // The working set we're iterating over. Not owned here.
+            WorkingSet* _ws;
+
+            // The index of the member we're currently pointing at.
+            size_t _index;
+        };
+
+        WorkingSet::iterator begin();
+
+        WorkingSet::iterator end();
 
     private:
         struct MemberHolder {
@@ -217,16 +269,23 @@ namespace mongo {
             // Data is from a collection scan, or data is from an index scan and was fetched.
             LOC_AND_UNOWNED_OBJ,
 
-            // DiskLoc has been invalidated, or the obj doesn't correspond to an on-disk document
+            // RecordId has been invalidated, or the obj doesn't correspond to an on-disk document
             // anymore (e.g. is a computed expression).
             OWNED_OBJ,
+
+            // Due to a yield, RecordId is no longer protected by the storage engine's transaction
+            // and may have been invalidated. The object is either identical to the object keyed
+            // by RecordId, or is an old version of the document stored at RecordId.
+            //
+            // Only used by doc-level locking storage engines (not used by MMAP v1).
+            LOC_AND_OWNED_OBJ,
         };
 
         //
         // Core attributes
         //
 
-        DiskLoc loc;
+        RecordId loc;
         BSONObj obj;
         std::vector<IndexKeyDatum> keyData;
         MemberState state;

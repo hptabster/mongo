@@ -32,6 +32,8 @@
 
 #include "mongo/db/storage/mmap_v1/record_store_v1_base.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/mmap_v1/extent.h"
@@ -44,6 +46,10 @@
 #include "mongo/util/touch_pages.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::set;
+    using std::string;
 
     /* Deleted list buckets are used to quickly locate free space based on size.  Each bucket
        contains records up to that size (meaning a record with a size exactly equal to
@@ -65,6 +71,45 @@ namespace mongo {
     BOOST_STATIC_ASSERT(sizeof(RecordStoreV1Base::bucketSizes)
                         / sizeof(RecordStoreV1Base::bucketSizes[0])
                         == RecordStoreV1Base::Buckets);
+
+    SavedCursorRegistry::~SavedCursorRegistry() {
+        for (SavedCursorSet::iterator it = _cursors.begin(); it != _cursors.end(); it++) {
+            (*it)->_registry = NULL; // prevent SavedCursor destructor from accessing this
+        }
+    }
+
+    void SavedCursorRegistry::registerCursor(SavedCursor* cursor) {
+        invariant(!cursor->_registry);
+        cursor->_registry = this;
+        scoped_spinlock lock(_mutex);
+        _cursors.insert(cursor);
+    }
+
+    bool SavedCursorRegistry::unregisterCursor(SavedCursor* cursor) {
+        if (!cursor->_registry) {
+            return false;
+        }
+        invariant(cursor->_registry == this);
+        cursor->_registry = NULL;
+        scoped_spinlock lock(_mutex);
+        invariant(_cursors.erase(cursor));
+        return true;
+    }
+
+    void SavedCursorRegistry::invalidateCursorsForBucket(DiskLoc bucket) {
+        // While this is not strictly necessary as an exclusive collection lock will be held,
+        // it's cleaner to just make the SavedCursorRegistry thread-safe. Spinlock is OK here.
+        scoped_spinlock lock(_mutex);
+        for (SavedCursorSet::iterator it = _cursors.begin(); it != _cursors.end();) {
+            if ((*it)->bucket == bucket) {
+                (*it)->_registry = NULL; // prevent ~SavedCursor from trying to unregister
+                _cursors.erase(it++);
+            }
+            else {
+                it++;
+            }
+        }
+    }
 
     RecordStoreV1Base::RecordStoreV1Base( const StringData& ns,
                                           RecordStoreV1MetaData* details,
@@ -99,7 +144,7 @@ namespace mongo {
             if ( extraInfo && level > 0 ) {
                 extentInfo.append( BSON( "len" << e->length << "loc: " << e->myLoc.toBSONObj() ) );
             }
-            cur = e->xnext;            
+            cur = e->xnext;
         }
 
         if ( extraInfo ) {
@@ -111,16 +156,16 @@ namespace mongo {
         return total;
     }
 
-    RecordData RecordStoreV1Base::dataFor( OperationContext* txn, const DiskLoc& loc ) const {
-        return recordFor(loc)->toRecordData();
+    RecordData RecordStoreV1Base::dataFor( OperationContext* txn, const RecordId& loc ) const {
+        return recordFor(DiskLoc::fromRecordId(loc))->toRecordData();
     }
 
     bool RecordStoreV1Base::findRecord( OperationContext* txn,
-                                        const DiskLoc& loc, RecordData* rd ) const {
+                                        const RecordId& loc, RecordData* rd ) const {
         // this is a bit odd, as the semantics of using the storage engine imply it _has_ to be.
         // And in fact we can't actually check.
         // So we assume the best.
-        Record* rec = recordFor(loc);
+        Record* rec = recordFor(DiskLoc::fromRecordId(loc));
         if ( !rec ) {
             return false;
         }
@@ -238,23 +283,21 @@ namespace mongo {
     }
 
     RecordFetcher* RecordStoreV1Base::recordNeedsFetch( OperationContext* txn,
-                                                        const DiskLoc& loc ) const {
-        return _extentManager->recordNeedsFetch( loc );
+                                                        const RecordId& loc ) const {
+        return _extentManager->recordNeedsFetch( DiskLoc::fromRecordId(loc) );
     }
 
 
-    StatusWith<DiskLoc> RecordStoreV1Base::insertRecord( OperationContext* txn,
-                                                         const DocWriter* doc,
-                                                         bool enforceQuota ) {
+    StatusWith<RecordId> RecordStoreV1Base::insertRecord( OperationContext* txn,
+                                                          const DocWriter* doc,
+                                                          bool enforceQuota ) {
         int docSize = doc->documentSize();
         if ( docSize < 4 ) {
-            return StatusWith<DiskLoc>( ErrorCodes::InvalidLength,
-                                        "record has to be >= 4 bytes" );
+            return StatusWith<RecordId>(ErrorCodes::InvalidLength, "record has to be >= 4 bytes");
         }
         const int lenWHdr = docSize + Record::HeaderSize;
         if ( lenWHdr > MaxAllowedAllocation ) {
-            return StatusWith<DiskLoc>( ErrorCodes::InvalidLength,
-                                        "record has to be <= 16.5MB" );
+            return StatusWith<RecordId>(ErrorCodes::InvalidLength, "record has to be <= 16.5MB");
         }
         const int lenToAlloc = (doc->addPadding() && shouldPadInserts())
                                  ? quantizeAllocationSpace(lenWHdr)
@@ -262,7 +305,7 @@ namespace mongo {
 
         StatusWith<DiskLoc> loc = allocRecord( txn, lenToAlloc, enforceQuota );
         if ( !loc.isOK() )
-            return loc;
+            return StatusWith<RecordId>(loc.getStatus());
 
         Record *r = recordFor( loc.getValue() );
         fassert( 17319, r->lengthWithHeaders() >= lenWHdr );
@@ -274,28 +317,26 @@ namespace mongo {
 
         _details->incrementStats( txn, r->netLength(), 1 );
 
-        return loc;
+        return StatusWith<RecordId>(loc.getValue().toRecordId());
     }
 
 
-    StatusWith<DiskLoc> RecordStoreV1Base::insertRecord( OperationContext* txn,
-                                                         const char* data,
-                                                         int len,
-                                                         bool enforceQuota ) {
+    StatusWith<RecordId> RecordStoreV1Base::insertRecord( OperationContext* txn,
+                                                          const char* data,
+                                                          int len,
+                                                          bool enforceQuota ) {
         if ( len < 4 ) {
-            return StatusWith<DiskLoc>( ErrorCodes::InvalidLength,
-                                        "record has to be >= 4 bytes" );
+            return StatusWith<RecordId>( ErrorCodes::InvalidLength, "record has to be >= 4 bytes" );
         }
 
         if ( len + Record::HeaderSize > MaxAllowedAllocation ) {
-            return StatusWith<DiskLoc>( ErrorCodes::InvalidLength,
-                                        "record has to be <= 16.5MB" );
+            return StatusWith<RecordId>( ErrorCodes::InvalidLength, "record has to be <= 16.5MB" );
         }
 
         return _insertRecord( txn, data, len, enforceQuota );
     }
 
-    StatusWith<DiskLoc> RecordStoreV1Base::_insertRecord( OperationContext* txn,
+    StatusWith<RecordId> RecordStoreV1Base::_insertRecord( OperationContext* txn,
                                                           const char* data,
                                                           int len,
                                                           bool enforceQuota ) {
@@ -307,7 +348,7 @@ namespace mongo {
 
         StatusWith<DiskLoc> loc = allocRecord( txn, lenToAlloc, enforceQuota );
         if ( !loc.isOK() )
-            return loc;
+            return StatusWith<RecordId>(loc.getStatus());
 
         Record *r = recordFor( loc.getValue() );
         fassert( 17210, r->lengthWithHeaders() >= lenWHdr );
@@ -320,34 +361,41 @@ namespace mongo {
 
         _details->incrementStats( txn, r->netLength(), 1 );
 
-        return loc;
+        return StatusWith<RecordId>(loc.getValue().toRecordId());
     }
 
-    StatusWith<DiskLoc> RecordStoreV1Base::updateRecord( OperationContext* txn,
-                                                         const DiskLoc& oldLocation,
+    StatusWith<RecordId> RecordStoreV1Base::updateRecord( OperationContext* txn,
+                                                         const RecordId& oldLocation,
                                                          const char* data,
                                                          int dataSize,
                                                          bool enforceQuota,
-                                                         UpdateMoveNotifier* notifier ) {
-        Record* oldRecord = recordFor( oldLocation );
+                                                         UpdateNotifier* notifier ) {
+        Record* oldRecord = recordFor( DiskLoc::fromRecordId(oldLocation) );
         if ( oldRecord->netLength() >= dataSize ) {
+            // Make sure to notify other queries before we do an in-place update.
+            if ( notifier ) {
+                Status callbackStatus = notifier->recordStoreGoingToUpdateInPlace( txn,
+                                                                                   oldLocation );
+                if ( !callbackStatus.isOK() )
+                    return StatusWith<RecordId>( callbackStatus );
+            }
+
             // we fit
             memcpy( txn->recoveryUnit()->writingPtr( oldRecord->data(), dataSize ), data, dataSize );
-            return StatusWith<DiskLoc>( oldLocation );
+            return StatusWith<RecordId>( oldLocation );
         }
 
         if ( isCapped() )
-            return StatusWith<DiskLoc>( ErrorCodes::InternalError,
-                                        "failing update: objects in a capped ns cannot grow",
-                                        10003 );
+            return StatusWith<RecordId>( ErrorCodes::InternalError,
+                                         "failing update: objects in a capped ns cannot grow",
+                                         10003 );
 
         // we have to move
         if ( dataSize + Record::HeaderSize > MaxAllowedAllocation ) {
-            return StatusWith<DiskLoc>( ErrorCodes::InvalidLength,
-                                        "record has to be <= 16.5MB" );
+            return StatusWith<RecordId>( ErrorCodes::InvalidLength, "record has to be <= 16.5MB" );
         }
 
-        StatusWith<DiskLoc> newLocation = _insertRecord( txn, data, dataSize, enforceQuota );
+        StatusWith<RecordId> newLocation = _insertRecord( txn, data, dataSize, enforceQuota );
         if ( !newLocation.isOK() )
             return newLocation;
 
@@ -358,7 +406,7 @@ namespace mongo {
                                                                   oldRecord->data(),
                                                                   oldRecord->netLength() );
             if ( !moveStatus.isOK() )
-                return StatusWith<DiskLoc>( moveStatus );
+                return StatusWith<RecordId>( moveStatus );
         }
 
         deleteRecord( txn, oldLocation );
@@ -366,13 +414,16 @@ namespace mongo {
         return newLocation;
     }
 
+    bool RecordStoreV1Base::updateWithDamagesSupported() const {
+        return true;
+    }
 
     Status RecordStoreV1Base::updateWithDamages( OperationContext* txn,
-                                                 const DiskLoc& loc,
+                                                 const RecordId& loc,
                                                  const RecordData& oldRec,
                                                  const char* damageSource,
                                                  const mutablebson::DamageVector& damages ) {
-        Record* rec = recordFor( loc );
+        Record* rec = recordFor( DiskLoc::fromRecordId(loc) );
         char* root = rec->data();
 
         // All updates were in place. Apply them via durability and writing pointer.
@@ -387,7 +438,8 @@ namespace mongo {
         return Status::OK();
     }
 
-    void RecordStoreV1Base::deleteRecord( OperationContext* txn, const DiskLoc& dl ) {
+    void RecordStoreV1Base::deleteRecord( OperationContext* txn, const RecordId& rid ) {
+        const DiskLoc dl = DiskLoc::fromRecordId(rid);
 
         Record* todelete = recordFor( dl );
         invariant( todelete->netLength() >= 4 ); // this is required for defensive code
@@ -516,7 +568,7 @@ namespace mongo {
     Status RecordStoreV1Base::validate( OperationContext* txn,
                                         bool full, bool scanData,
                                         ValidateAdaptor* adaptor,
-                                        ValidateResults* results, BSONObjBuilder* output ) const {
+                                        ValidateResults* results, BSONObjBuilder* output ) {
 
         // 1) basic status that require no iteration
         // 2) extent level info
@@ -571,7 +623,7 @@ namespace mongo {
                         results->valid = false;
                     }
                     DiskLoc nextDiskLoc = thisExtent->xnext;
-                    
+
                     if (extentCount > 0 && !nextDiskLoc.isNull()
                         &&  _getExtent( txn, nextDiskLoc )->xprev != extentDiskLoc) {
                         StringBuilder sb;
@@ -668,11 +720,9 @@ namespace mongo {
                 int outOfOrder = 0;
                 DiskLoc cl_last;
 
-                scoped_ptr<RecordIterator> iterator( getIterator( txn,
-                                                                  DiskLoc(),
-                                                                  CollectionScanParams::FORWARD ) );
+                scoped_ptr<RecordIterator> iterator( getIterator(txn) );
                 DiskLoc cl;
-                while ( !( cl = iterator->getNext() ).isNull() ) {
+                while ( !( cl = DiskLoc::fromRecordId(iterator->getNext()) ).isNull() ) {
                     n++;
 
                     if ( n < 1000000 )
@@ -809,14 +859,14 @@ namespace mongo {
                                                double scale ) const {
         result->append( "lastExtentSize", _details->lastExtentSize(txn) / scale );
         result->append( "paddingFactor", 1.0 ); // hard coded
-        result->append( "paddingFactorNote", "paddingFactor is unused and unmaintained in 2.8. It "
+        result->append( "paddingFactorNote", "paddingFactor is unused and unmaintained in 3.0. It "
                                              "remains hard coded to 1.0 for compatibility only." );
         result->append( "userFlags", _details->userFlags() );
-
+        result->appendBool( "capped", isCapped() );
         if ( isCapped() ) {
-            result->appendBool( "capped", true );
             result->appendNumber( "max", _details->maxCappedDocs() );
-            result->appendNumber( "maxSize", static_cast<long long>( storageSize( txn, NULL, 0 ) ) );
+            result->appendNumber( "maxSize", static_cast<long long>(storageSize(txn, NULL, 0) /
+                                      scale) );
         }
     }
 
@@ -869,19 +919,19 @@ namespace mongo {
         return Status::OK();
     }
 
-    DiskLoc RecordStoreV1Base::IntraExtentIterator::getNext() {
+    RecordId RecordStoreV1Base::IntraExtentIterator::getNext() {
         if (_curr.isNull())
-            return DiskLoc();
+            return RecordId();
 
         const DiskLoc out = _curr; // we always return where we were, not where we will be.
         const Record* rec = recordFor(_curr);
         const int nextOfs = _forward ? rec->nextOfs() : rec->prevOfs();
         _curr = (nextOfs == DiskLoc::NullOfs ? DiskLoc() : DiskLoc(_curr.a(), nextOfs));
-        return out;
+        return out.toRecordId();;
     }
 
-    void RecordStoreV1Base::IntraExtentIterator::invalidate(const DiskLoc& dl) {
-        if (dl == _curr) {
+    void RecordStoreV1Base::IntraExtentIterator::invalidate(const RecordId& rid) {
+        if (rid == _curr.toRecordId()) {
             getNext();
         }
     }

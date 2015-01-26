@@ -30,7 +30,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/util/logfile.h"
 
@@ -44,6 +44,9 @@
 
 
 using namespace mongoutils;
+
+using std::endl;
+using std::string;
 
 namespace mongo {
     struct LogfileTest : public StartupTest {
@@ -137,7 +140,7 @@ namespace mongo {
         const char *buf = (const char *) _buf;
         size_t left = _len;
         while( left ) {
-            size_t toWrite = min(left, BlockSize);
+            size_t toWrite = std::min(left, BlockSize);
             DWORD written;
             if( !WriteFile(_fd, buf, toWrite, &written, NULL) ) {
                 DWORD e = GetLastError();

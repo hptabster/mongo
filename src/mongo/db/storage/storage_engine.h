@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "mongo/base/status.h"
+#include "mongo/bson/bsonobj.h"
 
 namespace mongo {
 
@@ -41,6 +42,8 @@ namespace mongo {
     class OperationContext;
     class RecoveryUnit;
     struct StorageGlobalParams;
+    class StorageEngineLockFile;
+    class StorageEngineMetadata;
 
     /**
      * The StorageEngine class is the top level interface for creating a new storage
@@ -64,7 +67,8 @@ namespace mongo {
             /**
              * Return a new instance of the StorageEngine.  Caller owns the returned pointer.
              */
-            virtual StorageEngine* create(const StorageGlobalParams& params) const = 0;
+            virtual StorageEngine* create(const StorageGlobalParams& params,
+                                          const StorageEngineLockFile& lockFile) const = 0;
 
             /**
              * Returns the name of the storage engine.
@@ -73,6 +77,34 @@ namespace mongo {
              * data file incompatibilities.
              */
             virtual StringData getCanonicalName() const = 0;
+
+            /**
+             * Validates creation options for a collection in the StorageEngine.
+             * Returns an error if the creation options are not valid.
+             */
+            virtual Status validateCollectionStorageOptions(const BSONObj& options) const = 0;
+
+            /**
+             * Validates creation options for an index in the StorageEngine.
+             * Returns an error if the creation options are not valid.
+             */
+             virtual Status validateIndexStorageOptions(const BSONObj& options) const = 0;
+
+             /**
+              * Validates existing metadata in the data directory against startup options.
+              * Returns an error if the storage engine initialization should not proceed
+              * due to any inconsistencies between the current startup options and the creation
+              * options stored in the metadata.
+              */
+             virtual Status validateMetadata(const StorageEngineMetadata& metadata,
+                                             const StorageGlobalParams& params) const = 0;
+
+             /**
+              * Returns a new document suitable for storing in the data directory metadata.
+              * This document will be used by validateMetadata() to check startup options
+              * on restart.
+              */
+             virtual BSONObj createMetadataOptions(const StorageGlobalParams& params) const = 0;
         };
 
         /**
@@ -88,7 +120,7 @@ namespace mongo {
          *
          * Caller owns the returned pointer.
          */
-        virtual RecoveryUnit* newRecoveryUnit( OperationContext* opCtx ) = 0;
+        virtual RecoveryUnit* newRecoveryUnit() = 0;
 
         /**
          * List the databases stored in this storage engine.
@@ -141,10 +173,16 @@ namespace mongo {
          */
         virtual int flushAllFiles( bool sync ) = 0;
 
-        virtual Status repairDatabase( OperationContext* txn,
-                                       const std::string& dbName,
-                                       bool preserveClonedFilesOnFailure = false,
-                                       bool backupOriginalFiles = false ) = 0;
+        /**
+         * Recover as much data as possible from a potentially corrupt RecordStore.
+         * This only recovers the record data, not indexes or anything else.
+         *
+         * Generally, this method should not be called directly except by the repairDatabase()
+         * free function.
+         *
+         * NOTE: MMAPv1 does not support this method and has its own repairDatabase() method.
+         */
+        virtual Status repairRecordStore(OperationContext* txn, const std::string& ns) = 0;
 
         /**
          * This method will be called before there is a clean shutdown.  Storage engines should
@@ -153,7 +191,7 @@ namespace mongo {
          *
          * There is intentionally no uncleanShutdown().
          */
-        virtual void cleanShutdown(OperationContext* txn) {}
+        virtual void cleanShutdown() = 0;
 
     protected:
         /**

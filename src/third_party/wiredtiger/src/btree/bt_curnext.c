@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -140,14 +141,17 @@ new_page:	if (cbt->ins == NULL)
 			return (WT_NOTFOUND);
 
 		__cursor_set_recno(cbt, WT_INSERT_RECNO(cbt->ins));
-		if ((upd = __wt_txn_read(session, cbt->ins->upd)) == NULL ||
-		    WT_UPDATE_DELETED_ISSET(upd))
+		if ((upd = __wt_txn_read(session, cbt->ins->upd)) == NULL)
 			continue;
+		if (WT_UPDATE_DELETED_ISSET(upd)) {
+			++cbt->page_deleted_count;
+			continue;
+		}
 		val->data = WT_UPDATE_DATA(upd);
 		val->size = upd->size;
-		break;
+		return (0);
 	}
-	return (0);
+	/* NOTREACHED */
 }
 
 /*
@@ -195,8 +199,10 @@ new_page:	/* Find the matching WT_COL slot. */
 		upd = cbt->ins == NULL ?
 		    NULL : __wt_txn_read(session, cbt->ins->upd);
 		if (upd != NULL) {
-			if (WT_UPDATE_DELETED_ISSET(upd))
+			if (WT_UPDATE_DELETED_ISSET(upd)) {
+				++cbt->page_deleted_count;
 				continue;
+			}
 
 			val->data = WT_UPDATE_DATA(upd);
 			val->size = upd->size;
@@ -276,9 +282,12 @@ __cursor_row_next(WT_CURSOR_BTREE *cbt, int newpage)
 			cbt->ins = WT_SKIP_NEXT(cbt->ins);
 
 new_insert:	if ((ins = cbt->ins) != NULL) {
-			if ((upd = __wt_txn_read(session, ins->upd)) == NULL ||
-			    WT_UPDATE_DELETED_ISSET(upd))
+			if ((upd = __wt_txn_read(session, ins->upd)) == NULL)
 				continue;
+			if (WT_UPDATE_DELETED_ISSET(upd)) {
+				++cbt->page_deleted_count;
+				continue;
+			}
 			key->data = WT_INSERT_KEY(ins);
 			key->size = WT_INSERT_KEY_SIZE(ins);
 			val->data = WT_UPDATE_DATA(upd);
@@ -307,8 +316,10 @@ new_insert:	if ((ins = cbt->ins) != NULL) {
 		cbt->slot = cbt->row_iteration_slot / 2 - 1;
 		rip = &page->pg_row_d[cbt->slot];
 		upd = __wt_txn_read(session, WT_ROW_UPDATE(page, rip));
-		if (upd != NULL && WT_UPDATE_DELETED_ISSET(upd))
+		if (upd != NULL && WT_UPDATE_DELETED_ISSET(upd)) {
+			++cbt->page_deleted_count;
 			continue;
+		}
 
 		return (__cursor_row_slot_return(cbt, rip, upd));
 	}
@@ -332,6 +343,11 @@ __wt_btcur_iterate_setup(WT_CURSOR_BTREE *cbt, int next)
 	 * here for both flags for that reason.
 	 */
 	F_SET(cbt, WT_CBT_ITERATE_NEXT | WT_CBT_ITERATE_PREV);
+
+	/*
+	 * Clear the count of deleted items on the page.
+	 */
+	cbt->page_deleted_count = 0;
 
 	/*
 	 * If we don't have a search page, then we're done, we're starting at
@@ -410,8 +426,10 @@ __wt_btcur_next(WT_CURSOR_BTREE *cbt, int truncating)
 	 * found.  Then, move to the next page, until we reach the end of the
 	 * file.
 	 */
-	page = cbt->ref == NULL ? NULL : cbt->ref->page;
 	for (newpage = 0;; newpage = 1) {
+		page = cbt->ref == NULL ? NULL : cbt->ref->page;
+		WT_ASSERT(session, page == NULL || !WT_PAGE_IS_INTERNAL(page));
+
 		if (F_ISSET(cbt, WT_CBT_ITERATE_APPEND)) {
 			switch (page->type) {
 			case WT_PAGE_COL_FIX:
@@ -455,11 +473,22 @@ __wt_btcur_next(WT_CURSOR_BTREE *cbt, int truncating)
 			}
 		}
 
+		/*
+		 * If we saw a lot of deleted records on this page, or we went
+		 * all the way through a page and only saw deleted records, try
+		 * to evict the page when we release it.  Otherwise repeatedly
+		 * deleting from the beginning of a tree can have quadratic
+		 * performance.  Take care not to force eviction of pages that
+		 * are genuinely empty, in new trees.
+		 */
+		if (page != NULL &&
+		    (cbt->page_deleted_count > WT_BTREE_DELETE_THRESHOLD ||
+		    (newpage && cbt->page_deleted_count > 0)))
+			__wt_page_evict_soon(page);
+		cbt->page_deleted_count = 0;
+
 		WT_ERR(__wt_tree_walk(session, &cbt->ref, flags));
 		WT_ERR_TEST(cbt->ref == NULL, WT_NOTFOUND);
-
-		page = cbt->ref->page;
-		WT_ASSERT(session, !WT_PAGE_IS_INTERNAL(page));
 	}
 
 err:	if (ret != 0)

@@ -32,6 +32,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/scoped_ptr.hpp>
 #include "pcrecpp.h"
 
 #include "mongo/client/connpool.h"
@@ -60,10 +61,16 @@
 
 namespace mongo {
 
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::pair;
+    using std::set;
+    using std::stringstream;
+    using std::vector;
+
     int ConfigServer::VERSION = 3;
     Shard Shard::EMPTY;
-
-    OID serverID;
 
     /* --- DBConfig --- */
 
@@ -837,9 +844,8 @@ namespace mongo {
         joinStringDelim( configHosts, &fullString, ',' );
         _primary = Shard(_primary.getName(),
                          ConnectionString(fullString, ConnectionString::SYNC),
-                         _primary.getMaxSize(),
-                         _primary.isDraining(),
-                         _primary.tags());
+                         _primary.getMaxSizeMB(),
+                         _primary.isDraining());
         Shard::installShard(_primary.getName(), _primary);
 
         LOG(1) << " config string : " << fullString << endl;
@@ -1016,6 +1022,7 @@ namespace mongo {
             }
 
             if (localCheckOnly) {
+                conn.done();
                 return true;
             }
 
@@ -1157,11 +1164,11 @@ namespace mongo {
             warning() << "couldn't create host_1 index on config db" << causedBy(result);
         }
 
-        result = clusterCreateIndex( LocksType::ConfigNS,
-                                     BSON( LocksType::lockID() << 1 ),
-                                     true, // unique
-                                     WriteConcernOptions::AllConfigs,
-                                     NULL );
+        result = clusterCreateIndex(LocksType::ConfigNS,
+                                    BSON(LocksType::lockID() << 1),
+                                    false, // unique
+                                    WriteConcernOptions::AllConfigs,
+                                    NULL);
 
         if (!result.isOK()) {
             warning() << "couldn't create lock id index on config db" << causedBy(result);

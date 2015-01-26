@@ -32,6 +32,9 @@
 
 #include "mongo/db/commands.h"
 
+#include <boost/scoped_ptr.hpp>
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/client/connpool.h"
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/client/replica_set_monitor.h"
@@ -70,6 +73,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/net/listen.h"
 #include "mongo/util/net/message.h"
+#include "mongo/util/print.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/ramlog.h"
 #include "mongo/util/stringutils.h"
@@ -77,6 +81,17 @@
 #include "mongo/util/version.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using boost::shared_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::list;
+    using std::map;
+    using std::set;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     namespace dbgrid_cmds {
 
@@ -780,10 +795,10 @@ namespace mongo {
                         WriteConcernOptions noThrottle;
                         if (!chunk->moveAndCommit(to, Chunk::MaxChunkSize,
                                                   &noThrottle, true, 0, moveResult)) {
-                            warning().stream()
-                                      << "Couldn't move chunk " << chunk << " to shard "  << to
-                                      << " while sharding collection " << ns << ". Reason: "
-                                      <<  moveResult << endl;
+                            warning() << "couldn't move chunk " << chunk->toString()
+                                      << " to shard " << to
+                                      << " while sharding collection " << ns
+                                      << ". Reason: " <<  moveResult;
                         }
                     }
 
@@ -804,10 +819,10 @@ namespace mongo {
                             if ( ! subSplits.empty() ){
                                 Status status = currentChunk->multiSplit(subSplits, NULL);
                                 if ( !status.isOK() ){
-                                    warning().stream()
-                                        << "Couldn't split chunk " << currentChunk
-                                        << " while sharding collection " << ns << ". Reason: "
-                                        << status << endl;
+                                    warning() << "couldn't split chunk "
+                                              << currentChunk->toString()
+                                              << " while sharding collection " << ns
+                                              << causedBy(status);
                                 }
                                 subSplits.clear();
                             }
@@ -1061,7 +1076,7 @@ namespace mongo {
 
                 BSONObj res;
                 if ( middle.isEmpty() ) {
-                    Status status = chunk->split(true /* force a split even if not enough data */,
+                    Status status = chunk->split(Chunk::atMedian,
                                                  NULL,
                                                  NULL);
                     if ( !status.isOK() ) {

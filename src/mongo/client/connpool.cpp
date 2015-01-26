@@ -37,10 +37,18 @@
 #include "mongo/client/connpool.h"
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/client/syncclusterconnection.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/s/shard.h"
 
 namespace mongo {
+
+    using std::endl;
+    using std::list;
+    using std::map;
+    using std::set;
+    using std::string;
+    using std::vector;
 
     // ------ PoolForHost ------
 

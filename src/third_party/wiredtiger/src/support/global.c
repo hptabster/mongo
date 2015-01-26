@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -57,6 +58,10 @@ __wt_global_once(void)
 	TAILQ_INIT(&__wt_process.connqh);
 
 #ifdef HAVE_DIAGNOSTIC
+	/* Verify the pre-computed metadata hash. */
+	WT_ASSERT(NULL, WT_METAFILE_NAME_HASH ==
+	    __wt_hash_city64(WT_METAFILE_URI, strlen(WT_METAFILE_URI)));
+
 	/* Load debugging code the compiler might optimize out. */
 	(void)__wt_breakpoint();
 #endif

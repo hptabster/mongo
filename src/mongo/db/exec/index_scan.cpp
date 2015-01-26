@@ -36,6 +36,7 @@
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/index_cursor.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/util/log.h"
 
 namespace {
@@ -51,6 +52,9 @@ namespace {
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* IndexScan::kStageType = "IXSCAN";
 
@@ -64,8 +68,11 @@ namespace mongo {
           _filter(filter),
           _shouldDedup(true),
           _params(params),
+          _commonStats(kStageType),
           _btreeCursor(NULL),
-          _commonStats(kStageType) {
+          _keyEltsToUse(0),
+          _movePastKeyElts(false),
+          _endKeyInclusive(false) {
         _iam = _params.descriptor->getIndexCatalog()->getIndex(_params.descriptor);
         _keyPattern = _params.descriptor->keyPattern().getOwned();
 
@@ -116,24 +123,50 @@ namespace mongo {
             }
         }
         else {
-            // "Fast" Btree-specific navigation.
             _btreeCursor = static_cast<BtreeIndexCursor*>(_indexCursor.get());
-            _checker.reset(new IndexBoundsChecker(&_params.bounds,
-                                                  _keyPattern,
-                                                  _params.direction));
 
-            int nFields = _keyPattern.nFields();
-            vector<const BSONElement*> key;
-            vector<bool> inc;
-            key.resize(nFields);
-            inc.resize(nFields);
-            if (_checker->getStartKey(&key, &inc)) {
-                _btreeCursor->seek(key, inc);
-                _keyElts.resize(nFields);
-                _keyEltsInc.resize(nFields);
+            // For single intervals, we can use an optimized scan which checks against the position
+            // of an end cursor.  For all other index scans, we fall back on using
+            // IndexBoundsChecker to determine when we've finished the scan.
+            BSONObj startKey;
+            bool startKeyInclusive;
+            if (IndexBoundsBuilder::isSingleInterval(_params.bounds,
+                                                     &startKey,
+                                                     &startKeyInclusive,
+                                                     &_endKey,
+                                                     &_endKeyInclusive)) {
+                // We want to point at the start key if it's inclusive, and we want to point past
+                // the start key if it's exclusive.
+                _btreeCursor->seek(startKey, !startKeyInclusive);
+
+                IndexCursor* endCursor;
+                invariant(_iam->newCursor(_txn, cursorOptions, &endCursor).isOK());
+                invariant(endCursor);
+
+                // TODO: Get rid of this cast. See SERVER-12397.
+                _endCursor.reset(static_cast<BtreeIndexCursor*>(endCursor));
+
+                // If the end key is inclusive, we want to point *past* it since that's the end.
+                _endCursor->seek(_endKey, _endKeyInclusive);
             }
             else {
-                _scanState = HIT_END;
+                _checker.reset(new IndexBoundsChecker(&_params.bounds,
+                                                      _keyPattern,
+                                                      _params.direction));
+
+                int nFields = _keyPattern.nFields();
+                vector<const BSONElement*> key;
+                vector<bool> inc;
+                key.resize(nFields);
+                inc.resize(nFields);
+                if (_checker->getStartKey(&key, &inc)) {
+                    _btreeCursor->seek(key, inc);
+                    _keyElts.resize(nFields);
+                    _keyEltsInc.resize(nFields);
+                }
+                else {
+                    _scanState = HIT_END;
+                }
             }
         }
 
@@ -169,7 +202,7 @@ namespace mongo {
         if (GETTING_NEXT == _scanState) {
             // Grab the next (key, value) from the index.
             BSONObj keyObj = _indexCursor->getKey();
-            DiskLoc loc = _indexCursor->getValue();
+            RecordId loc = _indexCursor->getValue();
 
             bool filterPasses = Filter::passes(keyObj, _keyPattern, _filter);
             if ( filterPasses ) {
@@ -251,6 +284,10 @@ namespace mongo {
             _savedLoc = _indexCursor->getValue();
         }
         _indexCursor->savePosition();
+
+        if (_endCursor) {
+            _endCursor->savePosition();
+        }
     }
 
     void IndexScan::restoreState(OperationContext* opCtx) {
@@ -267,6 +304,43 @@ namespace mongo {
             return;
         }
 
+        if (_endCursor) {
+            // Single interval case.
+            if (!_endCursor->restorePosition(opCtx).isOK()) {
+                _scanState = HIT_END;
+                return;
+            }
+
+            // If we were EOF when we yielded, we don't always want to have '_btreeCursor' run until
+            // EOF. New documents may have been inserted after our end key, and our end marker may
+            // be before them.
+            //
+            // As an example, say we're counting from 5 to 10 and the index only has keys for 6, 7,
+            // 8, and 9. '_btreeCursor' will point at key 6 at the start and '_endCursor' will be
+            // EOF. If we insert a document with key 11 during a yield, we need to relocate
+            // '_endCursor' to point at the new key as the end key of our scan.
+            _endCursor->seek(_endKey, _endKeyInclusive);
+
+            // It is possible that the re-positioning of the end cursor above will move the end
+            // cursor so that it is on the other side of the scanning cursor. If this happens, the
+            // scan is over, so we transition to HIT_END state.
+            //
+            // Example:
+            //   Suppose we're counting from 5 to 10 and the index has keys 6 and 15. The end
+            //   cursor will initially point at 15. Say that the scanning cursor advances, returning
+            //   key 6 and now points at 15. Then the index scan state is saved. While saved,
+            //   key 11 is inserted. The end cursor will seek to point at key 11. If we didn't have
+            //   the check below, then the scan could erroneously return key 15, which is not in the
+            //   desired range of [5, 10].
+            int cmp = _endKey.woCompare(_indexCursor->getKey(), _keyPattern);
+            const bool cursorPastEndKey = (_params.direction == 1 ? cmp < 0 : cmp > 0);
+            const bool cursorAtExclusiveEndKey = (cmp == 0 && !_endKeyInclusive);
+            if (cursorPastEndKey || cursorAtExclusiveEndKey) {
+                _scanState = HIT_END;
+                return;
+            }
+        }
+
         if (!_savedKey.binaryEqual(_indexCursor->getKey())
             || _savedLoc != _indexCursor->getValue()) {
             // Our restored position isn't the same as the saved position.  When we call work()
@@ -278,18 +352,18 @@ namespace mongo {
         }
     }
 
-    void IndexScan::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void IndexScan::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
 
-        // The only state we're responsible for holding is what DiskLocs to drop.  If a document
+        // The only state we're responsible for holding is what RecordIds to drop.  If a document
         // mutates the underlying index cursor will deal with it.
         if (INVALIDATION_MUTATION == type) {
             return;
         }
 
-        // If we see this DiskLoc again, it may not be the same document it was before, so we want
+        // If we see this RecordId again, it may not be the same document it was before, so we want
         // to return it if we see it again.
-        unordered_set<DiskLoc, DiskLoc::Hasher>::iterator it = _returned.find(dl);
+        unordered_set<RecordId, RecordId::Hasher>::iterator it = _returned.find(dl);
         if (it != _returned.end()) {
             ++_specificStats.seenInvalidated;
             _returned.erase(it);
@@ -316,6 +390,20 @@ namespace mongo {
 
             if ((cmp != 0 && cmp != _params.direction)
                 || (cmp == 0 && !_params.bounds.endKeyInclusive)) {
+                _scanState = HIT_END;
+            }
+            else {
+                ++_specificStats.keysExamined;
+            }
+        }
+        else if (_endCursor) {
+            // We're in the single interval case, and we have a cursor pointing to the end position.
+            // We can check whether the scan is over by seeing if our cursor points at the same
+            // thing as the end cursor.
+            _scanState = GETTING_NEXT;
+            invariant(!_checker);
+
+            if (_endCursor->pointsAt(*_btreeCursor)) {
                 _scanState = HIT_END;
             }
             else {

@@ -31,7 +31,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/bson/mutable/document.h"
 #include "mongo/bson/mutable/mutable_bson_test_utils.h"
@@ -40,8 +40,8 @@
 #include "mongo/db/json.h"
 #include "mongo/db/repl/master_slave.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
-#include "mongo/db/repl/repl_coordinator_mock.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/sync.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/catalog/collection.h"
@@ -53,6 +53,12 @@
 using namespace mongo::repl;
 
 namespace ReplTests {
+
+    using std::auto_ptr;
+    using std::endl;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     BSONObj f( const char *s ) {
         return fromjson( s );
@@ -79,7 +85,7 @@ namespace ReplTests {
             Client::WriteContext ctx(&_txn, ns());
             WriteUnitOfWork wuow(&_txn);
 
-            Collection* c = ctx.ctx().db()->getCollection(&_txn, ns());
+            Collection* c = ctx.ctx().db()->getCollection(ns());
             if ( ! c ) {
                 c = ctx.ctx().db()->createCollection(&_txn, ns());
             }
@@ -135,7 +141,7 @@ namespace ReplTests {
             Lock::GlobalWrite lk(_txn.lockState());
             Client::Context ctx(&_txn,  ns() );
             Database* db = ctx.db();
-            Collection* coll = db->getCollection( &_txn, ns() );
+            Collection* coll = db->getCollection( ns() );
             if ( !coll ) {
                 WriteUnitOfWork wunit(&_txn);
                 coll = db->createCollection( &_txn, ns() );
@@ -151,21 +157,20 @@ namespace ReplTests {
             return count;
         }
         int opCount() {
-            OperationContextImpl txn;
-            ScopedTransaction transaction(&txn, MODE_X);
-            Lock::GlobalWrite lk(txn.lockState());
-            Client::Context ctx(&txn,  cllNS() );
+            ScopedTransaction transaction(&_txn, MODE_X);
+            Lock::GlobalWrite lk(_txn.lockState());
+            Client::Context ctx(&_txn,  cllNS() );
 
             Database* db = ctx.db();
-            Collection* coll = db->getCollection( &txn, cllNS() );
+            Collection* coll = db->getCollection( cllNS() );
             if ( !coll ) {
-                WriteUnitOfWork wunit(&txn);
-                coll = db->createCollection( &txn, cllNS() );
+                WriteUnitOfWork wunit(&_txn);
+                coll = db->createCollection( &_txn, cllNS() );
                 wunit.commit();
             }
 
             int count = 0;
-            RecordIterator* it = coll->getIterator(&txn);
+            RecordIterator* it = coll->getIterator(&_txn);
             for ( ; !it->isEOF(); it->getNext() ) {
                 ++count;
             }
@@ -179,11 +184,11 @@ namespace ReplTests {
             {
                 Client::Context ctx(&_txn,  cllNS() );
                 Database* db = ctx.db();
-                Collection* coll = db->getCollection( &_txn, cllNS() );
+                Collection* coll = db->getCollection( cllNS() );
 
                 RecordIterator* it = coll->getIterator(&_txn);
                 while ( !it->isEOF() ) {
-                    DiskLoc currLoc = it->getNext();
+                    RecordId currLoc = it->getNext();
                     ops.push_back(coll->docFor(&_txn, currLoc));
                 }
                 delete it;
@@ -210,7 +215,7 @@ namespace ReplTests {
             Client::Context ctx(&_txn,  ns );
 
             Database* db = ctx.db();
-            Collection* coll = db->getCollection( &_txn, ns );
+            Collection* coll = db->getCollection( ns );
             if ( !coll ) {
                 WriteUnitOfWork wunit(&_txn);
                 coll = db->createCollection( &_txn, ns );
@@ -220,7 +225,7 @@ namespace ReplTests {
             RecordIterator* it = coll->getIterator(&_txn);
             ::mongo::log() << "all for " << ns << endl;
             while ( !it->isEOF() ) {
-                DiskLoc currLoc = it->getNext();
+                RecordId currLoc = it->getNext();
                 ::mongo::log() << coll->docFor(&_txn, currLoc).toString() << endl;
             }
             delete it;
@@ -232,18 +237,18 @@ namespace ReplTests {
             Client::Context ctx(&_txn,  ns );
             WriteUnitOfWork wunit(&_txn);
             Database* db = ctx.db();
-            Collection* coll = db->getCollection( &_txn, ns );
+            Collection* coll = db->getCollection( ns );
             if ( !coll ) {
                 coll = db->createCollection( &_txn, ns );
             }
 
-            vector< DiskLoc > toDelete;
+            vector< RecordId > toDelete;
             RecordIterator* it = coll->getIterator(&_txn);
             while ( !it->isEOF() ) {
                 toDelete.push_back( it->getNext() );
             }
             delete it;
-            for( vector< DiskLoc >::iterator i = toDelete.begin(); i != toDelete.end(); ++i ) {
+            for( vector< RecordId >::iterator i = toDelete.begin(); i != toDelete.end(); ++i ) {
                 coll->deleteDocument( &_txn, *i, true );
             }
             wunit.commit();
@@ -254,7 +259,7 @@ namespace ReplTests {
             Client::Context ctx(&_txn,  ns() );
             WriteUnitOfWork wunit(&_txn);
             Database* db = ctx.db();
-            Collection* coll = db->getCollection( &_txn, ns() );
+            Collection* coll = db->getCollection( ns() );
             if ( !coll ) {
                 coll = db->createCollection( &_txn, ns() );
             }

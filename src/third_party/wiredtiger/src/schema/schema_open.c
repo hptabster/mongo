@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -83,7 +84,7 @@ __wt_schema_open_colgroups(WT_SESSION_IMPL *session, WT_TABLE *table)
 			goto err;
 		}
 
-		WT_ERR(__wt_calloc_def(session, 1, &colgroup));
+		WT_ERR(__wt_calloc_one(session, &colgroup));
 		WT_ERR(__wt_strndup(
 		    session, buf->data, buf->size, &colgroup->name));
 		colgroup->config = cgconfig;
@@ -113,7 +114,7 @@ __wt_schema_open_colgroups(WT_SESSION_IMPL *session, WT_TABLE *table)
 
 	table->cg_complete = 1;
 
-err:	__wt_scr_free(&buf);
+err:	__wt_scr_free(session, &buf);
 	if (colgroup != NULL)
 		__wt_schema_destroy_colgroup(session, colgroup);
 	if (cgconfig != NULL)
@@ -241,8 +242,8 @@ __open_index(WT_SESSION_IMPL *session, WT_TABLE *table, WT_INDEX *idx)
 	    table, table->colconf.str, table->colconf.len, 1, plan));
 	WT_ERR(__wt_strndup(session, plan->data, plan->size, &idx->value_plan));
 
-err:	__wt_scr_free(&buf);
-	__wt_scr_free(&plan);
+err:	__wt_scr_free(session, &buf);
+	__wt_scr_free(session, &plan);
 	return (ret);
 }
 
@@ -319,13 +320,20 @@ __wt_schema_open_index(WT_SESSION_IMPL *session,
 
 		if (table->indices[i] == NULL) {
 			WT_ERR(cursor->get_value(cursor, &idxconf));
-			WT_ERR(__wt_calloc_def(session, 1, &idx));
+			WT_ERR(__wt_calloc_one(session, &idx));
 			WT_ERR(__wt_strdup(session, uri, &idx->name));
 			WT_ERR(__wt_strdup(session, idxconf, &idx->config));
 			WT_ERR(__open_index(session, table, idx));
 
 			table->indices[i] = idx;
 			idx = NULL;
+
+			/*
+			 * If the slot is bigger than anything else we've seen,
+			 * bump the number of indices.
+			 */
+			if (i >= table->nindices)
+				table->nindices = i + 1;
 		}
 
 		/* If we were looking for a single index, we're done. */
@@ -342,7 +350,7 @@ __wt_schema_open_index(WT_SESSION_IMPL *session,
 		table->idx_complete = 1;
 	}
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	if (idx != NULL)
 		WT_TRET(__wt_schema_destroy_index(session, idx));
 	if (cursor != NULL)
@@ -392,9 +400,10 @@ __wt_schema_open_table(WT_SESSION_IMPL *session,
 	WT_ERR(cursor->search(cursor));
 	WT_ERR(cursor->get_value(cursor, &tconfig));
 
-	WT_ERR(__wt_calloc_def(session, 1, &table));
+	WT_ERR(__wt_calloc_one(session, &table));
 	table->name = tablename;
 	tablename = NULL;
+	table->name_hash = __wt_hash_city64(name, namelen);
 
 	WT_ERR(__wt_config_getones(session, tconfig, "columns", &cval));
 
@@ -461,7 +470,7 @@ err:		if (table != NULL)
 		WT_TRET(cursor->close(cursor));
 
 	__wt_free(session, tablename);
-	__wt_scr_free(&buf);
+	__wt_scr_free(session, &buf);
 	return (ret);
 }
 
@@ -471,7 +480,7 @@ err:		if (table != NULL)
  */
 int
 __wt_schema_get_colgroup(WT_SESSION_IMPL *session,
-    const char *uri, WT_TABLE **tablep, WT_COLGROUP **colgroupp)
+    const char *uri, int quiet, WT_TABLE **tablep, WT_COLGROUP **colgroupp)
 {
 	WT_COLGROUP *colgroup;
 	WT_TABLE *table;
@@ -503,16 +512,18 @@ __wt_schema_get_colgroup(WT_SESSION_IMPL *session,
 	}
 
 	__wt_schema_release_table(session, table);
+	if (quiet)
+		WT_RET(ENOENT);
 	WT_RET_MSG(session, ENOENT, "%s not found in table", uri);
 }
 
 /*
  * __wt_schema_get_index --
- *	Find a column group by URI.
+ *	Find an index by URI.
  */
 int
 __wt_schema_get_index(WT_SESSION_IMPL *session,
-    const char *uri, WT_TABLE **tablep, WT_INDEX **indexp)
+    const char *uri, int quiet, WT_TABLE **tablep, WT_INDEX **indexp)
 {
 	WT_DECL_RET;
 	WT_INDEX *idx;
@@ -553,5 +564,7 @@ err:	__wt_schema_release_table(session, table);
 	if (*indexp != NULL)
 		return (0);
 
+	if (quiet)
+		WT_RET(ENOENT);
 	WT_RET_MSG(session, ENOENT, "%s not found in table", uri);
 }

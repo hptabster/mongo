@@ -33,6 +33,7 @@
 #include <boost/thread/condition.hpp>
 #include <boost/thread/mutex.hpp>
 
+#include "mongo/base/checked_cast.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
@@ -78,6 +79,7 @@ namespace mongo {
         _session( NULL ),
         _depth(0),
         _active( false ),
+        _myTransactionCount( 0 ),
         _everStartedWrite( false ),
         _currentlySquirreled( false ),
         _syncing( false ) {
@@ -167,7 +169,11 @@ namespace mongo {
 
     WiredTigerRecoveryUnit* WiredTigerRecoveryUnit::get(OperationContext *txn) {
         invariant( txn );
-        return dynamic_cast<WiredTigerRecoveryUnit*>(txn->recoveryUnit());
+        return checked_cast<WiredTigerRecoveryUnit*>(txn->recoveryUnit());
+    }
+
+    void WiredTigerRecoveryUnit::assertInActiveTxn() const {
+        fassert( 28575, _active );
     }
 
     WiredTigerSession* WiredTigerRecoveryUnit::getSession() {
@@ -188,7 +194,7 @@ namespace mongo {
         }
     }
 
-    void WiredTigerRecoveryUnit::setOplogReadTill( const DiskLoc& loc ) {
+    void WiredTigerRecoveryUnit::setOplogReadTill( const RecordId& loc ) {
         _oplogReadTill = loc;
     }
 
@@ -206,6 +212,11 @@ namespace mongo {
             LOG(2) << "WT rollback_transaction";
         }
         _active = false;
+        _myTransactionCount++;
+    }
+
+    uint64_t WiredTigerRecoveryUnit::getMyTransactionCount() const {
+        return _myTransactionCount;
     }
 
     void WiredTigerRecoveryUnit::_txnOpen() {
@@ -221,7 +232,7 @@ namespace mongo {
     void WiredTigerRecoveryUnit::beingReleasedFromOperationContext() {
         LOG(2) << "WiredTigerRecoveryUnit::beingReleased";
         _currentlySquirreled = true;
-        if ( !wt_keeptxnopen() ) {
+        if ( _active == false && !wt_keeptxnopen() ) {
             _commit();
         }
     }
@@ -233,19 +244,28 @@ namespace mongo {
 
     // ---------------------
 
-    WiredTigerCursor::WiredTigerCursor(const std::string& uri, uint64_t id, WiredTigerRecoveryUnit* ru) {
-        _init( uri, id, ru );
+    WiredTigerCursor::WiredTigerCursor(const std::string& uri,
+                                       uint64_t id,
+                                       bool forRecordStore,
+                                       WiredTigerRecoveryUnit* ru) {
+        _init( uri, id, forRecordStore, ru );
     }
 
-    WiredTigerCursor::WiredTigerCursor(const std::string& uri, uint64_t id, OperationContext* txn) {
-        _init( uri, id, WiredTigerRecoveryUnit::get( txn ) );
+    WiredTigerCursor::WiredTigerCursor(const std::string& uri,
+                                       uint64_t id,
+                                       bool forRecordStore,
+                                       OperationContext* txn) {
+        _init( uri, id, forRecordStore, WiredTigerRecoveryUnit::get( txn ) );
     }
 
-    void WiredTigerCursor::_init( const std::string& uri, uint64_t id, WiredTigerRecoveryUnit* ru ) {
+    void WiredTigerCursor::_init( const std::string& uri,
+                                  uint64_t id,
+                                  bool forRecordStore,
+                                  WiredTigerRecoveryUnit* ru ) {
         _uriID = id;
         _ru = ru;
         _session = _ru->getSession();
-        _cursor = _session->getCursor( uri, id );
+        _cursor = _session->getCursor( uri, id, forRecordStore );
         if ( !_cursor ) {
             error() << "no cursor for uri: " << uri;
         }

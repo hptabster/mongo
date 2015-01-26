@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -18,6 +19,9 @@ __wt_connection_init(WT_CONNECTION_IMPL *conn)
 	u_int i;
 
 	session = conn->default_session;
+
+	for (i = 0; i < WT_HASH_ARRAY_SIZE; i++)
+		SLIST_INIT(&conn->dhhash[i]);	/* Data handle hash lists */
 
 	SLIST_INIT(&conn->dhlh);		/* Data handle list */
 	TAILQ_INIT(&conn->dlhqh);		/* Library list */

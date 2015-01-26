@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <boost/scoped_ptr.hpp>
 #include <boost/shared_ptr.hpp>
 #include <v8.h>
 #include <vector>
@@ -60,6 +61,7 @@ namespace mongo {
     class V8ScriptEngine;
     class V8Scope;
     class BSONHolder;
+    class JSThreadConfig;
 
     typedef v8::Local<v8::Value> (*v8Function)(V8Scope* scope,
                                   const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -173,6 +175,18 @@ namespace mongo {
         OperationContext* getOpContext() const;
 
         /**
+         * Register this scope with the mongo op id.  If executing outside the
+         * context of a mongo operation (e.g. from the shell), killOp will not
+         * be supported.
+         */
+        virtual void registerOperation(OperationContext* txn);
+
+        /**
+         * Unregister this scope with the mongo op id.
+         */
+        virtual void unregisterOperation();
+
+        /**
          * Connect to a local database, create a Mongo object instance, and load any
          * server-side js into the global object
          */
@@ -184,7 +198,7 @@ namespace mongo {
 
         virtual void installBSONTypes();
 
-        virtual string getError() { return _error; }
+        virtual std::string getError() { return _error; }
 
         virtual bool hasOutOfMemoryException();
 
@@ -202,7 +216,7 @@ namespace mongo {
         virtual double getNumber(const char* field);
         virtual int getNumberInt(const char* field);
         virtual long long getNumberLongLong(const char* field);
-        virtual string getString(const char* field);
+        virtual std::string getString(const char* field);
         virtual bool getBoolean(const char* field);
         virtual BSONObj getObject(const char* field);
 
@@ -221,7 +235,7 @@ namespace mongo {
                            int timeoutMs = 0, bool ignoreReturn = false,
                            bool readOnlyArgs = false, bool readOnlyRecv = false);
 
-        virtual bool exec(const StringData& code, const string& name, bool printResult,
+        virtual bool exec(const StringData& code, const std::string& name, bool printResult,
                           bool reportError, bool assertOnError, int timeoutMs);
 
         // functions to create v8 object and function templates
@@ -330,6 +344,7 @@ namespace mongo {
                 : conn(conn), cursor(cursor) { }
         };
         ObjTracker<DBConnectionAndCursor> dbConnectionAndCursor;
+        ObjTracker<JSThreadConfig> jsThreadConfigTracker;
 
         // These are all named after the JS constructor name + FT
         v8::Local<v8::FunctionTemplate> ObjectIdFT()       { return _ObjectIdFT.Get(_isolate); }
@@ -428,18 +443,6 @@ namespace mongo {
         bool nativeEpilogue();
 
         /**
-         * Register this scope with the mongo op id.  If executing outside the
-         * context of a mongo operation (e.g. from the shell), killOp will not
-         * be supported.
-         */
-        void registerOpId();
-
-        /**
-         * Unregister this scope with the mongo op id.
-         */
-        void unregisterOpId();
-
-        /**
          * Create a new function; primarily used for BSON/V8 conversion.
          */
         v8::Local<v8::Value> newFunction(const StringData& code);
@@ -454,7 +457,7 @@ namespace mongo {
 
         v8::Eternal<v8::Context> _context;
         v8::Eternal<v8::Object> _global;
-        string _error;
+        std::string _error;
         std::vector<v8::Eternal<v8::Value> > _funcs;
 
         enum ConnectState { NOT, LOCAL, EXTERNAL };
@@ -514,7 +517,7 @@ namespace mongo {
         mongo::mutex _interruptLock; // protects interruption-related flags
         bool _inNativeExecution;     // protected by _interruptLock
         bool _pendingKill;           // protected by _interruptLock
-        int _opId;                   // op id for this scope
+        unsigned int _opId;          // op id for this scope
         OperationContext* _opCtx;    // Op context for DbEval
     };
 
@@ -559,7 +562,7 @@ namespace mongo {
          */
         DeadlineMonitor<V8Scope>* getDeadlineMonitor() { return &_deadlineMonitor; }
 
-        typedef map<unsigned, V8Scope*> OpIdToScopeMap;
+        typedef std::map<unsigned, V8Scope*> OpIdToScopeMap;
         mongo::mutex _globalInterruptLock;  // protects map of all operation ids -> scope
         OpIdToScopeMap _opToScopeMap;       // map of mongo op ids to scopes (protected by
                                             // _globalInterruptLock).

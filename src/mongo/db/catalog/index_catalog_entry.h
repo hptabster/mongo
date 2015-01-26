@@ -34,7 +34,7 @@
 
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/ordering.h"
-#include "mongo/db/diskloc.h"
+#include "mongo/db/record_id.h"
 
 namespace mongo {
 
@@ -55,7 +55,7 @@ namespace mongo {
 
         ~IndexCatalogEntry();
 
-        const string& ns() const { return _ns; }
+        const std::string& ns() const { return _ns; }
 
         void init( OperationContext* txn,
                    IndexAccessMethod* accessMethod );
@@ -70,9 +70,9 @@ namespace mongo {
 
         /// ---------------------
 
-        const DiskLoc& head( OperationContext* txn ) const;
+        const RecordId& head( OperationContext* txn ) const;
 
-        void setHead( OperationContext* txn, DiskLoc newHead );
+        void setHead( OperationContext* txn, RecordId newHead );
 
         void setIsReady( bool newIsReady );
 
@@ -80,7 +80,7 @@ namespace mongo {
 
         // --
 
-        bool isMultikey( OperationContext* txn ) const;
+        bool isMultikey() const;
 
         void setMultikey( OperationContext* txn );
 
@@ -93,12 +93,12 @@ namespace mongo {
         class SetHeadChange;
 
         bool _catalogIsReady( OperationContext* txn ) const;
-        DiskLoc _catalogHead( OperationContext* txn ) const;
+        RecordId _catalogHead( OperationContext* txn ) const;
         bool _catalogIsMultikey( OperationContext* txn ) const;
 
         // -----
 
-        string _ns;
+        std::string _ns;
 
         CollectionCatalogEntry* _collection; // not owned here
 
@@ -115,7 +115,7 @@ namespace mongo {
 
         Ordering _ordering; // TODO: this might be b-tree specific
         bool _isReady; // cache of NamespaceDetails info
-        DiskLoc _head; // cache of IndexDetails
+        RecordId _head; // cache of IndexDetails
         bool _isMultikey; // cache of NamespaceDetails info
     };
 

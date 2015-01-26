@@ -28,10 +28,11 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/unittest/unittest.h"
 
+#include <boost/shared_ptr.hpp>
 #include <iostream>
 #include <map>
 
@@ -46,6 +47,9 @@
 #include "mongo/util/timer.h"
 
 namespace mongo {
+
+    using boost::shared_ptr;
+    using std::string;
 
     namespace unittest {
 
@@ -285,7 +289,7 @@ namespace {
             for ( std::vector<std::string>::iterator i=torun.begin(); i!=torun.end(); i++ ) {
                 std::string name = *i;
                 boost::shared_ptr<Suite>& s = _allSuites()[name];
-                fassert( 16145,  s );
+                fassert( 16145, s != NULL );
 
                 log() << "going to run suite: " << name << std::endl;
                 results.push_back( s->run( filter, runsPerTest ) );

@@ -31,6 +31,7 @@
 #include "mongo/db/mongod_options.h"
 
 #include <boost/filesystem.hpp>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,10 @@
 #include "mongo/util/version_reporting.h"
 
 namespace mongo {
+
+    using std::cout;
+    using std::endl;
+    using std::string;
 
     MongodGlobalParams mongodGlobalParams;
 
@@ -182,10 +187,9 @@ namespace mongo {
                 + storageGlobalParams.kDefaultDbPath);
 
 #endif
-        storage_options.addOptionChaining("storage.mmapv1.directoryPerDB", "directoryperdb",
-                moe::Switch,
-                "each database will be stored in a separate directory",
-                "storage.directoryPerDB");
+        storage_options.addOptionChaining("storage.directoryPerDB", "directoryperdb",
+                                          moe::Switch,
+                                          "each database will be stored in a separate directory");
 
         general_options.addOptionChaining("noIndexBuildRetry", "noIndexBuildRetry", moe::Switch,
                 "don't retry any index builds that were interrupted by shutdown")
@@ -223,11 +227,9 @@ namespace mongo {
                 "use a smaller default file size",
                 "storage.smallFiles");
 
-        storage_options.addOptionChaining("storage.mmapv1.syncPeriodSecs", "syncdelay",
-                moe::Double,
-                "seconds between disk syncs (0=never, but not recommended)",
-                "storage.syncPeriodSecs")
-                                         .setDefault(moe::Value(60.0));
+        storage_options.addOptionChaining("storage.syncPeriodSecs", "syncdelay", moe::Double,
+                "seconds between disk syncs (0=never, but not recommended)")
+            .setDefault(moe::Value(60.0));
 
         // Upgrade and repair are disallowed in JSON configs since they trigger very heavyweight
         // actions rather than specify configuration data
@@ -940,12 +942,12 @@ namespace mongo {
             serverGlobalParams.slowMS = params["operationProfiling.slowOpThresholdMs"].as<int>();
         }
 
-        if ( params.count("storage.mmapv1.syncPeriodSecs")) {
-            mmapv1GlobalOptions.syncdelay = params["storage.mmapv1.syncPeriodSecs"].as<double>();
+        if ( params.count("storage.syncPeriodSecs")) {
+            storageGlobalParams.syncdelay = params["storage.syncPeriodSecs"].as<double>();
         }
 
-        if (params.count("storage.mmapv1.directoryPerDB")) {
-            mmapv1GlobalOptions.directoryperdb = params["storage.mmapv1.directoryPerDB"].as<bool>();
+        if (params.count("storage.directoryPerDB")) {
+            storageGlobalParams.directoryperdb = params["storage.directoryPerDB"].as<bool>();
         }
         if (params.count("cpu")) {
             serverGlobalParams.cpu = params["cpu"].as<bool>();

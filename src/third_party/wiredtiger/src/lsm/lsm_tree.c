@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -171,7 +172,7 @@ __wt_lsm_tree_bloom_name(WT_SESSION_IMPL *session,
 	    session, tmp, "file:%s-%06" PRIu32 ".bf", lsm_tree->filename, id));
 	WT_ERR(__wt_strndup(session, tmp->data, tmp->size, retp));
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	return (ret);
 }
 
@@ -191,7 +192,7 @@ __wt_lsm_tree_chunk_name(WT_SESSION_IMPL *session,
 	    session, tmp, "file:%s-%06" PRIu32 ".lsm", lsm_tree->filename, id));
 	WT_ERR(__wt_strndup(session, tmp->data, tmp->size, retp));
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	return (ret);
 }
 
@@ -332,7 +333,7 @@ __wt_lsm_tree_create(WT_SESSION_IMPL *session,
 		WT_RET_MSG(session, EINVAL,
 		    "LSM trees cannot be configured as column stores");
 
-	WT_RET(__wt_calloc_def(session, 1, &lsm_tree));
+	WT_RET(__wt_calloc_one(session, &lsm_tree));
 
 	WT_ERR(__lsm_tree_set_name(session, lsm_tree, uri));
 
@@ -343,7 +344,7 @@ __wt_lsm_tree_create(WT_SESSION_IMPL *session,
 	WT_ERR(__wt_strndup(
 	    session, cval.str, cval.len, &lsm_tree->value_format));
 
-	WT_ERR(__wt_config_gets(session, cfg, "collator", &cval));
+	WT_ERR(__wt_config_gets_none(session, cfg, "collator", &cval));
 	WT_ERR(__wt_strndup(
 	    session, cval.str, cval.len, &lsm_tree->collator_name));
 
@@ -428,7 +429,7 @@ __wt_lsm_tree_create(WT_SESSION_IMPL *session,
 	if (0) {
 err:		WT_TRET(__lsm_tree_discard(session, lsm_tree, 0));
 	}
-	__wt_scr_free(&buf);
+	__wt_scr_free(session, &buf);
 	return (ret);
 }
 
@@ -551,7 +552,7 @@ __lsm_tree_open(
 		return (ret);
 
 	/* Try to open the tree. */
-	WT_RET(__wt_calloc_def(session, 1, &lsm_tree));
+	WT_RET(__wt_calloc_one(session, &lsm_tree));
 	WT_ERR(__wt_rwlock_alloc(session, &lsm_tree->rwlock, "lsm tree"));
 
 	WT_ERR(__lsm_tree_set_name(session, lsm_tree, uri));
@@ -786,7 +787,7 @@ int
 __wt_lsm_tree_switch(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 {
 	WT_DECL_RET;
-	WT_LSM_CHUNK *chunk;
+	WT_LSM_CHUNK *chunk, *last_chunk;
 	uint32_t nchunks, new_id;
 	int first_switch;
 
@@ -795,20 +796,17 @@ __wt_lsm_tree_switch(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	nchunks = lsm_tree->nchunks;
 
 	first_switch = nchunks == 0 ? 1 : 0;
+
 	/*
 	 * Check if a switch is still needed: we may have raced while waiting
 	 * for a lock.
 	 */
-	chunk = NULL;
+	last_chunk = NULL;
 	if (!first_switch &&
-	    (chunk = lsm_tree->chunk[nchunks - 1]) != NULL &&
-	    !F_ISSET(chunk, WT_LSM_CHUNK_ONDISK) &&
+	    (last_chunk = lsm_tree->chunk[nchunks - 1]) != NULL &&
+	    !F_ISSET(last_chunk, WT_LSM_CHUNK_ONDISK) &&
 	    !F_ISSET(lsm_tree, WT_LSM_TREE_NEED_SWITCH))
 		goto err;
-
-	/* Set the switch transaction in the previous chunk, if necessary. */
-	if (chunk != NULL && chunk->switch_txn == WT_TXN_NONE)
-		chunk->switch_txn = __wt_txn_new_id(session);
 
 	/* Update the throttle time. */
 	__wt_lsm_tree_throttle(session, lsm_tree, 0);
@@ -823,7 +821,7 @@ __wt_lsm_tree_switch(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	    "merge throttle %ld", lsm_tree->name,
 	    new_id, lsm_tree->ckpt_throttle, lsm_tree->merge_throttle));
 
-	WT_ERR(__wt_calloc_def(session, 1, &chunk));
+	WT_ERR(__wt_calloc_one(session, &chunk));
 	chunk->id = new_id;
 	chunk->switch_txn = WT_TXN_NONE;
 	lsm_tree->chunk[lsm_tree->nchunks++] = chunk;
@@ -834,6 +832,10 @@ __wt_lsm_tree_switch(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	++lsm_tree->dsk_gen;
 
 	lsm_tree->modified = 1;
+
+	/* Set the switch transaction in the previous chunk, if necessary. */
+	if (last_chunk != NULL && last_chunk->switch_txn == WT_TXN_NONE)
+		last_chunk->switch_txn = __wt_txn_new_id(session);
 
 err:	WT_TRET(__wt_lsm_tree_writeunlock(session, lsm_tree));
 	/*
@@ -1010,7 +1012,7 @@ __wt_lsm_tree_truncate(
 	locked = 1;
 
 	/* Create the new chunk. */
-	WT_ERR(__wt_calloc_def(session, 1, &chunk));
+	WT_ERR(__wt_calloc_one(session, &chunk));
 	chunk->id = WT_ATOMIC_ADD4(lsm_tree->last, 1);
 	WT_ERR(__wt_lsm_tree_setup_chunk(session, lsm_tree, chunk));
 

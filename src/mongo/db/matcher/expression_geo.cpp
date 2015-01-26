@@ -30,7 +30,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 #include "mongo/db/matcher/expression_geo.h"
 #include "mongo/db/geo/geoparser.h"
 #include "mongo/util/mongoutils/str.h"

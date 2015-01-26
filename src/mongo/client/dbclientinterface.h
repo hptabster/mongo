@@ -32,6 +32,9 @@
 
 #pragma once
 
+#include <boost/noncopyable.hpp>
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bson_field.h"
 #include "mongo/client/export_macros.h"
@@ -96,8 +99,20 @@ namespace mongo {
          */
         QueryOption_PartialResults = 1 << 7 ,
 
-        QueryOption_AllSupported = QueryOption_CursorTailable | QueryOption_SlaveOk | QueryOption_OplogReplay | QueryOption_NoCursorTimeout | QueryOption_AwaitData | QueryOption_Exhaust | QueryOption_PartialResults
+        QueryOption_AllSupported = QueryOption_CursorTailable |
+            QueryOption_SlaveOk |
+            QueryOption_OplogReplay |
+            QueryOption_NoCursorTimeout |
+            QueryOption_AwaitData |
+            QueryOption_Exhaust |
+            QueryOption_PartialResults,
 
+        QueryOption_AllSupportedForSharding = QueryOption_CursorTailable |
+            QueryOption_SlaveOk |
+            QueryOption_OplogReplay |
+            QueryOption_NoCursorTimeout |
+            QueryOption_AwaitData |
+            QueryOption_PartialResults,
     };
 
     enum MONGO_CLIENT_API UpdateOptions {

@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -156,15 +157,18 @@ struct __wt_connection_stats {
 	WT_STATS cache_bytes_max;
 	WT_STATS cache_bytes_read;
 	WT_STATS cache_bytes_write;
+	WT_STATS cache_eviction_app;
 	WT_STATS cache_eviction_checkpoint;
 	WT_STATS cache_eviction_clean;
 	WT_STATS cache_eviction_deepen;
 	WT_STATS cache_eviction_dirty;
 	WT_STATS cache_eviction_fail;
 	WT_STATS cache_eviction_force;
+	WT_STATS cache_eviction_force_delete;
 	WT_STATS cache_eviction_force_fail;
 	WT_STATS cache_eviction_hazard;
 	WT_STATS cache_eviction_internal;
+	WT_STATS cache_eviction_maximum_page_size;
 	WT_STATS cache_eviction_queue_empty;
 	WT_STATS cache_eviction_queue_not_empty;
 	WT_STATS cache_eviction_server_evicting;
@@ -172,6 +176,7 @@ struct __wt_connection_stats {
 	WT_STATS cache_eviction_slow;
 	WT_STATS cache_eviction_split;
 	WT_STATS cache_eviction_walk;
+	WT_STATS cache_inmem_split;
 	WT_STATS cache_pages_dirty;
 	WT_STATS cache_pages_inuse;
 	WT_STATS cache_read;
@@ -186,6 +191,10 @@ struct __wt_connection_stats {
 	WT_STATS cursor_search;
 	WT_STATS cursor_search_near;
 	WT_STATS cursor_update;
+	WT_STATS dh_conn_handles;
+	WT_STATS dh_conn_ref;
+	WT_STATS dh_conn_sweeps;
+	WT_STATS dh_conn_tod;
 	WT_STATS dh_session_handles;
 	WT_STATS dh_session_sweeps;
 	WT_STATS file_open;
@@ -194,7 +203,15 @@ struct __wt_connection_stats {
 	WT_STATS log_bytes_payload;
 	WT_STATS log_bytes_written;
 	WT_STATS log_close_yields;
+	WT_STATS log_compress_len;
+	WT_STATS log_compress_mem;
+	WT_STATS log_compress_small;
+	WT_STATS log_compress_write_fails;
+	WT_STATS log_compress_writes;
 	WT_STATS log_max_filesize;
+	WT_STATS log_prealloc_files;
+	WT_STATS log_prealloc_max;
+	WT_STATS log_prealloc_used;
 	WT_STATS log_reads;
 	WT_STATS log_scan_records;
 	WT_STATS log_scan_rereads;
@@ -222,6 +239,11 @@ struct __wt_connection_stats {
 	WT_STATS memory_allocation;
 	WT_STATS memory_free;
 	WT_STATS memory_grow;
+	WT_STATS page_busy_blocked;
+	WT_STATS page_forcible_evict_blocked;
+	WT_STATS page_locked_blocked;
+	WT_STATS page_read_blocked;
+	WT_STATS page_sleep;
 	WT_STATS read_io;
 	WT_STATS rec_pages;
 	WT_STATS rec_pages_eviction;
@@ -275,10 +297,11 @@ struct __wt_dsrc_stats {
 	WT_STATS btree_entries;
 	WT_STATS btree_fixed_len;
 	WT_STATS btree_maximum_depth;
-	WT_STATS btree_maxintlitem;
+	WT_STATS btree_maxintlkey;
 	WT_STATS btree_maxintlpage;
-	WT_STATS btree_maxleafitem;
+	WT_STATS btree_maxleafkey;
 	WT_STATS btree_maxleafpage;
+	WT_STATS btree_maxleafvalue;
 	WT_STATS btree_overflow;
 	WT_STATS btree_row_internal;
 	WT_STATS btree_row_leaf;
@@ -290,6 +313,7 @@ struct __wt_dsrc_stats {
 	WT_STATS cache_eviction_fail;
 	WT_STATS cache_eviction_hazard;
 	WT_STATS cache_eviction_internal;
+	WT_STATS cache_inmem_split;
 	WT_STATS cache_overflow_value;
 	WT_STATS cache_read;
 	WT_STATS cache_read_overflow;

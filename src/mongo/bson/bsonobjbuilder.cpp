@@ -37,6 +37,9 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::string;
+
     void BSONObjBuilder::appendMinForType( const StringData& fieldName , int t ) {
         switch ( t ) {
                 
@@ -53,7 +56,7 @@ namespace mongo {
             appendBool(fieldName, true);
             //appendDate( fieldName , numeric_limits<long long>::min() ); 
             return;
-        case Timestamp: // TODO integrate with Date SERVER-3304
+        case Timestamp:
             appendTimestamp( fieldName , 0 ); return;
         case Undefined: // shared with EOO
             appendUndefined( fieldName ); return;
@@ -107,7 +110,7 @@ namespace mongo {
             appendMinForType( fieldName, Object ); return;
         case Date:
             appendDate( fieldName , std::numeric_limits<long long>::max() ); return;
-        case Timestamp: // TODO integrate with Date SERVER-3304
+        case Timestamp:
             append( fieldName , OpTime::max() ); return;
         case Undefined: // shared with EOO
             appendUndefined( fieldName ); return;

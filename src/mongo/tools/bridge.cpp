@@ -28,9 +28,11 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include <boost/thread.hpp>
+#include <iostream>
+#include <signal.h>
 
 #include "mongo/base/initializer.h"
 #include "mongo/client/dbclientinterface.h"

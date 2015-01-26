@@ -28,12 +28,14 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/initialize_server_global_state.h"
 
 #include <boost/filesystem/operations.hpp>
+#include <iostream>
 #include <memory>
+#include <signal.h>
 
 #ifndef _WIN32
 #include <syslog.h>
@@ -67,6 +69,10 @@
 namespace fs = boost::filesystem;
 
 namespace mongo {
+
+    using std::cerr;
+    using std::cout;
+    using std::endl;
 
 #ifndef _WIN32
     // support for exit value propagation with fork

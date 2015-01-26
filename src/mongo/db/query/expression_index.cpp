@@ -28,6 +28,8 @@
 
 #include "mongo/db/query/expression_index.h"
 
+#include <iostream>
+
 #include "third_party/s2/s2regioncoverer.h"
 
 #include "mongo/db/geo/geoconstants.h"
@@ -36,6 +38,8 @@
 #include "mongo/db/hasher.h"
 
 namespace mongo {
+
+    using std::set;
 
     BSONObj ExpressionMapping::hash(const BSONElement& value) {
         BSONObjBuilder bob;

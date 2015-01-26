@@ -30,16 +30,20 @@
 
 #include "mongo/db/exec/projection.h"
 
-#include "mongo/db/diskloc.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
+#include "mongo/db/record_id.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::endl;
+    using std::vector;
 
     static const char* kIdField = "_id";
 
@@ -189,7 +193,7 @@ namespace mongo {
 
         member->state = WorkingSetMember::OWNED_OBJ;
         member->keyData.clear();
-        member->loc = DiskLoc();
+        member->loc = RecordId();
         member->obj = bob.obj();
         return Status::OK();
     }
@@ -257,7 +261,7 @@ namespace mongo {
     }
 
     void ProjectionStage::invalidate(OperationContext* txn,
-                                     const DiskLoc& dl,
+                                     const RecordId& dl,
                                      InvalidationType type) {
         ++_commonStats.invalidates;
         _child->invalidate(txn, dl, type);

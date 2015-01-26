@@ -30,7 +30,8 @@
 
 #include "mongo/db/concurrency/d_concurrency.h"
 
-#include "mongo/db/concurrency/locker.h"
+#include <string>
+
 #include "mongo/db/global_environment_experiment.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/server_parameters.h"
@@ -38,19 +39,12 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/stacktrace.h"
 
-// oplog locking
-// no top level read locks
-// system.profile writing
-// oplog now
-// yielding
-
 namespace mongo {
+namespace {
 
     //  SERVER-14668: Remove or invert sense once MMAPv1 CLL can be default
     MONGO_EXPORT_STARTUP_SERVER_PARAMETER(enableCollectionLocking, bool, true);
 
-    DBTryLockTimeoutException::DBTryLockTimeoutException() {}
-    DBTryLockTimeoutException::~DBTryLockTimeoutException() throw() { }
 
     class AcquiringParallelWriter {
     public:
@@ -69,194 +63,115 @@ namespace mongo {
         Locker* const _ls;
     };
 
-
-    RWLockRecursive &Lock::ParallelBatchWriterMode::_batchLock = *(new RWLockRecursive("special"));
-    void Lock::ParallelBatchWriterMode::iAmABatchParticipant(Locker* lockState) {
-        lockState->setIsBatchWriter(true);
-    }
-
-    Lock::ScopedLock::ParallelBatchWriterSupport::ParallelBatchWriterSupport(Locker* lockState)
-        : _lockState(lockState) {
-        relock();
-    }
-
-    void Lock::ScopedLock::ParallelBatchWriterSupport::tempRelease() {
-        _lk.reset( 0 );
-    }
-
-    void Lock::ScopedLock::ParallelBatchWriterSupport::relock() {
-        if (!_lockState->isBatchWriter()) {
-            AcquiringParallelWriter a(_lockState);
-            _lk.reset( new RWLockRecursive::Shared(ParallelBatchWriterMode::_batchLock) );
-        }
-    }
+} // namespace
 
 
-    Lock::ScopedLock::ScopedLock(Locker* lockState, char type)
-        : _lockState(lockState), _pbws_lk(lockState), _type(type) {
+    RWLockRecursive Lock::ParallelBatchWriterMode::_batchLock("special");
 
-        _lockState->enterScopedLock(this);
-    }
-
-    Lock::ScopedLock::~ScopedLock() { 
-        _lockState->leaveScopedLock(this);
-    }
-
-    void Lock::ScopedLock::tempRelease() {
-        _tempRelease();
-        _pbws_lk.tempRelease();
-    }
-
-    void Lock::ScopedLock::relock() {
-        _pbws_lk.relock();
-        _relock();
-    }
-
-    void Lock::ScopedLock::_tempRelease() {
-        // TempRelease is only used for global locks
-        invariant(false);
-    }
-
-    void Lock::ScopedLock::_relock() {
-        // TempRelease is only used for global locks
-        invariant(false);
-    }
 
     Lock::TempRelease::TempRelease(Locker* lockState)
-        : cant(lockState->isRecursive()), _lockState(lockState) {
+        : _lockState(lockState),
+          _lockSnapshot(),
+          _locksReleased(_lockState->saveLockStateAndUnlock(&_lockSnapshot)) {
 
-        if (cant) {
-            return;
-        }
-
-        fassert(16116, _lockState->recursiveCount() == 1);
-        fassert(16117, _lockState->isLocked());
-        
-        scopedLk = _lockState->getCurrentScopedLock();
-        fassert(16118, scopedLk);
-
-        invariant(_lockState == scopedLk->_lockState);
-
-        scopedLk->tempRelease();
-        _lockState->leaveScopedLock(scopedLk);
     }
 
     Lock::TempRelease::~TempRelease() {
-        if (cant) {
-            return;
-        }
-        
-        fassert(16119, scopedLk);
-        fassert(16120, !_lockState->isLocked());
-
-        _lockState->enterScopedLock(scopedLk);
-        scopedLk->relock();
-    }
-
-    void Lock::GlobalWrite::_tempRelease() { 
-        invariant(_lockState->isW());
-
-        invariant(_lockState->unlockAll());
-    }
-    void Lock::GlobalWrite::_relock() { 
-        invariant(!_lockState->isLocked());
-
-        _lockState->lockGlobal(MODE_X);
-    }
-
-    Lock::GlobalWrite::GlobalWrite(Locker* lockState, unsigned timeoutms)
-        : ScopedLock(lockState, 'W') {
-
-        LockResult result = _lockState->lockGlobal(MODE_X, timeoutms);
-        if (result == LOCK_TIMEOUT) {
-            throw DBTryLockTimeoutException();
+        if (_locksReleased) {
+            invariant(!_lockState->isLocked());
+            _lockState->restoreLockState(_lockSnapshot);
         }
     }
 
-    Lock::GlobalWrite::~GlobalWrite() {
-        // If the lock state is R, this means downgrade happened and this is only for fsyncLock.
-        invariant(_lockState->isW() || _lockState->isR());
 
-        _lockState->unlockAll();
-    }
+    void Lock::GlobalLock::_lock(LockMode lockMode, unsigned timeoutMs) {
+        if (!_locker->isBatchWriter()) {
+            AcquiringParallelWriter a(_locker);
+            _pbws_lk.reset(new RWLockRecursive::Shared(ParallelBatchWriterMode::_batchLock));
+        }
 
-    Lock::GlobalRead::GlobalRead(Locker* lockState, unsigned timeoutms)
-        : ScopedLock(lockState, 'R') {
+        _result = _locker->lockGlobalBegin(lockMode);
+        if (_result == LOCK_WAITING) {
+            _result = _locker->lockGlobalComplete(timeoutMs);
+        }
 
-        LockResult result = _lockState->lockGlobal(MODE_S, timeoutms);
-        if (result == LOCK_TIMEOUT) {
-            throw DBTryLockTimeoutException();
+        if (_result != LOCK_OK) {
+            _pbws_lk.reset();
         }
     }
 
-    Lock::GlobalRead::~GlobalRead() {
-        _lockState->unlockAll();
+    void Lock::GlobalLock::_unlock() {
+        if (isLocked()) {
+            _locker->unlockAll();
+            _pbws_lk.reset();
+            _result = LOCK_INVALID;
+        }
     }
 
-    Lock::DBLock::DBLock(Locker* lockState, const StringData& db, const LockMode mode)
-        : ScopedLock(lockState, mode == MODE_S || mode == MODE_IS ? 'r' : 'w'),
-          _id(RESOURCE_DATABASE, db),
-          _mode(mode) {
-        massert(28539, "need a valid database name", !db.empty() && !nsIsFull(db));
-        lockDB();
+
+    Lock::DBLock::DBLock(Locker* locker, const StringData& db, LockMode mode)
+        : _id(RESOURCE_DATABASE, db),
+          _locker(locker),
+          _mode(mode),
+          _globalLock(locker, isSharedLockMode(_mode) ? MODE_IS : MODE_IX, UINT_MAX) {
+
+        massert(28539, "need a valid database name", !db.empty() && nsIsDbOnly(db));
+
+        // Need to acquire the flush lock
+        _locker->lockMMAPV1Flush();
+
+        if (supportsDocLocking() || enableCollectionLocking) {
+            // The check for the admin db is to ensure direct writes to auth collections
+            // are serialized (see SERVER-16092).
+            if ((_id == resourceIdAdminDB) && !isSharedLockMode(_mode)) {
+                _mode = MODE_X;
+            }
+
+            invariant(LOCK_OK == _locker->lock(_id, _mode));
+        }
+        else {
+            invariant(LOCK_OK == _locker->lock(_id, isSharedLockMode(_mode) ? MODE_S : MODE_X));
+        }
     }
 
     Lock::DBLock::~DBLock() {
-        unlockDB();
+        _locker->unlock(_id);
     }
 
-    void Lock::DBLock::lockDB() {
-        const bool isRead = (_mode == MODE_S || _mode == MODE_IS);
+    void Lock::DBLock::relockWithMode(LockMode newMode) {
+        // 2PL would delay the unlocking
+        invariant(!_locker->inAWriteUnitOfWork());
 
-        _lockState->lockGlobal(isRead ? MODE_IS : MODE_IX);
-        if (supportsDocLocking() || enableCollectionLocking) {
-            _lockState->lock(_id, _mode);
-        }
-        else {
-            _lockState->lock(_id, isRead ? MODE_S : MODE_X);
-        }
-    }
+        // Not allowed to change global intent
+        invariant(!isSharedLockMode(_mode) || isSharedLockMode(newMode));
 
-    void Lock::DBLock::relockWithMode(const LockMode newMode) {
-        const bool wasRead = (_mode == MODE_S || _mode == MODE_IS);
-        const bool isRead = (newMode == MODE_S || newMode == MODE_IS);
-
-        invariant (!_lockState->inAWriteUnitOfWork()); // 2PL would delay the unlocking
-        invariant(!wasRead || isRead); // Not allowed to change global intent
-
-        _lockState->unlock(_id);
+        _locker->unlock(_id);
         _mode = newMode;
 
         if (supportsDocLocking() || enableCollectionLocking) {
-            _lockState->lock(_id, _mode);
-            dassert(_lockState->isLockHeldForMode(_id, _mode));
+            invariant(LOCK_OK == _locker->lock(_id, _mode));
         }
         else {
-            LockMode effectiveMode = isRead ? MODE_S : MODE_X;
-            _lockState->lock(_id, effectiveMode);
-            dassert(_lockState->isLockHeldForMode(_id, effectiveMode));
+            invariant(LOCK_OK == _locker->lock(_id, isSharedLockMode(_mode) ? MODE_S : MODE_X));
         }
     }
 
-    void Lock::DBLock::unlockDB() {
-        _lockState->unlock(_id);
-
-        _lockState->unlockAll();
-    }
 
     Lock::CollectionLock::CollectionLock(Locker* lockState,
                                          const StringData& ns,
                                          LockMode mode)
         : _id(RESOURCE_COLLECTION, ns),
           _lockState(lockState) {
-        const bool isRead = (mode == MODE_S || mode == MODE_IS);
+
         massert(28538, "need a non-empty collection name", nsIsFull(ns));
+
         dassert(_lockState->isDbLockedForMode(nsToDatabaseSubstring(ns),
-                                              isRead ? MODE_IS : MODE_IX));
+                                              isSharedLockMode(mode) ? MODE_IS : MODE_IX));
         if (supportsDocLocking()) {
             _lockState->lock(_id, mode);
-        } else if (enableCollectionLocking) {
-            _lockState->lock(_id, isRead ? MODE_S : MODE_X);
+        }
+        else if (enableCollectionLocking) {
+            _lockState->lock(_id, isSharedLockMode(mode) ? MODE_S : MODE_X);
         }
     }
 
@@ -266,65 +181,53 @@ namespace mongo {
         }
     }
 
-    void Lock::CollectionLock::relockWithMode(LockMode mode, Lock::DBLock& dbLock ) {
+    void Lock::CollectionLock::relockWithMode(LockMode mode, Lock::DBLock& dbLock) {
         if (supportsDocLocking() || enableCollectionLocking) {
             _lockState->unlock(_id);
         }
 
-        dbLock.relockWithMode( mode );
+        dbLock.relockWithMode(mode);
 
         if (supportsDocLocking() || enableCollectionLocking) {
             _lockState->lock(_id, mode);
         }
-
     }
 
-    Lock::ResourceLock::ResourceLock(Locker* lockState, ResourceId rid, LockMode mode)
-            : _rid(rid),
-              _lockState(lockState) {
-        _lockState->lock(_rid, mode);
+namespace {
+    boost::mutex oplogSerialization; // for OplogIntentWriteLock
+} // namespace
+
+    Lock::OplogIntentWriteLock::OplogIntentWriteLock(Locker* lockState)
+          : _lockState(lockState),
+            _serialized(false) {
+        _lockState->lock(resourceIdOplog, MODE_IX);
     }
 
-    Lock::ResourceLock::~ResourceLock() {
-        _lockState->unlock(_rid);
-    }
-
-    Lock::DBRead::DBRead(Locker* lockState, const StringData& dbOrNs) :
-        DBLock(lockState, nsToDatabaseSubstring(dbOrNs), MODE_S) { }
-
-    writelocktry::writelocktry(Locker* lockState, int tryms) :
-        _got( false ),
-        _dbwlock( NULL )
-    { 
-        try { 
-            _dbwlock.reset(new Lock::GlobalWrite(lockState, tryms));
+    Lock::OplogIntentWriteLock::~OplogIntentWriteLock() {
+        if (_serialized) {
+            oplogSerialization.unlock();
         }
-        catch ( DBTryLockTimeoutException & ) {
-            return;
+        _lockState->unlock(resourceIdOplog);
+    }
+
+    void Lock::OplogIntentWriteLock::serializeIfNeeded() {
+        if (!supportsDocLocking() && !_serialized) {
+            oplogSerialization.lock();
+            _serialized = true;
         }
-        _got = true;
     }
 
-    writelocktry::~writelocktry() {
 
+    void Lock::ResourceLock::lock(LockMode mode) {
+        invariant(_result == LOCK_INVALID);
+        _result = _locker->lock(_rid, mode);
     }
 
-    // note: the 'already' concept here might be a bad idea as a temprelease wouldn't notice it is nested then
-    readlocktry::readlocktry(Locker* lockState, int tryms) :
-        _got( false ),
-        _dbrlock( NULL )
-    {
-        try { 
-            _dbrlock.reset(new Lock::GlobalRead(lockState, tryms));
+    void Lock::ResourceLock::unlock() {
+        if (_result == LOCK_OK) {
+            _locker->unlock(_rid);
+            _result = LOCK_INVALID;
         }
-        catch ( DBTryLockTimeoutException & ) {
-            return;
-        }
-        _got = true;
     }
 
-    readlocktry::~readlocktry() {
-
-    }
-
-}
+} // namespace mongo

@@ -38,6 +38,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     namespace {
 
         // Helper function that extracts the group key from a BSONObj.
@@ -269,7 +272,7 @@ namespace mongo {
         _child->restoreState(opCtx);
     }
 
-    void GroupStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void GroupStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
         _child->invalidate(txn, dl, type);
     }

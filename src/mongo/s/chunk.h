@@ -30,6 +30,10 @@
 
 #pragma once
 
+#include <boost/next_prior.hpp>
+#include <boost/noncopyable.hpp>
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/base/string_data.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/query/query_solution.h"
@@ -38,6 +42,8 @@
 #include "mongo/s/shard.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/concurrency/ticketholder.h"
+#include "mongo/util/debug_util.h"
+#include "mongo/util/ptr.h"
 
 namespace mongo {
 
@@ -48,13 +54,13 @@ namespace mongo {
     class ChunkObjUnitTest;
     struct WriteConcernOptions;
 
-    typedef shared_ptr<const Chunk> ChunkPtr;
+    typedef boost::shared_ptr<const Chunk> ChunkPtr;
 
     // key is max for each Chunk or ChunkRange
     typedef std::map<BSONObj,ChunkPtr,BSONObjCmp> ChunkMap;
-    typedef std::map<BSONObj,shared_ptr<ChunkRange>,BSONObjCmp> ChunkRangeMap;
+    typedef std::map<BSONObj,boost::shared_ptr<ChunkRange>,BSONObjCmp> ChunkRangeMap;
 
-    typedef shared_ptr<const ChunkManager> ChunkManagerPtr;
+    typedef boost::shared_ptr<const ChunkManager> ChunkManagerPtr;
 
     /**
        config.chunks
@@ -65,6 +71,20 @@ namespace mongo {
      */
     class Chunk : boost::noncopyable {
     public:
+        enum SplitPointMode {
+            // Determines the split points that will make the current chunk smaller than
+            // the current chunk size setting. Gives empty result if chunk is not big enough.
+            normal,
+
+            // Will get a split which approximately splits the chunk into 2 halves,
+            // regardless of the size of the chunk.
+            atMedian,
+
+            // Behaves like normal, with additional special heuristics for "top chunks"
+            // (the 1 or 2 chunks in the extreme ends of the chunk key space).
+            autoSplitInternal
+        };
+
         Chunk( const ChunkManager * info , BSONObj from);
         Chunk( const ChunkManager * info ,
                const BSONObj& min,
@@ -127,17 +147,15 @@ namespace mongo {
         /**
          * Splits this chunk at a non-specificed split key to be chosen by the mongod holding this chunk.
          *
-         * @param atMedian if set to true, will split the chunk at the middle regardless if
-         *      the split is really necessary size wise. If set to false, will only split if
-         *      the chunk has reached the currently desired maximum size. Setting to false also
-         *      has the effect of splitting the chunk such that the resulting chunks will never
-         *      be greater than the current chunk size setting.
+         * @param mode
          * @param res the object containing details about the split execution
          * @param resultingSplits the number of resulting split points. Set to NULL to ignore.
          *
          * @throws UserException
          */
-        Status split(bool atMedian, size_t* resultingSplits, BSONObj* res) const;
+        Status split(SplitPointMode mode,
+                     size_t* resultingSplits,
+                     BSONObj* res) const;
 
         /**
          * Splits this chunk at the given key (or keys)
@@ -258,16 +276,18 @@ namespace mongo {
 
         // methods, etc..
 
-        /** Returns the highest or lowest existing value in the shard-key space.
-         *  Warning: this assumes that the shard key is not "special"- that is, the shardKeyPattern
-         *           is simply an ordered list of ascending/descending field names. Examples:
-         *           {a : 1, b : -1} is not special. {a : "hashed"} is.
+        /**
+         * Returns the split point that will result in one of the chunk having exactly one
+         * document. Also returns an empty document if the split point cannot be determined.
          *
-         * if sort 1, return lowest key
-         * if sort -1, return highest key
-         * will return empty object if have none
+         * @param doSplitAtLower determines which side of the split will have exactly one document.
+         *        True means that the split point chosen will be closer to the lower bound.
+         *
+         * Warning: this assumes that the shard key is not "special"- that is, the shardKeyPattern
+         *          is simply an ordered list of ascending/descending field names. Examples:
+         *          {a : 1, b : -1} is not special. {a : "hashed"} is.
          */
-        BSONObj _getExtremeKey( int sort ) const;
+        BSONObj _getExtremeKey(bool doSplitAtLower) const;
 
         /**
          * Determines the appropriate split points for this chunk.
@@ -561,7 +581,7 @@ namespace mongo {
         bool operator()( const ChunkRange &l, const ChunkRange &r ) const {
             return _cmp(l.getMin(), r.getMin());
         }
-        bool operator()( const shared_ptr<ChunkRange> l, const shared_ptr<ChunkRange> r ) const {
+        bool operator()( const boost::shared_ptr<ChunkRange> l, const boost::shared_ptr<ChunkRange> r ) const {
             return operator()(*l, *r);
         }
     private:

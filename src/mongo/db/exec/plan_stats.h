@@ -164,7 +164,7 @@ namespace mongo {
         size_t flaggedInProgress;
 
         // How many entries are in the map after each child?
-        // child 'i' produced children[i].common.advanced DiskLocs, of which mapAfterChild[i] were
+        // child 'i' produced children[i].common.advanced RecordIds, of which mapAfterChild[i] were
         // intersections.
         std::vector<size_t> mapAfterChild;
 
@@ -255,6 +255,8 @@ namespace mongo {
             return specific;
         }
 
+        std::string indexName;
+
         BSONObj keyPattern;
 
         bool isMultiKey;
@@ -264,13 +266,17 @@ namespace mongo {
     };
 
     struct DeleteStats : public SpecificStats {
-        DeleteStats() : docsDeleted(0) { }
+        DeleteStats() : docsDeleted(0), nInvalidateSkips(0) { }
 
         virtual SpecificStats* clone() const {
             return new DeleteStats(*this);
         }
 
         size_t docsDeleted;
+
+        // Invalidated documents can be force-fetched, causing the now invalid RecordId to
+        // be thrown out. The delete stage skips over any results which do not have a RecordId.
+        size_t nInvalidateSkips;
     };
 
     struct DistinctScanStats : public SpecificStats {
@@ -284,6 +290,8 @@ namespace mongo {
 
         // How many keys did we look at while distinct-ing?
         size_t keysExamined;
+
+        std::string indexName;
 
         BSONObj keyPattern;
     };
@@ -446,7 +454,7 @@ namespace mongo {
         size_t dupsTested;
         size_t dupsDropped;
 
-        // How many calls to invalidate(...) actually removed a DiskLoc from our deduping map?
+        // How many calls to invalidate(...) actually removed a RecordId from our deduping map?
         size_t locsForgotten;
 
         // We know how many passed (it's the # of advanced) and therefore how many failed.
@@ -573,14 +581,15 @@ namespace mongo {
 
         long long totalResultsFound() {
             long long totalResultsFound = 0;
-            for (vector<IntervalStats>::iterator it = intervalStats.begin();
+            for (std::vector<IntervalStats>::iterator it = intervalStats.begin();
                 it != intervalStats.end(); ++it) {
                 totalResultsFound += it->numResultsFound;
             }
             return totalResultsFound;
         }
 
-        vector<IntervalStats> intervalStats;
+        std::vector<IntervalStats> intervalStats;
+        std::string indexName;
         BSONObj keyPattern;
     };
 
@@ -588,9 +597,11 @@ namespace mongo {
         UpdateStats()
             : nMatched(0),
               nModified(0),
+              isDocReplacement(false),
               fastmod(false),
               fastmodinsert(false),
-              inserted(false) { }
+              inserted(false),
+              nInvalidateSkips(0) { }
 
         virtual SpecificStats* clone() const {
             return new UpdateStats(*this);
@@ -601,6 +612,9 @@ namespace mongo {
 
         // The number of documents modified by this update.
         size_t nModified;
+
+        // True iff this is a doc-replacement style update, as opposed to a $mod update.
+        bool isDocReplacement;
 
         // A 'fastmod' update is an in-place update that does not have to modify
         // any indices. It's "fast" because the only work needed is changing the bits
@@ -617,6 +631,11 @@ namespace mongo {
 
         // The object that was inserted. This is an empty document if no insert was performed.
         BSONObj objInserted;
+
+        // Invalidated documents can be force-fetched, causing the now invalid RecordId to
+        // be thrown out. The update stage skips over any results which do not have the
+        // RecordId to update.
+        size_t nInvalidateSkips;
     };
 
     struct TextStats : public SpecificStats {
@@ -626,6 +645,8 @@ namespace mongo {
             TextStats* specific = new TextStats(*this);
             return specific;
         }
+
+        std::string indexName;
 
         size_t keysExamined;
 

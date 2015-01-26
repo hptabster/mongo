@@ -56,7 +56,7 @@ namespace mongo {
 
         virtual bool isGod() const;
 
-        virtual string getNS() const;
+        virtual std::string getNS() const;
 
         virtual Client* getClient() const;
 
@@ -71,8 +71,8 @@ namespace mongo {
 
     private:
         std::auto_ptr<RecoveryUnit> _recovery;
-        std::auto_ptr<Locker> _locker;
         Client* const _client; // cached, not owned
+        Locker* const _locker; // cached, not owned
     };
 
 }  // namespace mongo

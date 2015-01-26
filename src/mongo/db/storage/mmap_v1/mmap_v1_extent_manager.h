@@ -34,13 +34,13 @@
 
 #include <boost/filesystem/path.hpp>
 
-#include "mongo/platform/atomic_word.h"
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
-#include "mongo/db/concurrency/lock_mgr_defs.h"
-#include "mongo/db/diskloc.h"
+#include "mongo/db/concurrency/lock_manager_defs.h"
+#include "mongo/db/storage/mmap_v1/diskloc.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
 #include "mongo/db/storage/mmap_v1/record_access_tracker.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/util/concurrency/mutex.h"
 
 namespace mongo {
@@ -188,7 +188,7 @@ namespace mongo {
                                      int size,
                                      bool enforceQuota );
 
-        boost::filesystem::path fileName( int n ) const;
+        boost::filesystem::path _fileName(int n) const;
 
 // -----
 
@@ -196,7 +196,10 @@ namespace mongo {
         const std::string _path; // i.e. "/data/db"
         const bool _directoryPerDB;
         const ResourceId _rid;
-        mutable RecordAccessTracker _recordAccessTracker;
+
+        // This reference points into the MMAPv1 engine and is only valid as long as the
+        // engine is valid. Not owned here.
+        RecordAccessTracker* _recordAccessTracker;
 
         /**
          * Simple wrapper around an array object to allow append-only modification of the array,

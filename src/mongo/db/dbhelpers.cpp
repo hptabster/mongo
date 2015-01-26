@@ -54,7 +54,7 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/db/operation_context_impl.h"
@@ -65,6 +65,14 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::endl;
+    using std::ios_base;
+    using std::ofstream;
+    using std::set;
+    using std::string;
+    using std::stringstream;
 
     using logger::LogComponent;
 
@@ -104,7 +112,7 @@ namespace mongo {
                           const BSONObj &query, 
                           BSONObj& result, 
                           bool requireIndex) {
-        DiskLoc loc = findOne( txn, collection, query, requireIndex );
+        RecordId loc = findOne( txn, collection, query, requireIndex );
         if ( loc.isNull() )
             return false;
         result = collection->docFor(txn, loc);
@@ -114,12 +122,12 @@ namespace mongo {
     /* fetch a single object from collection ns that matches query
        set your db SavedContext first
     */
-    DiskLoc Helpers::findOne(OperationContext* txn,
+    RecordId Helpers::findOne(OperationContext* txn,
                              Collection* collection,
                              const BSONObj &query,
                              bool requireIndex) {
         if ( !collection )
-            return DiskLoc();
+            return RecordId();
 
         CanonicalQuery* cq;
         const WhereCallbackReal whereCallback(txn, collection->ns().db());
@@ -139,11 +147,11 @@ namespace mongo {
 
         auto_ptr<PlanExecutor> exec(rawExec);
         PlanExecutor::ExecState state;
-        DiskLoc loc;
+        RecordId loc;
         if (PlanExecutor::ADVANCED == (state = exec->getNext(NULL, &loc))) {
             return loc;
         }
-        return DiskLoc();
+        return RecordId();
     }
 
     bool Helpers::findById(OperationContext* txn,
@@ -156,7 +164,7 @@ namespace mongo {
 
         invariant(database);
 
-        Collection* collection = database->getCollection( txn, ns );
+        Collection* collection = database->getCollection( ns );
         if ( !collection ) {
             return false;
         }
@@ -177,14 +185,14 @@ namespace mongo {
         BtreeBasedAccessMethod* accessMethod =
             static_cast<BtreeBasedAccessMethod*>(catalog->getIndex( desc ));
 
-        DiskLoc loc = accessMethod->findSingle( txn, query["_id"].wrap() );
+        RecordId loc = accessMethod->findSingle( txn, query["_id"].wrap() );
         if ( loc.isNull() )
             return false;
         result = collection->docFor( txn, loc );
         return true;
     }
 
-    DiskLoc Helpers::findById(OperationContext* txn,
+    RecordId Helpers::findById(OperationContext* txn,
                               Collection* collection,
                               const BSONObj& idquery) {
         verify(collection);
@@ -388,7 +396,7 @@ namespace mongo {
                                                                        InternalPlanner::IXSCAN_FETCH));
                 exec->setYieldPolicy(PlanExecutor::YIELD_AUTO);
 
-                DiskLoc rloc;
+                RecordId rloc;
                 BSONObj obj;
                 PlanExecutor::ExecState state;
                 // This may yield so we cannot touch nsd after this.
@@ -403,7 +411,7 @@ namespace mongo {
                     break;
                 }
 
-                if (PlanExecutor::EXEC_ERROR == state) {
+                if (PlanExecutor::FAILURE == state) {
                     warning(LogComponent::kSharding) << "cursor error while trying to delete "
                               << min << " to " << max
                               << " in " << ns << ": "
@@ -446,6 +454,14 @@ namespace mongo {
                         break;
                     }
                 }
+
+                if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(ns)) {
+                    warning() << "stepped down from primary while deleting chunk; "
+                              << "orphaning data in " << ns
+                              << " in range [" << min << ", " << max << ")";
+                    return numDeleted;
+                }
+
                 if ( callback )
                     callback->goingToDelete( obj );
 
@@ -497,7 +513,7 @@ namespace mongo {
     Status Helpers::getLocsInRange( OperationContext* txn,
                                     const KeyRange& range,
                                     long long maxChunkSizeBytes,
-                                    set<DiskLoc>* locs,
+                                    set<RecordId>* locs,
                                     long long* numDocs,
                                     long long* estChunkSizeBytes )
     {
@@ -556,7 +572,7 @@ namespace mongo {
         // already being queued and will be migrated in the 'transferMods' stage
         exec->setYieldPolicy(PlanExecutor::YIELD_AUTO);
 
-        DiskLoc loc;
+        RecordId loc;
         PlanExecutor::ExecState state;
         while (PlanExecutor::ADVANCED == (state = exec->getNext(NULL, &loc))) {
             if ( !isLargeChunk ) {

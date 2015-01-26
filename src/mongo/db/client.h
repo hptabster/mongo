@@ -36,6 +36,8 @@
 
 #pragma once
 
+#include <boost/noncopyable.hpp>
+#include <boost/scoped_ptr.hpp>
 #include <boost/thread/thread.hpp>
 
 #include "mongo/db/catalog/database.h"
@@ -46,17 +48,17 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/util/concurrency/spin_lock.h"
 #include "mongo/util/concurrency/threadlocal.h"
 #include "mongo/util/paths.h"
 
 namespace mongo {
 
     class AuthenticationInfo;
-    class Database;
     class CurOp;
-    class Client;
     class Collection;
     class AbstractMessagingPort;
+    class Locker;
 
     TSP_DECLARE(Client, currentClient)
 
@@ -149,6 +151,7 @@ namespace mongo {
 
         const Timer _timer;
         OperationContext* const _txn;
+        const ScopedTransaction _transaction;
         const AutoGetDb _db;
         const Lock::CollectionLock _collLock;
 
@@ -197,13 +200,27 @@ namespace mongo {
 
         std::string clientAddress(bool includePort=false) const;
         CurOp* curop() const { return _curOp; }
-        const StringData desc() const { return _desc; }
+        const std::string& desc() const { return _desc; }
         void setLastOp( OpTime op ) { _lastOp = op; }
         OpTime getLastOp() const { return _lastOp; }
+
+        // Return a reference to the Locker for this client. Client retains ownership.
+        Locker* getLocker() const { return _locker.get(); }
 
         /* report what the last operation was.  used by getlasterror */
         void appendLastOp( BSONObjBuilder& b ) const;
         void reportState(BSONObjBuilder& builder);
+
+        // Ensures stability of the client's OperationContext. When the client is locked,
+        // the OperationContext will not disappear.
+        void lock() { _lock.lock(); }
+        void unlock() { _lock.unlock(); }
+
+        // Changes the currently active operation context on this client. There can only be one
+        // active OperationContext at a time.
+        void setOperationContext(OperationContext* txn);
+        void resetOperationContext();
+        const OperationContext* getOperationContext() const { return _txn; }
 
         // TODO(spencer): SERVER-10228 SERVER-14779 Remove this/move it fully into OperationContext.
         bool isGod() const { return _god; } /* this is for map/reduce writes */
@@ -212,6 +229,7 @@ namespace mongo {
         void setRemoteID(const OID& rid) { _remoteId = rid;  } // Only used for master/slave
         OID getRemoteID() const { return _remoteId; } // Only used for master/slave
         ConnectionId getConnectionId() const { return _connectionId; }
+        bool isFromUserConnection() const { return _connectionId > 0; }
 
     private:
         Client(const std::string& desc, AbstractMessagingPort *p = 0);
@@ -226,11 +244,21 @@ namespace mongo {
         // > 0 for things "conn", 0 otherwise
         const ConnectionId _connectionId;
 
+        // Protects the contents of the Client (such as changing the OperationContext, etc)
+        mutable SpinLock _lock;
+
         // Whether this client is running as DBDirectClient
         bool _god;
 
+        // If != NULL, then contains the currently active OperationContext
+        OperationContext* _txn;
+
         // Changes, based on what operation is running. Some of this should be in OperationContext.
         CurOp* _curOp;
+
+        // By having Client, rather than the OperationContext, own the Locker,  setup cost such as
+        // allocating OS resources can be amortized over multiple operations.
+        boost::scoped_ptr<Locker> const _locker;
 
         // Used by replication
         OpTime _lastOp;
@@ -286,8 +314,6 @@ namespace mongo {
             friend class CurOp;
             void _finishInit();
             void checkNotStale() const;
-            void checkNsAccess( bool doauth );
-            void checkNsAccess( bool doauth, int lockState );
             Client * const _client;
             bool _justCreated;
             bool _doVersion;
@@ -306,7 +332,7 @@ namespace mongo {
             Database* db() const { return _c.db(); }
 
             Collection* getCollection() const {
-                return _c.db()->getCollection(_txn, _nss.ns());
+                return _c.db()->getCollection(_nss.ns());
             }
 
             Context& ctx() { return _c; }

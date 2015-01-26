@@ -39,15 +39,51 @@ namespace mongo {
         // Already in our desired state.
         if (member->state == WorkingSetMember::OWNED_OBJ) { return true; }
 
-        // We can't do anything without a DiskLoc.
+        // We can't do anything without a RecordId.
         if (!member->hasLoc()) { return false; }
 
         // Do the fetch, invalidate the DL.
         member->obj = collection->docFor(txn, member->loc).getOwned();
 
         member->state = WorkingSetMember::OWNED_OBJ;
-        member->loc = DiskLoc();
+        member->loc = RecordId();
         return true;
+    }
+
+    // static
+    void WorkingSetCommon::forceFetchAllLocs(OperationContext* txn,
+                                             WorkingSet* workingSet,
+                                             const Collection* collection) {
+        invariant(collection);
+
+        for (WorkingSet::iterator it = workingSet->begin(); it != workingSet->end(); ++it) {
+            if (WorkingSetMember::LOC_AND_OWNED_OBJ == it->state) {
+                // Already in our desired state.
+                continue;
+            }
+
+            // We can't do anything without a RecordId.
+            if (!it->hasLoc()) {
+                continue;
+            }
+
+            // Do the fetch. It is possible in normal operation for the object keyed by this
+            // member's RecordId to no longer be present in the collection. Consider the case of a
+            // delete operation with three possible plans. During the course of plan selection,
+            // each candidate plan creates a working set member for document D. Then plan P wins,
+            // and starts to delete the matching documents, including D. The working set members for
+            // D created by the two rejected are still present, but their RecordIds no longer refer
+            // to a valid document.
+            BSONObj fetchedDoc;
+            if (!collection->findDoc(txn, it->loc, &fetchedDoc)) {
+                // Leftover working set members pointing to old docs can be safely freed.
+                it.free();
+                continue;
+            }
+
+            it->obj = fetchedDoc.getOwned();
+            it->state = WorkingSetMember::LOC_AND_OWNED_OBJ;
+        }
     }
 
     // static
@@ -59,11 +95,11 @@ namespace mongo {
 
         // If the diskloc was invalidated during fetch, then a "forced fetch" already converted this
         // WSM into the owned object state. In this case, there is nothing more to do here.
-        if (WorkingSetMember::OWNED_OBJ == member->state) {
+        if (member->hasOwnedObj()) {
             return;
         }
 
-        // We should have a DiskLoc but need to retrieve the obj. Get the obj now and reset all WSM
+        // We should have a RecordId but need to retrieve the obj. Get the obj now and reset all WSM
         // state appropriately.
         invariant(member->hasLoc());
         member->obj = collection->docFor(txn, member->loc);

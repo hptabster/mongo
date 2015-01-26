@@ -30,6 +30,8 @@
 
 #include "mongo/s/config_upgrade_helpers.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/client/connpool.h"
 #include "mongo/db/field_parser.h"
 #include "mongo/db/namespace_string.h"
@@ -41,6 +43,11 @@
 #include "mongo/util/timer.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::string;
 
     using mongoutils::str::stream;
 
@@ -345,7 +352,7 @@ namespace mongo {
         BSONObjBuilder unsetObj;
         unsetObj.append(VersionType::upgradeId(), 1);
         unsetObj.append(VersionType::upgradeState(), 1);
-        unsetObj.append("version", 1); // remove deprecated field, no longer supported >= v2.8.
+        unsetObj.append("version", 1); // remove deprecated field, no longer supported >= v3.0.
 
         Status result = clusterUpdate(VersionType::ConfigNS,
                 BSON("_id" << 1 << VersionType::currentVersion(currentVersion)),

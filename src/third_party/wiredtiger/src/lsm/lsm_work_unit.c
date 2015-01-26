@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -69,46 +70,67 @@ int
 __wt_lsm_get_chunk_to_flush(WT_SESSION_IMPL *session,
     WT_LSM_TREE *lsm_tree, int force, WT_LSM_CHUNK **chunkp)
 {
-	u_int i, end;
+	WT_DECL_RET;
+	WT_LSM_CHUNK *chunk, *evict_chunk, *flush_chunk;
+	u_int i;
 
 	*chunkp = NULL;
+	chunk = evict_chunk = flush_chunk = NULL;
 
 	WT_ASSERT(session, lsm_tree->queue_ref > 0);
 	WT_RET(__wt_lsm_tree_readlock(session, lsm_tree));
-	if (!F_ISSET(lsm_tree, WT_LSM_TREE_ACTIVE))
+	if (!F_ISSET(lsm_tree, WT_LSM_TREE_ACTIVE) ||
+	    lsm_tree->nchunks == 0)
 		return (__wt_lsm_tree_readunlock(session, lsm_tree));
 
-	/*
-	 * Normally we don't want to force out the last chunk.  But if we're
-	 * doing a forced flush, likely from a compact call, then we want
-	 * to include the final chunk.
-	 */
-	end = force ? lsm_tree->nchunks : lsm_tree->nchunks - 1;
-	for (i = 0; i < end; i++) {
-		if (!F_ISSET(lsm_tree->chunk[i], WT_LSM_CHUNK_ONDISK) ||
-		    (*chunkp == NULL &&
-		    !F_ISSET(lsm_tree->chunk[i], WT_LSM_CHUNK_STABLE) &&
-		    !lsm_tree->chunk[i]->evicted)) {
-			(void)WT_ATOMIC_ADD4(lsm_tree->chunk[i]->refcnt, 1);
-			WT_RET(__wt_verbose(session, WT_VERB_LSM,
-			    "Flush%s: return chunk %u of %u: %s",
-			    force ? " w/ force" : "", i, end - 1,
-			    lsm_tree->chunk[i]->uri));
-			*chunkp = lsm_tree->chunk[i];
+	/* Search for a chunk to evict and/or a chunk to flush. */
+	for (i = 0; i < lsm_tree->nchunks; i++) {
+		chunk = lsm_tree->chunk[i];
+		if (F_ISSET(chunk, WT_LSM_CHUNK_ONDISK)) {
 			/*
-			 * Discards are opportunistic, flip a coin to decide
-			 * whether to try, but take the first real flush we
-			 * find.
+			 * Normally we don't want to force out the last chunk.
+			 * But if we're doing a forced flush on behalf of a
+			 * compact, then we want to include the final chunk.
 			 */
-			if (!F_ISSET(lsm_tree->chunk[i], WT_LSM_CHUNK_ONDISK) ||
-			    __wt_random(session->rnd) & 1)
-				break;
-		}
+			if (evict_chunk == NULL &&
+			    !chunk->evicted &&
+			    !F_ISSET(chunk, WT_LSM_CHUNK_STABLE))
+				evict_chunk = chunk;
+		} else if (flush_chunk == NULL &&
+		    chunk->switch_txn != 0 &&
+		    (force || i < lsm_tree->nchunks - 1))
+			flush_chunk = chunk;
 	}
 
+	/*
+	 * Don't be overly zealous about pushing old chunks from cache.
+	 * Attempting too many drops can interfere with checkpoints.
+	 *
+	 * If retrying a discard push an additional work unit so there are
+	 * enough to trigger checkpoints.
+	 */
+	if (evict_chunk != NULL && flush_chunk != NULL) {
+		chunk = (__wt_random(session->rnd) & 1) ?
+		    evict_chunk : flush_chunk;
+		WT_ERR(__wt_lsm_manager_push_entry(
+		    session, WT_LSM_WORK_FLUSH, 0, lsm_tree));
+	} else
+		chunk = (evict_chunk != NULL) ? evict_chunk : flush_chunk;
+
+	if (chunk != NULL) {
+		(void)WT_ATOMIC_ADD4(chunk->refcnt, 1);
+		WT_ERR(__wt_verbose(session, WT_VERB_LSM,
+		    "Flush%s: return chunk %u of %u: %s",
+		    force ? " w/ force" : "",
+		    i, lsm_tree->nchunks, chunk->uri));
+	}
+
+err:	if (ret != 0 && chunk != NULL)
+		(void)WT_ATOMIC_SUB4(chunk->refcnt, 1);
 	WT_RET(__wt_lsm_tree_readunlock(session, lsm_tree));
 
-	return (0);
+	*chunkp = chunk;
+	return (ret);
 }
 
 /*

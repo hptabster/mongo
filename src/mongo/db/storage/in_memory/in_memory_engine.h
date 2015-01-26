@@ -65,6 +65,8 @@ namespace mongo {
 
         virtual bool supportsDocLocking() const { return false; }
 
+        virtual bool supportsDirectoryPerDB() const { return false; }
+
         /**
          * This is sort of strange since "durable" has no meaning...
          */
@@ -78,7 +80,11 @@ namespace mongo {
             return Status::OK();
         }
 
-        virtual void cleanShutdown(OperationContext* txn) {};
+        virtual void cleanShutdown() {};
+
+        virtual bool hasIdent(OperationContext* opCtx, const StringData& ident) const {
+            return _dataMap.find(ident) != _dataMap.end();;
+        }
 
         std::vector<std::string> getAllIdents( OperationContext* opCtx ) const;
     private:

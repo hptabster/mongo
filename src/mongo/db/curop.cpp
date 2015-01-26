@@ -26,6 +26,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/curop.h"
@@ -37,9 +39,11 @@
 #include "mongo/db/global_environment_experiment.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/util/fail_point_service.h"
-
+#include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::string;
 
     // Enabling the maxTimeAlwaysTimeOut fail point will cause any query or command run with a valid
     // non-zero max time to fail immediately.  Any getmore operation on a cursor already created
@@ -87,6 +91,7 @@ namespace mongo {
         _reset();
         _start = 0;
         _opNum = _nextOpNum.fetchAndAdd(1);
+        _ns = "";
         _debug.reset();
         _query.reset();
         _active = true; // this should be last for ui clarity
@@ -107,7 +112,7 @@ namespace mongo {
                                      int secondsBetween) {
         if ( progressMeterTotal ) {
             if ( _progressMeter.isActive() ) {
-                cout << "about to assert, old _message: " << _message << " new message:" << msg << endl;
+                error() << "old _message: " << _message << " new message:" << msg;
                 verify( ! _progressMeter.isActive() );
             }
             _progressMeter.reset( progressMeterTotal , secondsBetween );
@@ -206,8 +211,7 @@ namespace mongo {
         if( killPending() )
             builder->append("killPending", true);
 
-        if (!getGlobalEnvironment()->getGlobalStorageEngine()->supportsDocLocking())
-            builder->append( "numYields" , _numYields );
+        builder->append( "numYields" , _numYields );
     }
 
     BSONObj CurOp::description() {
@@ -286,10 +290,13 @@ namespace mongo {
     static Counter64 idhackCounter;
     static Counter64 scanAndOrderCounter;
     static Counter64 fastmodCounter;
+    static Counter64 writeConflictsCounter;
 
     static ServerStatusMetricField<Counter64> displayIdhack( "operation.idhack", &idhackCounter );
     static ServerStatusMetricField<Counter64> displayScanAndOrder( "operation.scanAndOrder", &scanAndOrderCounter );
     static ServerStatusMetricField<Counter64> displayFastMod( "operation.fastmod", &fastmodCounter );
+    static ServerStatusMetricField<Counter64> displayWriteConflicts( "operation.writeConflicts",
+                                                                     &writeConflictsCounter );
 
     void OpDebug::recordStats() {
         if ( nreturned > 0 )
@@ -311,6 +318,8 @@ namespace mongo {
             scanAndOrderCounter.increment();
         if ( fastmod )
             fastmodCounter.increment();
+        if ( writeConflicts )
+            writeConflictsCounter.increment( writeConflicts );
     }
 
     CurOp::MaxTimeTracker::MaxTimeTracker() {

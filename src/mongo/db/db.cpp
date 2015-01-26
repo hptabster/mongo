@@ -35,7 +35,9 @@
 #include <boost/thread/thread.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <fstream>
+#include <iostream>
 #include <limits>
+#include <signal.h>
 #include <string>
 
 #include "mongo/base/init.h"
@@ -71,11 +73,12 @@
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/range_deleter_service.h"
+#include "mongo/db/repair_database.h"
 #include "mongo/db/repl/network_interface_impl.h"
-#include "mongo/db/repl/repl_coordinator_external_state_impl.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
-#include "mongo/db/repl/repl_coordinator_impl.h"
 #include "mongo/db/repl/repl_settings.h"
+#include "mongo/db/repl/replication_coordinator_external_state_impl.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_impl.h"
 #include "mongo/db/repl/topology_coordinator_impl.h"
 #include "mongo/db/restapi.h"
 #include "mongo/db/server_parameters.h"
@@ -114,6 +117,15 @@
 #endif
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::cout;
+    using std::cerr;
+    using std::endl;
+    using std::list;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     using logger::LogComponent;
 
@@ -181,7 +193,7 @@ namespace mongo {
         }
 
         virtual void process( Message& m , AbstractMessagingPort* port , LastError * le) {
-            boost::scoped_ptr<OperationContext> txn(new OperationContextImpl());
+            OperationContextImpl txn;
             while ( true ) {
                 if ( inShutdown() ) {
                     log() << "got request after shutdown()" << endl;
@@ -191,7 +203,7 @@ namespace mongo {
                 lastError.startRequest( m , le );
 
                 DbResponse dbresponse;
-                assembleResponse( txn.get(), m, dbresponse, port->remote() );
+                assembleResponse(&txn, m, dbresponse, port->remote());
 
                 if ( dbresponse.response ) {
                     port->reply(m, *dbresponse.response, dbresponse.responseTo);
@@ -257,12 +269,12 @@ namespace mongo {
         AutoGetOrCreateDb autoDb(&txn, "local", mongo::MODE_X);
         Database* db = autoDb.getDb();
         const std::string ns = "local.startup_log";
-        Collection* collection = db->getCollection(&txn, ns);
+        Collection* collection = db->getCollection(ns);
         WriteUnitOfWork wunit(&txn);
         if (!collection) {
             BSONObj options = BSON("capped" << true << "size" << 10 * 1024 * 1024);
             uassertStatusOK(userCreateNS(&txn, db, ns, options, true));
-            collection = db->getCollection(&txn, ns);
+            collection = db->getCollection(ns);
         }
         invariant(collection);
         uassertStatusOK(collection->insertDocument(&txn, o, false).getStatus());
@@ -285,7 +297,7 @@ namespace mongo {
             if ( ns.isSystem() )
                 continue;
 
-            Collection* coll = db->getCollection( txn, collectionName );
+            Collection* coll = db->getCollection( collectionName );
             if ( !coll )
                 continue;
 
@@ -338,7 +350,7 @@ namespace mongo {
                 const string dbName = *i;
                 LOG(1) << "    Repairing database: " << dbName << endl;
 
-                fassert(18506, storageEngine->repairDatabase(&txn, dbName));
+                fassert(18506, repairDatabase(&txn, storageEngine, dbName));
             }
         }
 
@@ -373,7 +385,7 @@ namespace mongo {
             // Major versions match, check indexes
             const string systemIndexes = db->name() + ".system.indexes";
 
-            Collection* coll = db->getCollection( &txn, systemIndexes );
+            Collection* coll = db->getCollection( systemIndexes );
             auto_ptr<PlanExecutor> exec(
                 InternalPlanner::collectionScan(&txn, systemIndexes, coll));
 
@@ -442,7 +454,7 @@ namespace mongo {
         }
 
         DEV log(LogComponent::kControl) << "_DEBUG build (which is slower)" << endl;
-        logMongodStartupWarnings();
+        logMongodStartupWarnings(storageGlobalParams);
 
 #if defined(_WIN32)
         printTargetMinOS();
@@ -731,7 +743,7 @@ static void startupConfigActions(const std::vector<std::string>& args) {
         string procPath;
         if (!failed){
             try {
-                ifstream f (name.c_str());
+                std::ifstream f (name.c_str());
                 f >> pid;
                 procPath = (str::stream() << "/proc/" << pid);
                 if (!boost::filesystem::exists(procPath))

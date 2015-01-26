@@ -32,6 +32,8 @@
 
 #include "mongo/db/index/btree_based_bulk_access_method.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/curop.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage_options.h"
@@ -39,6 +41,9 @@
 #include "mongo/util/progress_meter.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::set;
 
     //
     // Comparison for external sorter interface
@@ -56,7 +61,7 @@ namespace mongo {
             invariant(version == 1 || version == 0);
         }
 
-        typedef std::pair<BSONObj, DiskLoc> Data;
+        typedef std::pair<BSONObj, RecordId> Data;
 
         int operator() (const Data& l, const Data& r) const {
             int x = (_version == 1
@@ -91,7 +96,7 @@ namespace mongo {
 
     Status BtreeBasedBulkAccessMethod::insert(OperationContext* txn,
                                               const BSONObj& obj,
-                                              const DiskLoc& loc,
+                                              const RecordId& loc,
                                               const InsertDeleteOptions& options,
                                               int64_t* numInserted) {
         BSONObjSet keys;
@@ -114,18 +119,17 @@ namespace mongo {
         return Status::OK();
     }
 
-    Status BtreeBasedBulkAccessMethod::commit(set<DiskLoc>* dupsToDrop,
+    Status BtreeBasedBulkAccessMethod::commit(set<RecordId>* dupsToDrop,
                                               bool mayInterrupt,
                                               bool dupsAllowed) {
         Timer timer;
 
         scoped_ptr<BSONObjExternalSorter::Iterator> i(_sorter->done());
 
-        // verifies that pm and op refer to the same ProgressMeter
-        ProgressMeter& pm = _txn->getCurOp()->setMessage("Index Bulk Build: (2/3) btree bottom up",
-                                                         "Index: (2/3) BTree Bottom Up Progress",
-                                                         _keysInserted,
-                                                         10);
+        ProgressMeterHolder pm(*_txn->setMessage("Index Bulk Build: (2/3) btree bottom up",
+                                                 "Index: (2/3) BTree Bottom Up Progress",
+                                                 _keysInserted,
+                                                 10));
 
         scoped_ptr<SortedDataBuilderInterface> builder;
 
@@ -146,22 +150,30 @@ namespace mongo {
             }
 
             WriteUnitOfWork wunit(_txn);
+            // Improve performance in the btree-building phase by disabling rollback tracking.
+            // This avoids copying all the written bytes to a buffer that is only used to roll back.
+            // Note that this is safe to do, as this entire index-build-in-progress will be cleaned
+            // up by the index system.
+            _txn->recoveryUnit()->setRollbackWritesDisabled();
 
             // Get the next datum and add it to the builder.
             BSONObjExternalSorter::Data d = i->next();
             Status status = builder->addKey(d.first, d.second);
 
             if (!status.isOK()) {
-                if (ErrorCodes::DuplicateKey != status.code()) {
-                    return status;
+                // Overlong key that's OK to skip?
+                if (status.code() == ErrorCodes::KeyTooLong && _real->ignoreKeyTooLong(_txn)) {
+                    continue;
                 }
 
-                invariant(!dupsAllowed); // shouldn't be getting DupKey errors if dupsAllowed.
+                // Check if this is a duplicate that's OK to skip
+                if (status.code() == ErrorCodes::DuplicateKey) {
+                    invariant(!dupsAllowed); // shouldn't be getting DupKey errors if dupsAllowed.
 
-                // If we're here it's a duplicate key.
-                if (dupsToDrop) {
-                    dupsToDrop->insert(d.second);
-                    continue;
+                    if (dupsToDrop) {
+                        dupsToDrop->insert(d.second);
+                        continue;
+                    }
                 }
 
                 return status;
@@ -187,4 +199,4 @@ namespace mongo {
 }  // namespace mongo
 
 #include "mongo/db/sorter/sorter.cpp"
-MONGO_CREATE_SORTER(mongo::BSONObj, mongo::DiskLoc, mongo::BtreeExternalSortComparison);
+MONGO_CREATE_SORTER(mongo::BSONObj, mongo::RecordId, mongo::BtreeExternalSortComparison);

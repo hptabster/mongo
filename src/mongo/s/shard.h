@@ -30,7 +30,9 @@
 
 #pragma once
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
+
+#include <boost/shared_ptr.hpp>
 
 #include "mongo/client/connpool.h"
 
@@ -46,29 +48,29 @@ namespace mongo {
     class Shard {
     public:
         Shard()
-            : _name("") , _addr("") , _maxSize(0) , _isDraining( false ) {
+            : _name("") , _addr("") , _maxSizeMB(0) , _isDraining(false) {
         }
 
         Shard(const std::string& name,
               const std::string& addr,
-              long long maxSize,
-              bool isDraining,
-              const BSONArray& tags);
+              long long maxSizeMB,
+              bool isDraining);
 
         Shard(const std::string& name,
               const ConnectionString& connStr,
-              long long maxSize,
-              bool isDraining,
-              const std::set<std::string>& tags);
+              long long maxSizeMB,
+              bool isDraining);
 
         Shard( const std::string& ident ) {
             reset( ident );
         }
 
-        Shard( const Shard& other )
-            : _name( other._name ) , _addr( other._addr ) , _cs( other._cs ) , 
-              _maxSize( other._maxSize ) , _isDraining( other._isDraining ),
-              _tags( other._tags ) {
+        Shard(const Shard& other):
+            _name(other._name),
+            _addr(other._addr),
+            _cs(other._cs),
+            _maxSizeMB(other._maxSizeMB),
+            _isDraining(other._isDraining) {
         }
 
         static Shard make( const std::string& ident ) {
@@ -96,8 +98,8 @@ namespace mongo {
             return _addr;
         }
 
-        long long getMaxSize() const {
-            return _maxSize;
+        long long getMaxSizeMB() const {
+            return _maxSizeMB;
         }
 
         bool isDraining() const {
@@ -142,16 +144,27 @@ namespace mongo {
         }
         BSONObj runCommand( const std::string& db , const BSONObj& cmd ) const ;
 
+        /**
+         * Returns the version string from the shard based from the serverStatus command result.
+         */
+        static std::string getShardMongoVersion(const std::string& shardHost);
+
+        /**
+         * Returns the total data size in bytes the shard is currently using.
+         */
+        static long long getShardDataSizeBytes(const std::string& shardHost);
+
+        /**
+         * Returns metadata and stats for this shard.
+         */
         ShardStatus getStatus() const ;
-        
+
         /**
          * mostly for replica set
          * retursn true if node is the shard 
          * of if the replica set contains node
          */
         bool containsNode( const std::string& node ) const;
-
-        const std::set<std::string>& tags() const { return _tags; }
 
         static void getAllShards( std::vector<Shard>& all );
         static void printShardInfo( std::ostream& out );
@@ -180,16 +193,15 @@ namespace mongo {
         std::string    _name;
         std::string    _addr;
         ConnectionString _cs;
-        long long _maxSize;    // in MBytes, 0 is unlimited
+        long long _maxSizeMB;    // in MBytes, 0 is unlimited
         bool      _isDraining; // shard is currently being removed
-        std::set<std::string> _tags;
     };
-    typedef shared_ptr<Shard> ShardPtr;
+    typedef boost::shared_ptr<Shard> ShardPtr;
 
     class ShardStatus {
     public:
 
-        ShardStatus( const Shard& shard , const BSONObj& obj );
+        ShardStatus(const Shard& shard, long long dataSizeBytes, const std::string& version);
 
         friend std::ostream& operator << (std::ostream& out, const ShardStatus& s) {
             out << s.toString();
@@ -198,23 +210,22 @@ namespace mongo {
 
         std::string toString() const {
             std::stringstream ss;
-            ss << "shard: " << _shard 
-               << " mapped: " << _mapped 
-               << " writeLock: " << _writeLock
+            ss << "shard: " << _shard
+               << " dataSizeBytes: " << _dataSizeBytes
                << " version: " << _mongoVersion;
             return ss.str();
         }
 
         bool operator<( const ShardStatus& other ) const {
-            return _mapped < other._mapped;
+            return _dataSizeBytes < other._dataSizeBytes;
         }
 
         Shard shard() const {
             return _shard;
         }
 
-        long long mapped() const {
-            return _mapped;
+        long long dataSizeBytes() const {
+            return _dataSizeBytes;
         }
 
         std::string mongoVersion() const {
@@ -223,13 +234,12 @@ namespace mongo {
 
     private:
         Shard _shard;
-        long long _mapped;
-        double _writeLock;
+        long long _dataSizeBytes;
         std::string _mongoVersion;
     };
 
     class ChunkManager;
-    typedef shared_ptr<const ChunkManager> ChunkManagerPtr;
+    typedef boost::shared_ptr<const ChunkManager> ChunkManagerPtr;
 
     class ShardConnection : public AScopedConnection {
     public:

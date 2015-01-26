@@ -28,11 +28,13 @@
 *    then also delete it in the license file.
 */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/s/version_manager.h"
 
 namespace mongo {
+
+    using std::string;
 
     // Global version manager
     VersionManager versionManager;

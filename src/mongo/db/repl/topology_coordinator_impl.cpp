@@ -51,6 +51,8 @@
 namespace mongo {
 namespace repl {
 
+    using std::vector;
+
     const Seconds TopologyCoordinatorImpl::LastVote::leaseTime = Seconds(30);
 
 namespace {
@@ -138,7 +140,7 @@ namespace {
     }
 
     void TopologyCoordinatorImpl::setForceSyncSourceIndex(int index) {
-        invariant(_forceSyncSourceIndex < _currentConfig.getNumMembers());
+        invariant(_forceSyncSourceIndex < _rsConfig.getNumMembers());
         _forceSyncSourceIndex = index;
     }
 
@@ -157,8 +159,8 @@ namespace {
 
         // if we have a target we've requested to sync from, use it
         if (_forceSyncSourceIndex != -1) {
-            invariant(_forceSyncSourceIndex < _currentConfig.getNumMembers());
-            _syncSource = _currentConfig.getMemberAt(_forceSyncSourceIndex).getHostAndPort();
+            invariant(_forceSyncSourceIndex < _rsConfig.getNumMembers());
+            _syncSource = _rsConfig.getMemberAt(_forceSyncSourceIndex).getHostAndPort();
             _forceSyncSourceIndex = -1;
             std::string msg(str::stream() << "syncing from: "
                                           << _syncSource.toString() << " by request");
@@ -178,15 +180,21 @@ namespace {
         }
 
         // If we are only allowed to sync from the primary, set that
-        if (!_currentConfig.isChainingAllowed()) {
+        if (!_rsConfig.isChainingAllowed()) {
             if (_currentPrimaryIndex == -1) {
                 LOG(1) << "Cannot select sync source because chaining is"
                           " not allowed and primary is unknown/down";
                 _syncSource = HostAndPort();
                 return _syncSource;
             }
+            else if (_memberIsBlacklisted(*_currentPrimaryMember(), now)) {
+                LOG(1) << "Cannot select sync source because chaining is"
+                    "not allowed and primary is not currently accepting our updates";
+                _syncSource = HostAndPort();
+                return _syncSource;
+            }
             else {
-                _syncSource = _currentConfig.getMemberAt(_currentPrimaryIndex).getHostAndPort();
+                _syncSource = _rsConfig.getMemberAt(_currentPrimaryIndex).getHostAndPort();
                 std::string msg(str::stream() << "syncing from primary: "
                                               << _syncSource.toString());
                 log() << msg << rsLog;
@@ -241,7 +249,7 @@ namespace {
                     continue;
                 }
 
-                const MemberConfig& itMemberConfig(_currentConfig.getMemberAt(itIndex));
+                const MemberConfig& itMemberConfig(_rsConfig.getMemberAt(itIndex));
 
                 // Candidate must build indexes if we build indexes, to be considered.
                 if (_selfConfig().shouldBuildIndexes()) {
@@ -264,7 +272,7 @@ namespace {
                 // omit nodes that are more latent than anything we've already considered
                 if ((closestIndex != -1) &&
                     (_getPing(itMemberConfig.getHostAndPort())
-                     > _getPing(_currentConfig.getMemberAt(closestIndex).getHostAndPort()))) {
+                     > _getPing(_rsConfig.getMemberAt(closestIndex).getHostAndPort()))) {
                     continue;
                 }
 
@@ -275,24 +283,10 @@ namespace {
                     }
                 }
 
-                std::map<HostAndPort,Date_t>::iterator vetoed = 
-                    _syncSourceBlacklist.find(itMemberConfig.getHostAndPort());
-                if (vetoed != _syncSourceBlacklist.end()) {
-                    // Do some veto housekeeping
-
-                    // if this was on the veto list, check if it was vetoed in the last "while".
-                    // if it was, skip.
-                    if (vetoed->second > now) {
-                        if (now % 5 == 0) {
-                            log() << "replSet not trying to sync from " << vetoed->first
-                                  << ", it is vetoed for " << (vetoed->second - now)/1000
-                                  << " more seconds";
-                        }
-                        continue;
-                    }
-                    _syncSourceBlacklist.erase(vetoed);
-                    // fall through, this is a valid candidate now
+                if (_memberIsBlacklisted(itMemberConfig, now)) {
+                    continue;
                 }
+
                 // This candidate has passed all tests; set 'closestIndex'
                 closestIndex = itIndex;
             }
@@ -311,11 +305,25 @@ namespace {
             _syncSource = HostAndPort();
             return _syncSource;
         }
-        _syncSource = _currentConfig.getMemberAt(closestIndex).getHostAndPort();
+        _syncSource = _rsConfig.getMemberAt(closestIndex).getHostAndPort();
         std::string msg(str::stream() << "syncing from: " << _syncSource.toString(), 0);
         log() << msg << rsLog;
         setMyHeartbeatMessage(now, msg);
         return _syncSource;
+    }
+
+    bool TopologyCoordinatorImpl::_memberIsBlacklisted(const MemberConfig& memberConfig, Date_t now)
+    {
+        std::map<HostAndPort,Date_t>::iterator blacklisted =
+            _syncSourceBlacklist.find(memberConfig.getHostAndPort());
+        if (blacklisted != _syncSourceBlacklist.end()) {
+            if (blacklisted->second > now) {
+                return true;
+            }
+            // Do some veto housekeeping; side-effect!
+            _syncSourceBlacklist.erase(blacklisted);
+        }
+        return false;
     }
 
     void TopologyCoordinatorImpl::blacklistSyncSource(const HostAndPort& host, Date_t until) {
@@ -355,17 +363,17 @@ namespace {
             return;
         }
 
-        ReplicaSetConfig::MemberIterator targetConfig = _currentConfig.membersEnd();
+        ReplicaSetConfig::MemberIterator targetConfig = _rsConfig.membersEnd();
         int targetIndex = 0;
-        for (ReplicaSetConfig::MemberIterator it = _currentConfig.membersBegin();
-                it != _currentConfig.membersEnd(); ++it) {
+        for (ReplicaSetConfig::MemberIterator it = _rsConfig.membersBegin();
+                it != _rsConfig.membersEnd(); ++it) {
             if (it->getHostAndPort() == target) {
                 targetConfig = it;
                 break;
             }
             ++targetIndex;
         }
-        if (targetConfig == _currentConfig.membersEnd()) {
+        if (targetConfig == _rsConfig.membersEnd()) {
             *result = Status(ErrorCodes::NodeNotFound,
                              str::stream() << "Could not find member \"" << target.toString() <<
                                      "\" in replica set");
@@ -433,10 +441,10 @@ namespace {
             return;
         }
 
-        if (args.setName != _currentConfig.getReplSetName()) {
+        if (args.setName != _rsConfig.getReplSetName()) {
             *result = Status(ErrorCodes::ReplicaSetNotFound,
                              str::stream() << "Wrong repl set name. Expected: " <<
-                                     _currentConfig.getReplSetName() <<
+                                     _rsConfig.getReplSetName() <<
                                      ", received: " << args.setName);
             return;
         }
@@ -449,7 +457,7 @@ namespace {
         }
 
         bool weAreFresher = false;
-        if( _currentConfig.getConfigVersion() > args.cfgver ) {
+        if( _rsConfig.getConfigVersion() > args.cfgver ) {
             log() << "replSet member " << args.who << " is not yet aware its cfg version "
                   << args.cfgver << " is stale";
             response->append("info", "config version stale");
@@ -463,7 +471,7 @@ namespace {
         response->append("fresher", weAreFresher);
 
         std::string errmsg;
-        bool doVeto = _shouldVetoMember(args.id, now, lastOpApplied, &errmsg);
+        bool doVeto = _shouldVetoMember(args, now, lastOpApplied, &errmsg);
         response->append("veto", doVeto);
         if (doVeto) {
             response->append("errmsg", errmsg);
@@ -471,10 +479,18 @@ namespace {
         *result = Status::OK();
     }
 
-    bool TopologyCoordinatorImpl::_shouldVetoMember(unsigned int memberID,
-                                                    const Date_t& now,
-                                                    const OpTime& lastOpApplied,
-                                                    std::string* errmsg) const {
+    bool TopologyCoordinatorImpl::_shouldVetoMember(
+            const ReplicationCoordinator::ReplSetFreshArgs& args,
+            const Date_t& now,
+            const OpTime& lastOpApplied,
+            std::string* errmsg) const {
+
+        if (_rsConfig.getConfigVersion() < args.cfgver) {
+            // We are stale; do not veto.
+            return false;
+        }
+
+        const unsigned int memberID = args.id;
         const int hopefulIndex = _getMemberIndex(memberID);
         invariant(hopefulIndex != _selfIndex);
         const int highestPriorityIndex = _getHighestPriorityElectableIndex(now, lastOpApplied);
@@ -488,7 +504,7 @@ namespace {
             // hbinfo is not updated for ourself, so if we are primary we have to check the
             // primary's last optime separately
             *errmsg = str::stream() << "I am already primary, " <<
-                _currentConfig.getMemberAt(hopefulIndex).getHostAndPort().toString() << 
+                _rsConfig.getMemberAt(hopefulIndex).getHostAndPort().toString() <<
                 " can try again once I've stepped down";
             return true;
         }
@@ -499,16 +515,16 @@ namespace {
                         _hbdata[hopefulIndex].getOpTime())) {
             // other members might be aware of more up-to-date nodes
             *errmsg = str::stream() <<
-                _currentConfig.getMemberAt(hopefulIndex).getHostAndPort().toString() <<
+                _rsConfig.getMemberAt(hopefulIndex).getHostAndPort().toString() <<
                 " is trying to elect itself but " << 
-                _currentConfig.getMemberAt(_currentPrimaryIndex).getHostAndPort().toString() <<
+                _rsConfig.getMemberAt(_currentPrimaryIndex).getHostAndPort().toString() <<
                 " is already primary and more up-to-date";
             return true;
         }
 
         if ((highestPriorityIndex != -1)) {
-            const MemberConfig& hopefulMember = _currentConfig.getMemberAt(hopefulIndex);
-            const MemberConfig& priorityMember = _currentConfig.getMemberAt(highestPriorityIndex);
+            const MemberConfig& hopefulMember = _rsConfig.getMemberAt(hopefulIndex);
+            const MemberConfig& priorityMember = _rsConfig.getMemberAt(highestPriorityIndex);
 
             if (priorityMember.getPriority() > hopefulMember.getPriority()) {
                 *errmsg = str::stream()
@@ -525,7 +541,7 @@ namespace {
         if (reason) {
             *errmsg = str::stream()
                          << "I don't think "
-                         << _currentConfig.getMemberAt(hopefulIndex).getHostAndPort().toString()
+                         << _rsConfig.getMemberAt(hopefulIndex).getHostAndPort().toString()
                          << " is electable because the " << _getUnelectableReasonString(reason);
             return true;
         }
@@ -547,19 +563,19 @@ namespace {
             return;
         }
 
-        const long long myver = _currentConfig.getConfigVersion();
+        const long long myver = _rsConfig.getConfigVersion();
         const int highestPriorityIndex = _getHighestPriorityElectableIndex(now, lastOpApplied);
 
         const MemberConfig* primary = _currentPrimaryMember();
-        const MemberConfig* hopeful = _currentConfig.findMemberByID(args.whoid);
+        const MemberConfig* hopeful = _rsConfig.findMemberByID(args.whoid);
         const MemberConfig* highestPriority = highestPriorityIndex == -1 ? NULL :
-                &_currentConfig.getMemberAt(highestPriorityIndex);
+                &_rsConfig.getMemberAt(highestPriorityIndex);
 
         int vote = 0;
-        if (args.set != _currentConfig.getReplSetName()) {
+        if (args.set != _rsConfig.getReplSetName()) {
             log() << "replSet error received an elect request for '" << args.set
                   << "' but our set name is '" <<
-                _currentConfig.getReplSetName() << "'";
+                _rsConfig.getReplSetName() << "'";
         }
         else if ( myver < args.cfgver ) {
             // we are stale.  don't vote
@@ -649,7 +665,7 @@ namespace {
             }
         }
         else {
-            invariant(_currentConfig.getReplSetName() == args.getSetName());
+            invariant(_rsConfig.getReplSetName() == args.getSetName());
             if (args.getSenderId() == _selfConfig().getId()) {
                 return Status(ErrorCodes::BadValue,
                               str::stream() << "Received heartbeat from member with the same "
@@ -661,7 +677,7 @@ namespace {
         response->noteReplSet();
 
         // For 2.6 compatibility
-        if (_currentConfig.isInitialized()) {
+        if (_rsConfig.isInitialized()) {
             response->setSetName(ourSetName);
         }
         response->setState(myState.s);
@@ -681,16 +697,16 @@ namespace {
             response->setSyncingTo(_syncSource.toString());
         }
 
-        if (!_currentConfig.isInitialized()) {
+        if (!_rsConfig.isInitialized()) {
             response->setVersion(-2);
             return Status::OK();
         }
 
-        const long long v = _currentConfig.getConfigVersion();
+        const long long v = _rsConfig.getConfigVersion();
         response->setVersion(v);
         // Deliver new config if caller's version is older than ours
         if (v > args.getConfigVersion()) {
-            response->setConfig(_currentConfig);
+            response->setConfig(_rsConfig);
         }
 
         // Resolve the caller's id in our Member list
@@ -717,8 +733,8 @@ namespace {
 
     int TopologyCoordinatorImpl::_getMemberIndex(int id) const {
         int index = 0;
-        for (ReplicaSetConfig::MemberIterator it = _currentConfig.membersBegin();
-             it != _currentConfig.membersEnd();
+        for (ReplicaSetConfig::MemberIterator it = _rsConfig.membersBegin();
+             it != _rsConfig.membersEnd();
              ++it, ++index) {
             if (it->getId() == id) {
                 return index;
@@ -734,9 +750,9 @@ namespace {
 
         PingStats& hbStats = _pings[target];
         Milliseconds alreadyElapsed(now.asInt64() - hbStats.getLastHeartbeatStartDate().asInt64());
-        if (!_currentConfig.isInitialized() ||
+        if (!_rsConfig.isInitialized() ||
             (hbStats.getNumFailuresSinceLastStart() > kMaxHeartbeatRetries) ||
-            (alreadyElapsed >= _currentConfig.getHeartbeatTimeoutPeriodMillis())) {
+            (alreadyElapsed >= _rsConfig.getHeartbeatTimeoutPeriodMillis())) {
 
             // This is either the first request ever for "target", or the heartbeat timeout has
             // passed, so we're starting a "new" heartbeat.
@@ -746,9 +762,9 @@ namespace {
         ReplSetHeartbeatArgs hbArgs;
         hbArgs.setProtocolVersion(1);
         hbArgs.setCheckEmpty(false);
-        if (_currentConfig.isInitialized()) {
-            hbArgs.setSetName(_currentConfig.getReplSetName());
-            hbArgs.setConfigVersion(_currentConfig.getConfigVersion());
+        if (_rsConfig.isInitialized()) {
+            hbArgs.setSetName(_rsConfig.getReplSetName());
+            hbArgs.setConfigVersion(_rsConfig.getConfigVersion());
             if (_selfIndex >= 0) {
                 const MemberConfig& me = _selfConfig();
                 hbArgs.setSenderHost(me.getHostAndPort());
@@ -761,8 +777,8 @@ namespace {
         }
 
         const Milliseconds timeoutPeriod(
-                _currentConfig.isInitialized() ?
-                _currentConfig.getHeartbeatTimeoutPeriodMillis() :
+                _rsConfig.isInitialized() ?
+                _rsConfig.getHeartbeatTimeoutPeriodMillis() :
                 Milliseconds(
                         ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod.total_milliseconds()));
         const Milliseconds timeout(
@@ -797,9 +813,9 @@ namespace {
 
         Milliseconds alreadyElapsed(now.asInt64() - hbStats.getLastHeartbeatStartDate().asInt64());
         Date_t nextHeartbeatStartDate;
-        if (_currentConfig.isInitialized() &&
+        if (_rsConfig.isInitialized() &&
             (hbStats.getNumFailuresSinceLastStart() <= kMaxHeartbeatRetries) &&
-            (alreadyElapsed < _currentConfig.getHeartbeatTimeoutPeriodMillis())) {
+            (alreadyElapsed < _rsConfig.getHeartbeatTimeoutPeriodMillis())) {
 
             if (!hbResponse.isOK() && !isUnauthorized) {
                 LOG(1) << "Bad heartbeat response from " << target <<
@@ -819,7 +835,7 @@ namespace {
 
         if (hbResponse.isOK() && hbResponse.getValue().hasConfig()) {
             const long long currentConfigVersion =
-                _currentConfig.isInitialized() ? _currentConfig.getConfigVersion() : -2;
+                _rsConfig.isInitialized() ? _rsConfig.getConfigVersion() : -2;
             const ReplicaSetConfig& newConfig = hbResponse.getValue().getConfig();
             if (newConfig.getConfigVersion() > currentConfigVersion) {
                 HeartbeatResponseAction nextAction = HeartbeatResponseAction::makeReconfigAction();
@@ -839,8 +855,8 @@ namespace {
                             MongoLogDefaultComponent_component,
                             ::mongo::LogstreamBuilder::severityCast(2))) {
                     LogstreamBuilder lsb = log();
-                    if (_currentConfig.isInitialized()) {
-                        lsb << "Current config: " << _currentConfig.toBSON() << "; ";
+                    if (_rsConfig.isInitialized()) {
+                        lsb << "Current config: " << _rsConfig.toBSON() << "; ";
                     }
                     lsb << "Config in heartbeat: " << newConfig.toBSON();
                 }
@@ -849,15 +865,15 @@ namespace {
 
         // Check if the heartbeat target is in our config.  If it isn't, there's nothing left to do,
         // so return early.
-        if (!_currentConfig.isInitialized()) {
+        if (!_rsConfig.isInitialized()) {
             HeartbeatResponseAction nextAction = HeartbeatResponseAction::makeNoAction();
             nextAction.setNextHeartbeatStartDate(nextHeartbeatStartDate);
             return nextAction;
         }
-        const int memberIndex = _currentConfig.findMemberIndexByHostAndPort(target);
+        const int memberIndex = _rsConfig.findMemberIndexByHostAndPort(target);
         if (memberIndex == -1) {
             LOG(1) << "replset: Could not find " << target  << " in current config so ignoring --"
-                " current config: " << _currentConfig.toBSON();
+                " current config: " << _rsConfig.toBSON();
             HeartbeatResponseAction nextAction = HeartbeatResponseAction::makeNoAction();
             nextAction.setNextHeartbeatStartDate(nextHeartbeatStartDate);
             return nextAction;
@@ -865,7 +881,7 @@ namespace {
         invariant(memberIndex != _selfIndex);
 
         MemberHeartbeatData& hbData = _hbdata[memberIndex];
-        const MemberConfig member = _currentConfig.getMemberAt(memberIndex);
+        const MemberConfig member = _rsConfig.getMemberAt(memberIndex);
         if (!hbResponse.isOK()) {
             if (isUnauthorized) {
                 LOG(3) << "setAuthIssue: heartbeat response failed due to authentication"
@@ -937,9 +953,9 @@ namespace {
             const int highestPriorityIndex = _getHighestPriorityElectableIndex(now, lastOpApplied);
             if (highestPriorityIndex != -1) {
                 const MemberConfig& currentPrimaryMember =
-                    _currentConfig.getMemberAt(_currentPrimaryIndex);
+                    _rsConfig.getMemberAt(_currentPrimaryIndex);
                 const MemberConfig& highestPriorityMember =
-                    _currentConfig.getMemberAt(highestPriorityIndex);
+                    _rsConfig.getMemberAt(highestPriorityIndex);
                 const OpTime highestPriorityMemberOptime = highestPriorityIndex == _selfIndex ?
                         lastOpApplied : _hbdata[highestPriorityIndex].getOpTime();
 
@@ -1022,7 +1038,7 @@ namespace {
                 if (_iAmPrimary()) {
                     OpTime remoteElectionTime = _hbdata[remotePrimaryIndex].getElectionTime();
                     log() << "replset: another primary seen with election time " 
-                          << remoteElectionTime << " my elction time is " << _electionTime;
+                          << remoteElectionTime << " my election time is " << _electionTime;
 
                     // Step down whomever has the older election time.
                     if (remoteElectionTime > _electionTime) {
@@ -1119,11 +1135,11 @@ namespace {
              ++it) {
             const int itIndex = indexOfIterator(_hbdata, it);
             if (itIndex == _selfIndex || it->up()) {
-                vUp += _currentConfig.getMemberAt(itIndex).getNumVotes();
+                vUp += _rsConfig.getMemberAt(itIndex).getNumVotes();
             }
         }
 
-        return vUp * 2 > _currentConfig.getTotalVotingMembers();
+        return vUp * 2 > _rsConfig.getTotalVotingMembers();
     }
 
     bool TopologyCoordinatorImpl::_isOpTimeCloseEnoughToLatestToElect(
@@ -1172,14 +1188,14 @@ namespace {
         if (memberTwoIndex == -1)
             return true;
 
-        return _currentConfig.getMemberAt(memberOneIndex).getPriority() >
-                _currentConfig.getMemberAt(memberTwoIndex).getPriority();
+        return _rsConfig.getMemberAt(memberOneIndex).getPriority() >
+                _rsConfig.getMemberAt(memberTwoIndex).getPriority();
     }
 
     int TopologyCoordinatorImpl::_getHighestPriorityElectableIndex(
             Date_t now, OpTime lastOpApplied) const {
         int maxIndex = -1;
-        for (int currentIndex = 0; currentIndex < _currentConfig.getNumMembers(); currentIndex++) {
+        for (int currentIndex = 0; currentIndex < _rsConfig.getNumMembers(); currentIndex++) {
             UnelectableReasonMask reason = currentIndex == _selfIndex ?
                     _getMyUnelectableReason(now, lastOpApplied) :
                     _getUnelectableReason(currentIndex, lastOpApplied);
@@ -1249,7 +1265,7 @@ namespace {
                 hbResponse.setHbMsg("");
                 _hbdata[primaryIndex].setUpValues(
                         _hbdata[primaryIndex].getLastHeartbeat(),
-                        _currentConfig.getMemberAt(primaryIndex).getHostAndPort(),
+                        _rsConfig.getMemberAt(primaryIndex).getHostAndPort(),
                         hbResponse);
             }
             _currentPrimaryIndex = primaryIndex;
@@ -1260,7 +1276,7 @@ namespace {
         if (_currentPrimaryIndex == -1)
             return NULL;
 
-        return &(_currentConfig.getMemberAt(_currentPrimaryIndex));
+        return &(_rsConfig.getMemberAt(_currentPrimaryIndex));
     }
 
     void TopologyCoordinatorImpl::prepareStatusResponse(
@@ -1331,13 +1347,13 @@ namespace {
                     bb.append("electionTime", _electionTime);
                     bb.appendDate("electionDate", Date_t(_electionTime.getSecs() * 1000ULL));
                 }
-                bb.appendIntOrLL("configVersion", _currentConfig.getConfigVersion());
+                bb.appendIntOrLL("configVersion", _rsConfig.getConfigVersion());
                 bb.append("self", true);
                 membersOut.push_back(bb.obj());
             }
             else {
                 // add non-self member
-                const MemberConfig& itConfig = _currentConfig.getMemberAt(itIndex);
+                const MemberConfig& itConfig = _rsConfig.getMemberAt(itIndex);
                 BSONObjBuilder bb;
                 bb.append("_id", itConfig.getId());
                 bb.append("name", itConfig.getHostAndPort().toString());
@@ -1392,7 +1408,7 @@ namespace {
         sort(membersOut.begin(), membersOut.end());
 
         response->append("set",
-                         _currentConfig.isInitialized() ? _currentConfig.getReplSetName() : "");
+                         _rsConfig.isInitialized() ? _rsConfig.getReplSetName() : "");
         response->append("date", now);
         response->append("myState", myState.s);
 
@@ -1408,19 +1424,19 @@ namespace {
     void TopologyCoordinatorImpl::fillIsMasterForReplSet(IsMasterResponse* response) {
 
         const MemberState myState = getMemberState();
-        if (!_currentConfig.isInitialized() || myState.removed()) {
+        if (!_rsConfig.isInitialized() || myState.removed()) {
             response->markAsNoConfig();
             return;
         }
 
-        response->setReplSetName(_currentConfig.getReplSetName());
-        response->setReplSetVersion(_currentConfig.getConfigVersion());
+        response->setReplSetName(_rsConfig.getReplSetName());
+        response->setReplSetVersion(_rsConfig.getConfigVersion());
         response->setIsMaster(myState.primary());
         response->setIsSecondary(myState.secondary());
 
         {
-            for (ReplicaSetConfig::MemberIterator it = _currentConfig.membersBegin();
-                    it != _currentConfig.membersEnd(); ++it) {
+            for (ReplicaSetConfig::MemberIterator it = _rsConfig.membersBegin();
+                    it != _rsConfig.membersEnd(); ++it) {
                 if (it->isHidden() || it->getSlaveDelay().total_seconds() > 0) {
                     continue;
                 }
@@ -1442,7 +1458,7 @@ namespace {
             response->setPrimary(curPrimary->getHostAndPort());
         }
 
-        const MemberConfig& selfConfig = _currentConfig.getMemberAt(_selfIndex);
+        const MemberConfig& selfConfig = _rsConfig.getMemberAt(_selfIndex);
         if (selfConfig.isArbiter()) {
             response->setIsArbiterOnly(true);
         }
@@ -1458,7 +1474,7 @@ namespace {
         if (!selfConfig.shouldBuildIndexes()) {
             response->setShouldBuildIndexes(false);
         }
-        const ReplicaSetTagConfig tagConfig = _currentConfig.getTagConfig();
+        const ReplicaSetTagConfig tagConfig = _rsConfig.getTagConfig();
         if (selfConfig.hasTags(tagConfig)) {
             for (MemberConfig::TagIterator tag = selfConfig.tagsBegin();
                     tag != selfConfig.tagsEnd(); ++tag) {
@@ -1485,9 +1501,9 @@ namespace {
             response->append("info", "unfreezing");
 
             if (_followerMode == MemberState::RS_SECONDARY &&
-                    _currentConfig.getNumMembers() == 1 &&
+                    _rsConfig.getNumMembers() == 1 &&
                     _selfIndex == 0 &&
-                    _currentConfig.getMemberAt(_selfIndex).isElectable()) {
+                    _rsConfig.getMemberAt(_selfIndex).isElectable()) {
                 // If we are a one-node replica set, we're the one member,
                 // we're electable, and we are currently in followerMode SECONDARY,
                 // we must transition to candidate now that our stepdown period
@@ -1515,9 +1531,9 @@ namespace {
         }
 
         if (_followerMode == MemberState::RS_SECONDARY &&
-                _currentConfig.getNumMembers() == 1 &&
+                _rsConfig.getNumMembers() == 1 &&
                 _selfIndex == 0 &&
-                _currentConfig.getMemberAt(_selfIndex).isElectable()) {
+                _rsConfig.getMemberAt(_selfIndex).isElectable()) {
             // If the new config describes a one-node replica set, we're the one member,
             // we're electable, and we are currently in followerMode SECONDARY,
             // we must transition to candidate, in leiu of heartbeats.
@@ -1567,8 +1583,8 @@ namespace {
             }
             else {
                 MemberHeartbeatData newHeartbeatData;
-                for (int oldIndex = 0; oldIndex < _currentConfig.getNumMembers(); ++oldIndex) {
-                    const MemberConfig& oldMemberConfig = _currentConfig.getMemberAt(oldIndex);
+                for (int oldIndex = 0; oldIndex < _rsConfig.getNumMembers(); ++oldIndex) {
+                    const MemberConfig& oldMemberConfig = _rsConfig.getMemberAt(oldIndex);
                     if (oldMemberConfig.getId() == newMemberConfig.getId() &&
                             oldMemberConfig.getHostAndPort() == newMemberConfig.getHostAndPort()) {
                         // This member existed in the old config with the same member ID and
@@ -1592,7 +1608,7 @@ namespace {
         invariant(selfIndex < newConfig.getNumMembers());
 
         _updateHeartbeatDataForReconfig(newConfig, selfIndex, now);
-        _currentConfig = newConfig;
+        _rsConfig = newConfig;
         _selfIndex = selfIndex;
         _forceSyncSourceIndex = -1;
 
@@ -1616,9 +1632,9 @@ namespace {
         _stepDownPending = false;
 
         if (_followerMode == MemberState::RS_SECONDARY &&
-                _currentConfig.getNumMembers() == 1 &&
+                _rsConfig.getNumMembers() == 1 &&
                 _selfIndex == 0 &&
-                _currentConfig.getMemberAt(_selfIndex).isElectable()) {
+                _rsConfig.getMemberAt(_selfIndex).isElectable()) {
             // If the new config describes a one-node replica set, we're the one member,
             // we're electable, and we are currently in followerMode SECONDARY, 
             // we must transition to candidate, in leiu of heartbeats.
@@ -1640,14 +1656,14 @@ namespace {
     }
 
     const MemberConfig& TopologyCoordinatorImpl::_selfConfig() const {
-        return _currentConfig.getMemberAt(_selfIndex);
+        return _rsConfig.getMemberAt(_selfIndex);
     }
 
     TopologyCoordinatorImpl::UnelectableReasonMask TopologyCoordinatorImpl::_getUnelectableReason(
             int index,
             const OpTime& lastOpApplied) const {
         invariant(index != _selfIndex);
-        const MemberConfig& memberConfig = _currentConfig.getMemberAt(index);
+        const MemberConfig& memberConfig = _rsConfig.getMemberAt(index);
         const MemberHeartbeatData& hbData = _hbdata[index];
         UnelectableReasonMask result = None;
         if (memberConfig.isArbiter()) {
@@ -1694,7 +1710,7 @@ namespace {
             result |= StepDownPeriodActive;
         }
         if (_lastVote.whoId != -1 &&
-                _lastVote.whoId !=_currentConfig.getMemberAt(_selfIndex).getId() &&
+                _lastVote.whoId !=_rsConfig.getMemberAt(_selfIndex).getId() &&
                 _lastVote.when.millis + LastVote::leaseTime.total_milliseconds() >= now.millis) {
             result |= VotedTooRecently;
         }
@@ -1822,7 +1838,7 @@ namespace {
                 continue;    // skip DOWN nodes
             }
 
-            upHosts.push_back(_currentConfig.getMemberAt(itIndex).getHostAndPort());
+            upHosts.push_back(_rsConfig.getMemberAt(itIndex).getHostAndPort());
         }
         return upHosts;
     }
@@ -1847,7 +1863,7 @@ namespace {
 
     MemberState TopologyCoordinatorImpl::getMemberState() const {
         if (_selfIndex == -1) {
-            if (_currentConfig.isInitialized()) {
+            if (_rsConfig.isInitialized()) {
                 return MemberState::RS_REMOVED;
             }
             return MemberState::RS_STARTUP;
@@ -1893,7 +1909,7 @@ namespace {
 
     bool TopologyCoordinatorImpl::stepDown(Date_t until, bool force, OpTime lastOpApplied) {
         bool canStepDown = force;
-        for (int i = 0; !canStepDown && i < _currentConfig.getNumMembers(); ++i) {
+        for (int i = 0; !canStepDown && i < _rsConfig.getNumMembers(); ++i) {
             if (i == _selfIndex) {
                 continue;
             }
@@ -1912,8 +1928,7 @@ namespace {
     }
 
     void TopologyCoordinatorImpl::setFollowerMode(MemberState::MS newMode) {
-        // TODO(emilkie): Uncomment once legacy StateBox is replaced with replcoord's MemberState.
-        //invariant(_role == Role::follower);
+        invariant(_role == Role::follower);
         switch (newMode) {
         case MemberState::RS_RECOVERING:
         case MemberState::RS_ROLLBACK:
@@ -1933,9 +1948,9 @@ namespace {
         // be a candidate here.  This is necessary because a single node replica set has no
         // heartbeats that would normally change the role to candidate.
 
-        if (_currentConfig.getNumMembers() == 1 &&
+        if (_rsConfig.getNumMembers() == 1 &&
             _selfIndex == 0 &&
-            _currentConfig.getMemberAt(_selfIndex).isElectable()) {
+            _rsConfig.getMemberAt(_selfIndex).isElectable()) {
             _role = Role::candidate;
         }
     }
@@ -2000,7 +2015,7 @@ namespace {
             return true;
         }
 
-        const int currentMemberIndex = _currentConfig.findMemberIndexByHostAndPort(currentSource);
+        const int currentMemberIndex = _rsConfig.findMemberIndexByHostAndPort(currentSource);
         if (currentMemberIndex == -1) {
             return true;
         }
@@ -2019,7 +2034,7 @@ namespace {
              it != _hbdata.end();
              ++it) {
             const int itIndex = indexOfIterator(_hbdata, it);
-            const MemberConfig& candidateConfig = _currentConfig.getMemberAt(itIndex);
+            const MemberConfig& candidateConfig = _rsConfig.getMemberAt(itIndex);
             if (it->up() &&
                 (candidateConfig.shouldBuildIndexes() || !_selfConfig().shouldBuildIndexes()) &&
                 it->getState().readable() &&

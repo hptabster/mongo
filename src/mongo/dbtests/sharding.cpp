@@ -30,6 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/client/dbclientmockcursor.h"
 #include "mongo/client/parallel.h"
 #include "mongo/db/dbdirectclient.h"
@@ -44,6 +46,15 @@
 #include "mongo/util/log.h"
 
 namespace ShardingTests {
+
+    using boost::shared_ptr;
+    using std::auto_ptr;
+    using std::make_pair;
+    using std::map;
+    using std::pair;
+    using std::set;
+    using std::string;
+    using std::vector;
 
     namespace serverandquerytests {
         class test1 {
@@ -106,8 +117,7 @@ namespace ShardingTests {
             _shard = Shard("shard0000",
                            "$hostFooBar:27017",
                            0 /* maxSize */,
-                           false /* draining */,
-                           BSONArray() /* tags */);
+                           false /* draining */);
             // Need to run this to ensure the shard is in the global lookup table
             Shard::installShard(_shard.getName(), _shard);
 

@@ -33,6 +33,7 @@
 
 #include "mongo/s/distlock.h"
 
+#include <boost/shared_ptr.hpp>
 #include <boost/thread/thread.hpp>
 #include <iostream>
 #include <vector>
@@ -74,6 +75,12 @@
 #define number_field(obj, name, def) ( obj.hasField(name) ? obj[name].Number() : def )
 
 namespace mongo {
+
+    using boost::shared_ptr;
+    using std::endl;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     class TestDistLockWithSync: public Command {
     public:

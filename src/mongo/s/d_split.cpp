@@ -62,6 +62,14 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::endl;
+    using std::ostringstream;
+    using std::set;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
+
     class CmdMedianKey : public Command {
     public:
         CmdMedianKey() : Command( "medianKey" ) {}
@@ -165,7 +173,7 @@ namespace mongo {
             // TODO if $exist for nulls were picking the index, it could be used instead efficiently
             int keyPatternLength = keyPattern.nFields();
 
-            DiskLoc loc;
+            RecordId loc;
             BSONObj currKey;
             while (PlanExecutor::ADVANCED == exec->getNext(&currKey, &loc)) {
                 //check that current key contains non missing elements for all fields in keyPattern
@@ -630,7 +638,7 @@ namespace mongo {
                 return false;
             }
 
-            // From mongos >= v2.8.
+            // From mongos >= v3.0.
             BSONElement epochElem(cmdObj["epoch"]);
             if (epochElem.type() == jstOID) {
                 OID cmdEpoch = epochElem.OID();
@@ -851,20 +859,19 @@ namespace mongo {
                     return true;
                 }
 
-                const ChunkType* chunk = newChunks.vector().back();
-                KeyPattern kp(idx->keyPattern());
-                BSONObj newmin = Helpers::toKeyFormat(kp.extendRangeBound(chunk->getMin(), false));
-                BSONObj newmax = Helpers::toKeyFormat(kp.extendRangeBound(chunk->getMax(), false));
+                const ChunkType* backChunk = newChunks.vector().back();
+                const ChunkType* frontChunk = newChunks.vector().front();
 
-                auto_ptr<PlanExecutor> exec(
-                        InternalPlanner::indexScan(txn, collection, idx, newmin, newmax, false));
+                if (checkIfSingleDoc(txn, collection, idx, backChunk)) {
+                    result.append("shouldMigrate",
+                                  BSON("min" << backChunk->getMin()
+                                       << "max" << backChunk->getMax()));
+                }
+                else if (checkIfSingleDoc(txn, collection, idx, frontChunk)) {
+                    result.append("shouldMigrate",
+                                  BSON("min" << frontChunk->getMin()
+                                       << "max" << frontChunk->getMax()));
 
-                // check if exactly one document found
-                if (PlanExecutor::ADVANCED == exec->getNext(NULL, NULL)) {
-                    if (PlanExecutor::IS_EOF == exec->getNext(NULL, NULL)) {
-                        result.append("shouldMigrate",
-                                      BSON("min" << chunk->getMin() << "max" << chunk->getMax()));
-                    }
                 }
             }
 
@@ -883,6 +890,27 @@ namespace mongo {
             if (chunk.isVersionSet())
                 chunk.getVersion().addToBSON(bb, ChunkType::DEPRECATED_lastmod());
             bb.done();
+        }
+
+        static bool checkIfSingleDoc(OperationContext* txn,
+                                     Collection* collection,
+                                     const IndexDescriptor* idx,
+                                     const ChunkType* chunk) {
+            KeyPattern kp(idx->keyPattern());
+            BSONObj newmin = Helpers::toKeyFormat(kp.extendRangeBound(chunk->getMin(), false));
+            BSONObj newmax = Helpers::toKeyFormat(kp.extendRangeBound(chunk->getMax(), true));
+
+            auto_ptr<PlanExecutor> exec(
+                InternalPlanner::indexScan(txn, collection, idx, newmin, newmax, false));
+
+            // check if exactly one document found
+            if (PlanExecutor::ADVANCED == exec->getNext(NULL, NULL)) {
+                if (PlanExecutor::IS_EOF == exec->getNext(NULL, NULL)) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
     } cmdSplitChunk;

@@ -1,5 +1,3 @@
-// kv_engine_test_harness.h
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -28,6 +26,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include <boost/filesystem/operations.hpp>
 #include <boost/scoped_ptr.hpp>
 
@@ -46,7 +46,7 @@ namespace mongo {
     public:
         RocksEngineHarnessHelper() : _dbpath("mongo-rocks-engine-test") {
             boost::filesystem::remove_all(_dbpath.path());
-            _engine.reset(new RocksEngine(_dbpath.path()));
+            restartEngine();
         }
 
         virtual ~RocksEngineHarnessHelper() = default;
@@ -55,7 +55,7 @@ namespace mongo {
 
         virtual KVEngine* restartEngine() {
             _engine.reset(nullptr);
-            _engine.reset(new RocksEngine(_dbpath.path()));
+            _engine.reset(new RocksEngine(_dbpath.path(), true));
             return _engine.get();
         }
 

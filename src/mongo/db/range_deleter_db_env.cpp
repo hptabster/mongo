@@ -38,12 +38,15 @@
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/s/d_state.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::endl;
+    using std::string;
 
     void RangeDeleterDBEnv::initThread() {
         if ( currentClient.get() == NULL )
@@ -159,6 +162,6 @@ namespace mongo {
             return;
         }
 
-        collection->cursorCache()->getCursorIds( openCursors );
+        collection->getCursorManager()->getCursorIds( openCursors );
     }
 }

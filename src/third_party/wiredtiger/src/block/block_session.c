@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -152,7 +153,7 @@ __block_ext_discard(WT_SESSION_IMPL *session, u_int max)
 static int
 __block_size_alloc(WT_SESSION_IMPL *session, WT_SIZE **szp)
 {
-	return (__wt_calloc(session, 1, sizeof(WT_SIZE), szp));
+	return (__wt_calloc_one(session, szp));
 }
 
 /*

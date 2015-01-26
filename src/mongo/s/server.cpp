@@ -35,6 +35,7 @@
 #include "mongo/s/server.h"
 
 #include <boost/thread/thread.hpp>
+#include <iostream>
 
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
@@ -93,6 +94,11 @@
 #include "mongo/util/version.h"
 
 namespace mongo {
+
+    using std::cout;
+    using std::endl;
+    using std::string;
+    using std::vector;
 
     using logger::LogComponent;
 
@@ -185,11 +191,6 @@ namespace mongo {
         }
     };
 
-
-    void init() {
-        serverID.init();
-    }
-
     void start( const MessageServer::Options& opts ) {
         balancer.go();
         cursorCache.startTimeoutThread();
@@ -279,8 +280,6 @@ static ExitCode runMongosServer( bool doUpgrade ) {
     }
 
     configServer.reloadSettings();
-
-    init();
 
 #if !defined(_WIN32)
     mongo::signalForkSuccess();

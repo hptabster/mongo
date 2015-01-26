@@ -31,7 +31,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/restapi.h"
 
@@ -44,7 +44,7 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/dbwebserver.h"
 #include "mongo/db/repl/master_slave.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/util/log.h"
 #include "mongo/util/md5.hpp"
 #include "mongo/util/mongoutils/html.h"
@@ -53,6 +53,12 @@
 namespace mongo {
 
     bool getInitialSyncCompleted();
+
+    using std::auto_ptr;
+    using std::string;
+    using std::stringstream;
+    using std::endl;
+    using std::vector;
 
     using namespace html;
 
@@ -306,13 +312,14 @@ namespace mongo {
 
         virtual void run(OperationContext* txn, stringstream& ss ) {
             Timer t;
-            readlocktry lk(txn->lockState(), 300);
-            if ( lk.got() ) {
-                _gotLock( t.millis() , ss );
+            Lock::GlobalLock globalSLock(txn->lockState(), MODE_S, 300);
+            if (globalSLock.isLocked()) {
+                _gotLock(t.millis(), ss);
             }
             else {
                 ss << "\n<b>timed out getting lock</b>\n";
             }
         }
+
     } lowLevelMongodStatus;
 }

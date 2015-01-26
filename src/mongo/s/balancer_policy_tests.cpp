@@ -27,6 +27,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/base/owned_pointer_map.h"
 #include "mongo/platform/random.h"
 #include "mongo/s/balancer_policy.h"
@@ -36,6 +38,14 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::map;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     namespace {
         
@@ -521,15 +531,15 @@ namespace mongo {
 
                     {
                         ShardInfo& info = shards[m->from];
-                        shards[m->from] = ShardInfo(info.getMaxSize(),
-                                                    info.getCurrSize() - 1,
+                        shards[m->from] = ShardInfo(info.getMaxSizeMB(),
+                                                    info.getCurrSizeMB() - 1,
                                                     info.isDraining());
                     }
 
                     {
                         ShardInfo& info = shards[m->to];
-                        shards[m->to] = ShardInfo(info.getMaxSize(),
-                                                  info.getCurrSize() + 1,
+                        shards[m->to] = ShardInfo(info.getMaxSizeMB(),
+                                                  info.getCurrSizeMB() + 1,
                                                   info.isDraining());
                     }
                 }
@@ -540,7 +550,7 @@ namespace mongo {
 
                 // The balanced value is the count on the last shard, since it's not draining or
                 // limited
-                int balancedSize = (--shards.end())->second.getCurrSize();
+                int balancedSize = (--shards.end())->second.getCurrSizeMB();
 
                 for (ShardInfoMap::iterator it = shards.begin(); it != shards.end(); ++it) {
                     log() << it->first << " : " << it->second.toString() << endl;
@@ -553,12 +563,12 @@ namespace mongo {
                     map<string,int>::iterator expectedIt = expected.find(it->first);
 
                     if (expectedIt == expected.end()) {
-                        bool isInRange = it->second.getCurrSize() >= balancedSize - 1 &&
-                                         it->second.getCurrSize() <= balancedSize + 1;
+                        bool isInRange = it->second.getCurrSizeMB() >= balancedSize - 1 &&
+                                         it->second.getCurrSizeMB() <= balancedSize + 1;
 
                         if (!isInRange) {
                             warning() << "non-limited and non-draining shard had "
-                                      << it->second.getCurrSize() << " chunks, expected near "
+                                      << it->second.getCurrSizeMB() << " chunks, expected near "
                                       << balancedSize << endl;
                         }
 
@@ -566,15 +576,15 @@ namespace mongo {
                     }
                     else {
                         int expectedSize = expectedIt->second;
-                        bool isInRange = it->second.getCurrSize() <= expectedSize;
+                        bool isInRange = it->second.getCurrSizeMB() <= expectedSize;
                         if (isInRange && expectedSize >= balancedSize) {
-                            isInRange = it->second.getCurrSize() >= balancedSize - 1 &&
-                                        it->second.getCurrSize() <= balancedSize + 1;
+                            isInRange = it->second.getCurrSizeMB() >= balancedSize - 1 &&
+                                        it->second.getCurrSizeMB() <= balancedSize + 1;
                         }
 
                         if (!isInRange) {
                             warning() << "limited or draining shard had "
-                                      << it->second.getCurrSize() << " chunks, expected less than "
+                                      << it->second.getCurrSizeMB() << " chunks, expected less than "
                                       << expectedSize << " and (if less than expected) near "
                                       << balancedSize << endl;
                         }

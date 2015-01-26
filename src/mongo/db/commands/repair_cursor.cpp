@@ -38,6 +38,8 @@
 
 namespace mongo {
 
+    using std::string;
+
     class RepairCursorCmd : public Command {
     public:
         RepairCursorCmd() : Command("repairCursor") {}
@@ -94,7 +96,7 @@ namespace mongo {
             invariant(execStatus.isOK());
             std::auto_ptr<PlanExecutor> exec(rawExec);
 
-            // 'exec' will be used in newGetMore(). It was automatically registered on construction
+            // 'exec' will be used in getMore(). It was automatically registered on construction
             // due to the auto yield policy, so it could yield during plan selection. We deregister
             // it now so that it can be registed with ClientCursor.
             exec->deregisterExec();
@@ -102,13 +104,11 @@ namespace mongo {
 
             // ClientCursors' constructor inserts them into a global map that manages their
             // lifetimes. That is why the next line isn't leaky.
-            ClientCursor* cc = new ClientCursor(collection, exec.release());
+            ClientCursor* cc = new ClientCursor(collection->getCursorManager(),
+                                                exec.release(),
+                                                ns.ns());
 
-            BSONObjBuilder cursorObj(result.subobjStart("cursor"));
-            cursorObj.append("id", cc->cursorid());
-            cursorObj.append("ns", ns);
-            cursorObj.append("firstBatch", BSONArray());
-            cursorObj.done();
+            appendCursorResponseObject(cc->cursorid(), ns.ns(), BSONArray(), &result);
 
             return true;
 

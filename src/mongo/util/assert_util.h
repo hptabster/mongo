@@ -29,7 +29,6 @@
 
 #pragma once
 
-#include <iostream>
 #include <typeinfo>
 #include <string>
 
@@ -105,7 +104,6 @@ namespace mongo {
     class DBException;
     MONGO_CLIENT_API std::string causedBy( const DBException& e );
     MONGO_CLIENT_API std::string causedBy( const std::string& e );
-    MONGO_CLIENT_API bool inShutdown();
 
     /** Most mongo exceptions inherit from this; this is commonly caught in most threads */
     class MONGO_CLIENT_API DBException : public std::exception {
@@ -177,13 +175,15 @@ namespace mongo {
         virtual void appendPrefix( std::stringstream& ss ) const;
     };
 
-    MONGO_CLIENT_API MONGO_COMPILER_NORETURN void verifyFailed(const char *msg, const char *file, unsigned line);
-    MONGO_CLIENT_API MONGO_COMPILER_NORETURN void invariantFailed(const char *msg, const char *file, unsigned line);
-    MONGO_CLIENT_API MONGO_COMPILER_NORETURN void invariantOKFailed(const char *msg, const Status& status, const char *file, unsigned line);
-    MONGO_CLIENT_API void wasserted(const char *msg, const char *file, unsigned line);
+    MONGO_CLIENT_API MONGO_COMPILER_NORETURN void verifyFailed(const char* expr, const char* file, unsigned line);
+    MONGO_CLIENT_API MONGO_COMPILER_NORETURN void invariantFailed(const char* expr, const char* file, unsigned line);
+    MONGO_CLIENT_API MONGO_COMPILER_NORETURN void invariantOKFailed(const char* expr, const Status& status, const char *file, unsigned line);
+    MONGO_CLIENT_API void wasserted(const char* expr, const char* file, unsigned line);
     MONGO_CLIENT_API MONGO_COMPILER_NORETURN void fassertFailed( int msgid );
     MONGO_CLIENT_API MONGO_COMPILER_NORETURN void fassertFailedNoTrace( int msgid );
     MONGO_CLIENT_API MONGO_COMPILER_NORETURN void fassertFailedWithStatus(
+            int msgid, const Status& status);
+    MONGO_CLIENT_API MONGO_COMPILER_NORETURN void fassertFailedWithStatusNoTrace(
             int msgid, const Status& status);
 
     /** a "user assertion".  throws UserAssertion.  logs.  typically used for errors that a user
@@ -216,6 +216,12 @@ namespace mongo {
     MONGO_CLIENT_API inline void fassert(int msgid, const Status& status) {
         if (MONGO_unlikely(!status.isOK())) {
             fassertFailedWithStatus(msgid, status);
+        }
+    }
+
+    MONGO_CLIENT_API inline void fassertNoTrace(int msgid, const Status& status) {
+        if (MONGO_unlikely(!status.isOK())) {
+            fassertFailedWithStatusNoTrace(msgid, status);
         }
     }
 
@@ -297,7 +303,7 @@ namespace mongo {
 
 #ifdef MONGO_EXPOSE_MACROS
 # define dassert MONGO_dassert
-# define verify MONGO_verify
+# define verify(expression) MONGO_verify(expression)
 # define invariant MONGO_invariant
 # define invariantOK MONGO_invariantOK
 # define uassert MONGO_uassert
@@ -311,13 +317,6 @@ namespace mongo {
     // < 10000 UserException
 
     enum { ASSERT_ID_DUPKEY = 11000 };
-
-    /* throws a uassertion with an appropriate msg */
-    MONGO_COMPILER_NORETURN void streamNotGood( int code, const std::string& msg, std::ios& myios );
-
-    inline void assertStreamGood(unsigned msgid, const std::string& msg, std::ios& myios) {
-        if( !myios.good() ) streamNotGood(msgid, msg, myios);
-    }
 
     std::string demangleName( const std::type_info& typeinfo );
 

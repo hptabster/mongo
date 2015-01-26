@@ -37,6 +37,8 @@
 
 namespace mongo {
 
+    using std::string;
+
     string bigNumString(long long n, int len) {
         char sub[17];
         sprintf(sub, "%.16llx", n);
@@ -58,29 +60,26 @@ namespace mongo {
     // BtreeLogicTestHelper
     //
 
-    static BucketDeletionNotification dummyBucketDeletionNotification;
-
     template <class OnDiskFormat>
     BtreeLogicTestHelper<OnDiskFormat>::BtreeLogicTestHelper(const BSONObj& order)
             : recordStore("TestRecordStore"),
               btree(&headManager,
                     &recordStore,
+                    &cursorRegistry,
                     Ordering::make(order),
-                    "TestIndex",
-                    &dummyBucketDeletionNotification) {
-
+                    "TestIndex") {
         static const string randomData("RandomStuff");
 
         // Generate a valid record location for a "fake" record, which we will repeatedly use
         // thoughout the tests.
         OperationContextNoop txn;
-        StatusWith<DiskLoc> s =
+        StatusWith<RecordId> s =
             recordStore.insertRecord(&txn, randomData.c_str(), randomData.length(), false);
 
         ASSERT_TRUE(s.isOK());
         ASSERT_EQUALS(1, recordStore.numRecords(NULL));
 
-        dummyDiskLoc = s.getValue();
+        dummyDiskLoc = DiskLoc::fromRecordId(s.getValue());
     }
 
 
@@ -90,7 +89,7 @@ namespace mongo {
 
     template <class OnDiskFormat>
     void ArtificialTreeBuilder<OnDiskFormat>::makeTree(const string &spec) {
-        _helper->headManager.setHead(_txn, makeTree(fromjson(spec)));
+        _helper->headManager.setHead(_txn, makeTree(fromjson(spec)).toRecordId());
     }
 
     template <class OnDiskFormat>
@@ -121,7 +120,7 @@ namespace mongo {
 
     template <class OnDiskFormat>
     void ArtificialTreeBuilder<OnDiskFormat>::checkStructure(const string &spec) const {
-        checkStructure(fromjson(spec), _helper->headManager.getHead(_txn));
+        checkStructure(fromjson(spec), DiskLoc::fromRecordId(_helper->headManager.getHead(_txn)));
     }
 
     template <class OnDiskFormat>

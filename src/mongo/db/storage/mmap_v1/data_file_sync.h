@@ -41,11 +41,12 @@ namespace mongo {
         DataFileSync();
 
         virtual bool includeByDefault() const { return true; }
-        virtual string name() const { return "DataFileSync"; }
+        virtual std::string name() const { return "DataFileSync"; }
 
         void run();
 
-        virtual BSONObj generateSection(const BSONElement& configElement) const;
+        virtual BSONObj generateSection(OperationContext* txn,
+                                        const BSONElement& configElement) const;
 
     private:
         void _flushed(int ms);

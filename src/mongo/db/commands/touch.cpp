@@ -51,6 +51,9 @@
 
 namespace mongo {
 
+    using std::string;
+    using std::stringstream;
+
     class TouchCmd : public Command {
     public:
         virtual bool isWriteCommandForConfigServer() const { return false; }
@@ -79,13 +82,9 @@ namespace mongo {
                          string& errmsg,
                          BSONObjBuilder& result,
                          bool fromRepl) {
-            const std::string coll = cmdObj.firstElement().valuestrsafe();
-            if (coll.empty()) {
-                errmsg = "no collection name specified";
-                return false;
-            }
+            const std::string ns = parseNsCollectionRequired(dbname, cmdObj);
 
-            const NamespaceString nss( dbname, coll );
+            const NamespaceString nss(ns);
             if ( ! nss.isNormal() ) {
                 errmsg = "bad namespace name";
                 return false;

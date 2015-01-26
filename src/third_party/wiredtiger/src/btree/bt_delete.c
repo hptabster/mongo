@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -117,7 +118,7 @@ __wt_delete_page(WT_SESSION_IMPL *session, WT_REF *ref, int *skipp)
 	 * Record the change in the transaction structure and set the change's
 	 * transaction ID.
 	 */
-	WT_ERR(__wt_calloc_def(session, 1, &ref->page_del));
+	WT_ERR(__wt_calloc_one(session, &ref->page_del));
 	ref->page_del->txnid = session->txn.id;
 
 	WT_ERR(__wt_txn_modify_ref(session, ref));
@@ -206,6 +207,9 @@ __wt_delete_page_skip(WT_SESSION_IMPL *session, WT_REF *ref)
 {
 	int skip;
 
+	if (ref->state != WT_REF_DELETED)
+		return (0);
+
 	/*
 	 * Deleted pages come from two sources: either it's a fast-delete as
 	 * described above, or the page has been emptied by other operations
@@ -224,11 +228,14 @@ __wt_delete_page_skip(WT_SESSION_IMPL *session, WT_REF *ref)
 	 * the page could switch to an in-memory state at any time.  Lock down
 	 * the structure, just to be safe.
 	 */
+	if (ref->page_del == NULL)
+		return (1);
+
 	if (!WT_ATOMIC_CAS4(ref->state, WT_REF_DELETED, WT_REF_LOCKED))
 		return (0);
 
-	skip = ref->page_del == NULL ||
-	    __wt_txn_visible(session, ref->page_del->txnid) ? 1 : 0;
+	skip = (ref->page_del == NULL ||
+	    __wt_txn_visible(session, ref->page_del->txnid));
 
 	WT_PUBLISH(ref->state, WT_REF_DELETED);
 	return (skip);
@@ -306,7 +313,7 @@ __wt_delete_page_instantiate(WT_SESSION_IMPL *session, WT_REF *ref)
 	 * deleted items.
 	 */
 	for (i = 0; i < page->pg_row_entries; ++i) {
-		WT_ERR(__wt_calloc_def(session, 1, &upd));
+		WT_ERR(__wt_calloc_one(session, &upd));
 		WT_UPDATE_DELETED_SET(upd);
 
 		if (page_del == NULL)

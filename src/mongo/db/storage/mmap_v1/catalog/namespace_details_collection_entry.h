@@ -33,7 +33,7 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
-#include "mongo/db/diskloc.h"
+#include "mongo/db/storage/mmap_v1/diskloc.h"
 
 namespace mongo {
 
@@ -77,12 +77,12 @@ namespace mongo {
                                         const StringData& indexName,
                                         bool multikey = true);
 
-        virtual DiskLoc getIndexHead( OperationContext* txn,
-                                      const StringData& indexName ) const;
+        virtual RecordId getIndexHead( OperationContext* txn,
+                                       const StringData& indexName ) const;
 
         virtual void setIndexHead( OperationContext* txn,
                                    const StringData& indexName,
-                                   const DiskLoc& newHead );
+                                   const RecordId& newHead );
 
         virtual bool isIndexReady( OperationContext* txn,
                                    const StringData& indexName ) const;

@@ -32,6 +32,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/base/status.h"
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/util/builder.h"
@@ -68,6 +70,13 @@
 // error codes 8010-8040
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::endl;
+    using std::set;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     static bool _isSystemIndexes( const char* ns ) {
         return nsToCollectionSubstring(ns) == "system.indexes";

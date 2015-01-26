@@ -29,13 +29,15 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/shell/shell_utils_launcher.h"
 
+#include <boost/scoped_array.hpp>
 #include <boost/thread/thread.hpp>
 #include <iostream>
 #include <map>
+#include <signal.h>
 #include <vector>
 
 #ifdef _WIN32
@@ -60,6 +62,16 @@
 #include "mongo/util/signal_win32.h"
 
 namespace mongo {
+
+    using boost::scoped_array;
+    using std::cout;
+    using std::endl;
+    using std::make_pair;
+    using std::map;
+    using std::pair;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     extern bool dbexitCalled;
 
@@ -271,9 +283,10 @@ namespace mongo {
 
             {
                 stringstream ss;
-                ss << "shell: started program";
-                for (unsigned i=0; i < _argv.size(); i++)
+                ss << "shell: started program (sh" << _pid << "): ";
+                for (unsigned i = 0; i < _argv.size(); i++) {
                     ss << " " << _argv[i];
+                }
                 log() << ss.str() << endl;
             }
 

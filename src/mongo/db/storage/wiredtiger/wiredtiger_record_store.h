@@ -34,12 +34,20 @@
 #include <set>
 #include <string>
 
+#include <boost/scoped_ptr.hpp>
 #include <boost/thread/mutex.hpp>
 
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/capped_callback.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/util/fail_point_service.h"
+
+/**
+ * Either executes the specified operation and returns it's value or randomly throws a write
+ * conflict exception if the WTWriteConflictException failpoint is enabled.
+ */
+#define WT_OP_CHECK(x) (((MONGO_FAIL_POINT(WTWriteConflictException))) ? (WT_ROLLBACK) : (x))
 
 namespace mongo {
 
@@ -52,6 +60,13 @@ namespace mongo {
 
     class WiredTigerRecordStore : public RecordStore {
     public:
+
+        /**
+         * During record store creation, if size storer reports a record count under
+         * 'kCollectionScanOnCreationThreshold', perform a collection scan to update size storer
+         * as well as internal record and data size counters.
+         */
+        static const long long kCollectionScanOnCreationThreshold;
 
         /**
          * Creates a configuration string suitable for 'config' parameter in WT_SESSION::create().
@@ -94,36 +109,38 @@ namespace mongo {
 
         // CRUD related
 
-        virtual RecordData dataFor( OperationContext* txn, const DiskLoc& loc ) const;
+        virtual RecordData dataFor( OperationContext* txn, const RecordId& loc ) const;
 
-        virtual bool findRecord( OperationContext* txn, const DiskLoc& loc, RecordData* out ) const;
+        virtual bool findRecord( OperationContext* txn, const RecordId& loc, RecordData* out ) const;
 
-        virtual void deleteRecord( OperationContext* txn, const DiskLoc& dl );
+        virtual void deleteRecord( OperationContext* txn, const RecordId& dl );
 
-        virtual StatusWith<DiskLoc> insertRecord( OperationContext* txn,
+        virtual StatusWith<RecordId> insertRecord( OperationContext* txn,
                                                   const char* data,
                                                   int len,
                                                   bool enforceQuota );
 
-        virtual StatusWith<DiskLoc> insertRecord( OperationContext* txn,
+        virtual StatusWith<RecordId> insertRecord( OperationContext* txn,
                                                   const DocWriter* doc,
                                                   bool enforceQuota );
 
-        virtual StatusWith<DiskLoc> updateRecord( OperationContext* txn,
-                                                  const DiskLoc& oldLocation,
+        virtual StatusWith<RecordId> updateRecord( OperationContext* txn,
+                                                  const RecordId& oldLocation,
                                                   const char* data,
                                                   int len,
                                                   bool enforceQuota,
-                                                  UpdateMoveNotifier* notifier );
+                                                  UpdateNotifier* notifier );
+
+        virtual bool updateWithDamagesSupported() const;
 
         virtual Status updateWithDamages( OperationContext* txn,
-                                          const DiskLoc& loc,
+                                          const RecordId& loc,
                                           const RecordData& oldRec,
-                                          const char* damangeSource,
+                                          const char* damageSource,
                                           const mutablebson::DamageVector& damages );
 
         virtual RecordIterator* getIterator( OperationContext* txn,
-                                             const DiskLoc& start = DiskLoc(),
+                                             const RecordId& start = RecordId(),
                                              const CollectionScanParams::Direction& dir =
                                              CollectionScanParams::FORWARD ) const;
 
@@ -132,6 +149,7 @@ namespace mongo {
         virtual Status truncate( OperationContext* txn );
 
         virtual bool compactSupported() const { return true; }
+        virtual bool compactsInPlace() const { return true; }
 
         virtual Status compact( OperationContext* txn,
                                 RecordStoreCompactAdaptor* adaptor,
@@ -139,29 +157,33 @@ namespace mongo {
                                 CompactStats* stats );
 
         virtual Status validate( OperationContext* txn,
-                                 bool full, bool scanData,
+                                 bool full,
+                                 bool scanData,
                                  ValidateAdaptor* adaptor,
-                                 ValidateResults* results, BSONObjBuilder* output ) const;
+                                 ValidateResults* results,
+                                 BSONObjBuilder* output );
 
         virtual void appendCustomStats( OperationContext* txn,
                                         BSONObjBuilder* result,
                                         double scale ) const;
-
-        virtual Status touch( OperationContext* txn, BSONObjBuilder* output ) const;
 
         virtual Status setCustomOption( OperationContext* txn,
                                         const BSONElement& option,
                                         BSONObjBuilder* info = NULL );
 
         virtual void temp_cappedTruncateAfter(OperationContext* txn,
-                                              DiskLoc end,
+                                              RecordId end,
                                               bool inclusive);
 
-        virtual DiskLoc oplogStartHack(OperationContext* txn,
-                                       const DiskLoc& startingPosition) const;
+        virtual boost::optional<RecordId> oplogStartHack(OperationContext* txn,
+                                                         const RecordId& startingPosition) const;
 
         virtual Status oplogDiskLocRegister( OperationContext* txn,
                                              const OpTime& opTime );
+
+        virtual void updateStatsAfterRepair(OperationContext* txn,
+                                            long long numRecords,
+                                            long long dataSize);
 
         bool isOplog() const { return _isOplog; }
         bool usingOplogHack() const { return _useOplogHack; }
@@ -172,13 +194,13 @@ namespace mongo {
         int64_t cappedMaxDocs() const;
         int64_t cappedMaxSize() const;
 
-        const std::string& GetURI() const { return _uri; }
+        const std::string& getURI() const { return _uri; }
         uint64_t instanceId() const { return _instanceId; }
 
         void setSizeStorer( WiredTigerSizeStorer* ss ) { _sizeStorer = ss; }
 
-        void dealtWithCappedLoc( const DiskLoc& loc );
-        bool isCappedHidden( const DiskLoc& loc ) const;
+        void dealtWithCappedLoc( const RecordId& loc );
+        bool isCappedHidden( const RecordId& loc ) const;
 
     private:
 
@@ -186,56 +208,57 @@ namespace mongo {
         public:
             Iterator( const WiredTigerRecordStore& rs,
                       OperationContext* txn,
-                      const DiskLoc& start,
+                      const RecordId& start,
                       const CollectionScanParams::Direction& dir,
                       bool forParallelCollectionScan );
 
             virtual ~Iterator();
 
             virtual bool isEOF();
-            virtual DiskLoc curr();
-            virtual DiskLoc getNext();
-            virtual void invalidate(const DiskLoc& dl);
+            virtual RecordId curr();
+            virtual RecordId getNext();
+            virtual void invalidate(const RecordId& dl);
             virtual void saveState();
             virtual bool restoreState(OperationContext *txn);
-            virtual RecordData dataFor( const DiskLoc& loc ) const;
+            virtual RecordData dataFor( const RecordId& loc ) const;
 
         private:
             void _getNext();
-            void _locate( const DiskLoc &loc, bool exact );
-            DiskLoc _curr() const; // const version of public curr method
+            void _locate( const RecordId &loc, bool exact );
+            RecordId _curr() const; // const version of public curr method
 
             const WiredTigerRecordStore& _rs;
             OperationContext* _txn;
             RecoveryUnit* _savedRecoveryUnit; // only used to sanity check between save/restore
             const bool _forward;
             bool _forParallelCollectionScan;
-            scoped_ptr<WiredTigerCursor> _cursor;
+            boost::scoped_ptr<WiredTigerCursor> _cursor;
             bool _eof;
-            const DiskLoc _readUntilForOplog;
+            const RecordId _readUntilForOplog;
 
-            DiskLoc _loc; // Cached key of _cursor. Update any time _cursor is moved.
-            DiskLoc _lastLoc; // the last thing returned from getNext()
+            RecordId _loc; // Cached key of _cursor. Update any time _cursor is moved.
+            RecordId _lastLoc; // the last thing returned from getNext()
         };
 
+        class CappedInsertChange;
         class NumRecordsChange;
         class DataSizeChange;
 
         static WiredTigerRecoveryUnit* _getRecoveryUnit( OperationContext* txn );
 
-        static uint64_t _makeKey(const DiskLoc &loc);
-        static DiskLoc _fromKey(uint64_t k);
+        static int64_t _makeKey(const RecordId &loc);
+        static RecordId _fromKey(int64_t k);
 
-        void _addUncommitedDiskLoc_inlock( OperationContext* txn, const DiskLoc& loc );
+        void _addUncommitedDiskLoc_inlock( OperationContext* txn, const RecordId& loc );
 
-        DiskLoc _nextId();
-        void _setId(DiskLoc loc);
+        RecordId _nextId();
+        void _setId(RecordId loc);
         bool cappedAndNeedDelete() const;
-        void cappedDeleteAsNeeded(OperationContext* txn, const DiskLoc& justInserted );
-        void _changeNumRecords(OperationContext* txn, bool insert);
+        void cappedDeleteAsNeeded(OperationContext* txn, const RecordId& justInserted );
+        void _changeNumRecords(OperationContext* txn, int64_t diff);
         void _increaseDataSize(OperationContext* txn, int amount);
         RecordData _getData( const WiredTigerCursor& cursor) const;
-        StatusWith<DiskLoc> extractAndCheckLocForOplog(const char* data, int len);
+        StatusWith<RecordId> extractAndCheckLocForOplog(const char* data, int len);
         void _oplogSetStartHack( WiredTigerRecoveryUnit* wru ) const;
 
         const std::string _uri;
@@ -245,23 +268,29 @@ namespace mongo {
         const bool _isCapped;
         const bool _isOplog;
         const int64_t _cappedMaxSize;
+        const int64_t _cappedMaxSizeSlack; // when to start applying backpressure
         const int64_t _cappedMaxDocs;
         CappedDocumentDeleteCallback* _cappedDeleteCallback;
-        boost::mutex _cappedDeleterMutex; // see commend in ::cappedDeleteAsNeeded
+        int _cappedDeleteCheckCount; // see comment in ::cappedDeleteAsNeeded
+        boost::mutex _cappedDeleterMutex; // see comment in ::cappedDeleteAsNeeded
 
         const bool _useOplogHack;
 
-        typedef std::vector<DiskLoc> SortedDiskLocs;
+        typedef std::vector<RecordId> SortedDiskLocs;
         SortedDiskLocs _uncommittedDiskLocs;
-        DiskLoc _oplog_visibleTo;
-        DiskLoc _oplog_highestSeen;
+        RecordId _oplog_visibleTo;
+        RecordId _oplog_highestSeen;
         mutable boost::mutex _uncommittedDiskLocsMutex;
 
-        AtomicUInt64 _nextIdNum;
+        AtomicInt64 _nextIdNum;
         AtomicInt64 _dataSize;
         AtomicInt64 _numRecords;
 
         WiredTigerSizeStorer* _sizeStorer; // not owned, can be NULL
         int _sizeStorerCounter;
     };
+
+    // WT failpoint to throw write conflict exceptions randomly
+    MONGO_FP_FORWARD_DECLARE(WTWriteConflictException);
+
 }

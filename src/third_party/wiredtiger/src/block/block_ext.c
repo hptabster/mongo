@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -1167,7 +1168,7 @@ __wt_block_extlist_read(WT_SESSION_IMPL *session,
 	 * merged).  Second, the "available" list is sorted by size as well as
 	 * by offset, and the fast-path append code doesn't support that, it's
 	 * limited to offset.  The test of "track size" is short-hand for "are
-	 * we reading the "available" list.
+	 * we reading the available-blocks list".
 	 */
 	func = el->track_size == 0 ? __block_append : __block_merge;
 	for (;;) {
@@ -1199,7 +1200,7 @@ corrupted:		WT_PANIC_RET(session, WT_ERROR,
 	if (WT_VERBOSE_ISSET(session, WT_VERB_BLOCK))
 		WT_ERR(__block_extlist_dump(session, "read extlist", el, 0));
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	return (ret);
 }
 
@@ -1295,7 +1296,7 @@ __wt_block_extlist_write(WT_SESSION_IMPL *session,
 	    "%s written %" PRIdMAX "/%" PRIu32,
 	    el->name, (intmax_t)el->offset, el->size));
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	return (ret);
 }
 

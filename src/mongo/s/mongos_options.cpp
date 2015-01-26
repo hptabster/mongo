@@ -32,6 +32,7 @@
 
 #include "mongo/s/mongos_options.h"
 
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,8 @@
 #include "mongo/util/stringutils.h"
 
 namespace mongo {
+
+    using std::endl;
 
     MongosGlobalParams mongosGlobalParams;
 

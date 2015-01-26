@@ -33,11 +33,20 @@
 
 #include "mongo/db/projection.h"
 
+#include <boost/make_shared.hpp>
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/db/matcher/matcher.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
+
+    using boost::shared_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::max;
+    using std::string;
 
     void Projection::init(const BSONObj& o,
                           const MatchExpressionParser::WhereCallback& whereCallback) {

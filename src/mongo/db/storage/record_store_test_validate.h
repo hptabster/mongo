@@ -30,14 +30,12 @@
 
 #pragma once
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/record_store_test_harness.h"
 #include "mongo/unittest/unittest.h"
-
-using std::set;
-using std::string;
-using std::stringstream;
 
 namespace mongo {
 namespace {
@@ -46,14 +44,14 @@ namespace {
     public:
         ValidateAdaptorSpy() { }
 
-        ValidateAdaptorSpy( const set<string> &remain )
+        ValidateAdaptorSpy( const std::set<std::string> &remain )
             : _remain( remain ) {
         }
 
         ~ValidateAdaptorSpy() { }
 
         Status validate( const RecordData &recordData, size_t *dataSize ) {
-            string s( recordData.data() );
+            std::string s( recordData.data() );
             ASSERT( 1 == _remain.erase( s ) );
 
             *dataSize = recordData.size();
@@ -63,7 +61,7 @@ namespace {
         bool allValidated() { return _remain.empty(); }
 
     private:
-        set<string> _remain; // initially contains all inserted records
+        std::set<std::string> _remain; // initially contains all inserted records
     };
 
     class ValidateTest : public mongo::unittest::Test {
@@ -77,27 +75,27 @@ namespace {
             return _harnessHelper->newOperationContext();
         }
 
-        const RecordStore& getRecordStore() { return *_rs; }
+        RecordStore& getRecordStore() { return *_rs; }
 
-        const set<string>& getInsertedRecords() { return _remain; }
+        const std::set<std::string>& getInsertedRecords() { return _remain; }
 
         void setUp() {
             {
-                scoped_ptr<OperationContext> opCtx( newOperationContext() );
+                boost::scoped_ptr<OperationContext> opCtx( newOperationContext() );
                 ASSERT_EQUALS( 0, _rs->numRecords( opCtx.get() ) );
             }
 
             int nToInsert = 10;
             for ( int i = 0; i < nToInsert; i++ ) {
-                scoped_ptr<OperationContext> opCtx( newOperationContext() );
+                boost::scoped_ptr<OperationContext> opCtx( newOperationContext() );
                 {
-                    stringstream ss;
+                    std::stringstream ss;
                     ss << "record " << i;
-                    string data = ss.str();
+                    std::string data = ss.str();
                     ASSERT( _remain.insert( data ).second );
 
                     WriteUnitOfWork uow( opCtx.get() );
-                    StatusWith<DiskLoc> res = _rs->insertRecord( opCtx.get(),
+                    StatusWith<RecordId> res = _rs->insertRecord( opCtx.get(),
                                                                  data.c_str(),
                                                                  data.size() + 1,
                                                                  false );
@@ -107,15 +105,15 @@ namespace {
             }
 
             {
-                scoped_ptr<OperationContext> opCtx( newOperationContext() );
+                boost::scoped_ptr<OperationContext> opCtx( newOperationContext() );
                 ASSERT_EQUALS( nToInsert, _rs->numRecords( opCtx.get() ) );
             }
         }
 
     private:
-        scoped_ptr<HarnessHelper> _harnessHelper;
-        scoped_ptr<RecordStore> _rs;
-        set<string> _remain;
+        boost::scoped_ptr<HarnessHelper> _harnessHelper;
+        boost::scoped_ptr<RecordStore> _rs;
+        std::set<std::string> _remain;
     };
 
 } // namespace

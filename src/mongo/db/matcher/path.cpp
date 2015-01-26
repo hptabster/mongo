@@ -28,7 +28,7 @@
  *    it in the license file.
  */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/path_internal.h"
 #include "mongo/db/matcher/path.h"

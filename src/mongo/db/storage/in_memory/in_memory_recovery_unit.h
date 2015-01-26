@@ -30,9 +30,10 @@
 
 #pragma once
 
+#include <boost/shared_ptr.hpp>
 #include <vector>
 
-#include "mongo/db/diskloc.h"
+#include "mongo/db/record_id.h"
 #include "mongo/db/storage/recovery_unit.h"
 
 namespace mongo {
@@ -61,6 +62,8 @@ namespace mongo {
         virtual void* writingPtr(void* data, size_t len) {
             invariant(!"don't call writingPtr");
         }
+
+        virtual void setRollbackWritesDisabled() {}
 
     private:
         typedef boost::shared_ptr<Change> ChangePtr;

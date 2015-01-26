@@ -34,6 +34,8 @@
 
 #include "mongo/db/commands/mr.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/client/connpool.h"
 #include "mongo/client/parallel.h"
 #include "mongo/db/auth/authorization_session.h"
@@ -50,7 +52,7 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/range_preserver.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context_impl.h"
@@ -65,6 +67,14 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::set;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     namespace mr {
 
@@ -334,7 +344,7 @@ namespace mongo {
             if (_useIncremental) {
                 // We don't want to log the deletion of incLong as it isn't replicated. While
                 // harmless, this would lead to a scary looking warning on the secondaries.
-                ScopedTransaction(_txn, MODE_IX);
+                ScopedTransaction scopedXact(_txn, MODE_IX);
                 Lock::DBLock lk(_txn->lockState(),
                                 nsToDatabaseSubstring(_config.incLong),
                                 MODE_X);
@@ -601,7 +611,7 @@ namespace mongo {
                                _safeCount(_db, _config.tempNamespace, BSONObj()));
                 auto_ptr<DBClientCursor> cursor = _db.query(_config.tempNamespace , BSONObj());
                 while (cursor->more()) {
-                    ScopedTransaction(_txn, MODE_IX);
+                    ScopedTransaction scopedXact(_txn, MODE_IX);
                     Lock::DBLock lock(_txn->lockState(),
                                       nsToDatabaseSubstring(_config.outputOptions.finalNamespace),
                                       MODE_X);
@@ -630,7 +640,7 @@ namespace mongo {
                     {
                         Client::Context tx(txn, _config.outputOptions.finalNamespace);
                         Collection* coll =
-                            tx.db()->getCollection(_txn, _config.outputOptions.finalNamespace);
+                            tx.db()->getCollection(_config.outputOptions.finalNamespace);
                         found = Helpers::findOne(_txn,
                                                  coll,
                                                  temp["_id"].wrap(),
@@ -673,16 +683,14 @@ namespace mongo {
                     canAcceptWritesForDatabase(nsToDatabase(ns.c_str())));
             Collection* coll = getCollectionOrUassert(ctx.db(), ns);
 
-            class BSONObjBuilder b;
+            BSONObjBuilder b;
             if ( !o.hasField( "_id" ) ) {
-                OID id;
-                id.init();
                 b.appendOID( "_id", NULL, true );
             }
             b.appendElements(o);
             BSONObj bo = b.obj();
 
-            coll->insertDocument( _txn, bo, true );
+            uassertStatusOK( coll->insertDocument( _txn, bo, true ).getStatus() );
             repl::logOp(_txn, "i", ns.c_str(), bo);
             wuow.commit();
         }
@@ -696,7 +704,7 @@ namespace mongo {
             Client::WriteContext ctx(_txn,  _config.incLong );
             WriteUnitOfWork wuow(_txn);
             Collection* coll = getCollectionOrUassert(ctx.db(), _config.incLong);
-            coll->insertDocument( _txn, o, true );
+            uassertStatusOK( coll->insertDocument( _txn, o, true ).getStatus() );
             wuow.commit();
         }
 
@@ -894,7 +902,7 @@ namespace mongo {
         }
 
         Collection* State::getCollectionOrUassert(Database* db, const StringData& ns) {
-            Collection* out = db ? db->getCollection(_txn, ns) : NULL;
+            Collection* out = db ? db->getCollection(ns) : NULL;
             uassert(18697, "Collection unexpectedly disappeared: " + ns.toString(),
                     out);
             return out;
@@ -1299,11 +1307,11 @@ namespace mongo {
                     errmsg = "ns doesn't exist";
                     return false;
                 }
-                repl::ReplicationCoordinator* replCoord = repl::getGlobalReplicationCoordinator();
-                if (replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet
-                        && state.isOnDisk()) {
+                if (state.isOnDisk()) {
                     // this means that it will be doing a write operation, make sure we are on Master
                     // ideally this check should be in slaveOk(), but at that point config is not known
+                    repl::ReplicationCoordinator* const replCoord =
+                        repl::getGlobalReplicationCoordinator();
                     if (!replCoord->canAcceptWritesForDatabase(dbname)) {
                         errmsg = "not master";
                         return false;
@@ -1332,18 +1340,23 @@ namespace mongo {
                     progress.showTotal(showTotal);
                     ProgressMeterHolder pm(progress);
 
-                    wassert( config.limit < 0x4000000 ); // see case on next line to 32 bit unsigned
+                    // See cast on next line to 32 bit unsigned
+                    wassert(config.limit < 0x4000000);
 
                     long long mapTime = 0;
                     long long reduceTime = 0;
                     long long numInputs = 0;
+
                     {
-                        // We've got a cursor preventing migrations off, now re-establish our useful cursor
+                        // We've got a cursor preventing migrations off, now re-establish our
+                        // useful cursor.
 
                         const NamespaceString nss(config.ns);
 
                         // Need lock and context to use it
-                        scoped_ptr<Lock::DBRead> lock(new Lock::DBRead(txn->lockState(), nss.db()));
+                        scoped_ptr<ScopedTransaction> scopedXact(
+                                                        new ScopedTransaction(txn, MODE_IS));
+                        scoped_ptr<AutoGetDb> scopedAutoDb(new AutoGetDb(txn, nss.db(), MODE_S));
 
                         const WhereCallbackReal whereCallback(txn, nss.db());
 
@@ -1359,7 +1372,7 @@ namespace mongo {
                         }
                         std::auto_ptr<CanonicalQuery> cq(cqRaw);
 
-                        Database* db = dbHolder().get(txn, nss.db());
+                        Database* db = scopedAutoDb->getDb();
                         Collection* coll = state.getCollectionOrUassert(db, config.ns);
                         invariant(coll);
 
@@ -1406,13 +1419,21 @@ namespace mongo {
                                 // TODO: As an optimization, we might want to do the save/restore
                                 // state and yield inside the reduceAndSpillInMemoryState method, so
                                 // it only happens if necessary.
-                                lock.reset();
+                                exec->saveState();
+
+                                scopedAutoDb.reset();
+                                scopedXact.reset();
+
                                 state.reduceAndSpillInMemoryStateIfNeeded();
-                                lock.reset(new Lock::DBRead(txn->lockState(), nss.db()));
+
+                                scopedXact.reset(new ScopedTransaction(txn, MODE_IS));
+                                scopedAutoDb.reset(new AutoGetDb(txn, nss.db(), MODE_S));
+
+                                exec->restoreState(txn);
 
                                 // Need to reload the database, in case it was dropped after we
                                 // released the lock
-                                db = dbHolder().get(txn, nss.db());
+                                db = scopedAutoDb->getDb();
                                 if (db == NULL) {
                                     // Database was deleted after we freed the lock
                                     StringBuilder sb;
@@ -1582,6 +1603,13 @@ namespace mongo {
                 // it would be better to do just one big $or query, but then the sorting would not be efficient
                 string shardName = shardingState.getShardName();
                 DBConfigPtr confOut = grid.getDBConfig( dbname , false );
+
+                if (!confOut) {
+                    log() << "Sharding metadata for output database: " << dbname
+                          << " does not exist";
+                    return false;
+                }
+
                 vector<ChunkPtr> chunks;
                 if ( confOut->isSharded(config.outputOptions.finalNamespace) ) {
                     ChunkManagerPtr cm = confOut->getChunkManager(

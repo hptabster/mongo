@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -453,6 +454,7 @@ __wt_curds_open(
 	    __wt_cursor_set_key,	/* set-key */
 	    __wt_cursor_set_value,	/* set-value */
 	    __curds_compare,		/* compare */
+	    __wt_cursor_equal,		/* equals */
 	    __curds_next,		/* next */
 	    __curds_prev,		/* prev */
 	    __curds_reset,		/* reset */
@@ -461,6 +463,7 @@ __wt_curds_open(
 	    __curds_insert,		/* insert */
 	    __curds_update,		/* update */
 	    __curds_remove,		/* remove */
+	    __wt_cursor_notsup,		/* reconfigure */
 	    __curds_close);		/* close */
 	WT_CONFIG_ITEM cval, metadata;
 	WT_CURSOR *cursor, *source;
@@ -473,11 +476,10 @@ __wt_curds_open(
 	data_source = NULL;
 	metaconf = NULL;
 
-	WT_RET(__wt_calloc_def(session, 1, &data_source));
+	WT_RET(__wt_calloc_one(session, &data_source));
 	cursor = &data_source->iface;
 	*cursor = iface;
 	cursor->session = &session->iface;
-	F_SET(cursor, WT_CURSTD_DATA_SOURCE);
 
 	/*
 	 * XXX
@@ -498,7 +500,7 @@ __wt_curds_open(
 	/* Data-source cursors may have a custom collator. */
 	WT_ERR(
 	    __wt_config_getones(session, metaconf, "app_metadata", &metadata));
-	WT_ERR(__wt_config_gets(session, cfg, "collator", &cval));
+	WT_ERR(__wt_config_gets_none(session, cfg, "collator", &cval));
 	if (cval.len != 0)
 		WT_ERR(__wt_collator_config(session, uri, &cval, &metadata,
 		    &data_source->collator, &data_source->collator_owned));

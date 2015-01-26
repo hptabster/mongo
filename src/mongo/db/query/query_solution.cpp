@@ -35,6 +35,8 @@
 
 namespace mongo {
 
+    using std::set;
+
     string QuerySolutionNode::toString() const {
         mongoutils::str::stream ss;
         appendToString(&ss, 0);
@@ -429,9 +431,9 @@ namespace mongo {
     }
 
     bool IndexScanNode::sortedByDiskLoc() const {
-        // Indices use DiskLoc as an additional key after the actual index key.
+        // Indices use RecordId as an additional key after the actual index key.
         // Therefore, if we're only examining one index key, the output is sorted
-        // by DiskLoc.
+        // by RecordId.
 
         // If it's a simple range query, it's easy to determine if the range is a point.
         if (bounds.isSimpleRange) {
@@ -507,9 +509,13 @@ namespace mongo {
         // For each sort in _sorts:
         //    For each drop in powerset(equalityFields):
         //        Remove fields in 'drop' from 'sort' and add resulting sort to output.
-
-        // Since this involves a powerset, we only remove point intervals that the prior sort
-        // planning code removed, namely the contiguous prefix of the key pattern.
+        //
+        // Since this involves a powerset, we don't generate the full set of possibilities.
+        // Instead, we generate sort orders by removing possible contiguous prefixes of equality
+        // predicates. For example, if the key pattern is {a: 1, b: 1, c: 1, d: 1, e: 1}
+        // and and there are equality predicates on 'a', 'b', and 'c', then here we add the sort
+        // orders {b: 1, c: 1, d: 1, e: 1} and {c: 1, d: 1, e: 1}. (We also end up adding
+        // {d: 1, e: 1} and {d: 1}, but this is done later on.)
         BSONObjIterator it(sortPattern);
         BSONObjBuilder suffixBob;
         while (it.more()) {
@@ -520,6 +526,15 @@ namespace mongo {
                 // This field isn't a point interval, can't drop.
                 break;
             }
+
+            // We add the sort obtained by dropping 'elt' and all preceding elements from the index
+            // key pattern.
+            BSONObjIterator droppedPrefixIt = it;
+            BSONObjBuilder droppedPrefixBob;
+            while (droppedPrefixIt.more()) {
+                droppedPrefixBob.append(droppedPrefixIt.next());
+            }
+            _sorts.insert(droppedPrefixBob.obj());
         }
 
         while (it.more()) {

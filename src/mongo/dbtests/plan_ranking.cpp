@@ -30,6 +30,9 @@
  * This file tests db/query/plan_ranker.cpp and db/query/multi_plan_runner.cpp.
  */
 
+#include <boost/scoped_ptr.hpp>
+#include <iostream>
+
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
@@ -57,6 +60,9 @@ namespace mongo {
 }  // namespace mongo
 
 namespace PlanRankingTests {
+
+    using boost::scoped_ptr;
+    using std::vector;
 
     static const char* ns = "unittests.PlanRankingTests";
 
@@ -208,7 +214,7 @@ namespace PlanRankingTests {
             // Takes ownership of cq.
             soln = pickBestPlan(cq);
             ASSERT(QueryPlannerTestLib::solutionMatches(
-                             "{fetch: {filter: null, node: {andSorted: {nodes: ["
+                             "{fetch: {node: {andSorted: {nodes: ["
                                      "{ixscan: {filter: null, pattern: {a:1}}},"
                                      "{ixscan: {filter: null, pattern: {b:1}}}]}}}}",
                              soln->root.get()));
@@ -244,7 +250,7 @@ namespace PlanRankingTests {
             // Takes ownership of cq.
             QuerySolution* soln = pickBestPlan(cq);
             ASSERT(QueryPlannerTestLib::solutionMatches(
-                             "{fetch: {filter: null, node: {andHash: {nodes: ["
+                             "{fetch: {node: {andHash: {nodes: ["
                                      "{ixscan: {filter: null, pattern: {a:1}}},"
                                      "{ixscan: {filter: null, pattern: {b:1}}}]}}}}",
                              soln->root.get()));
@@ -403,7 +409,7 @@ namespace PlanRankingTests {
      * equality predicate on "a".  The presence of the range predicate has an impact on the
      * intersection plan that is raced against the single-index plans: since "a" no longer generates
      * point interval bounds, the results of the index scan aren't guaranteed to be returned in
-     * DiskLoc order, and so the intersection plan uses the AND_HASHED stage instead of the
+     * RecordId order, and so the intersection plan uses the AND_HASHED stage instead of the
      * AND_SORTED stage.  It is still the case that the query should pick the plan that uses index
      * "b", instead of the plan that uses index "a" or the (hashed) intersection plan.
      */
@@ -618,7 +624,7 @@ namespace PlanRankingTests {
 
             QuerySolution* soln = pickBestPlan(cq);
             ASSERT(QueryPlannerTestLib::solutionMatches(
-                "{fetch: {filter: null, node: {andSorted: {nodes: ["
+                "{fetch: {node: {andSorted: {nodes: ["
                     "{ixscan: {filter: null, pattern: {a:1}}},"
                     "{ixscan: {filter: null, pattern: {b:1}}}]}}}}",
                 soln->root.get()));
@@ -660,7 +666,7 @@ namespace PlanRankingTests {
             // Choose the index intersection plan.
             QuerySolution* soln = pickBestPlan(cq);
             ASSERT(QueryPlannerTestLib::solutionMatches(
-                "{fetch: {filter: null, node: {andSorted: {nodes: ["
+                "{fetch: {node: {andSorted: {nodes: ["
                     "{ixscan: {filter: null, pattern: {a:1}}},"
                     "{ixscan: {filter: null, pattern: {b:1}}}]}}}}",
                 soln->root.get()));
@@ -704,7 +710,7 @@ namespace PlanRankingTests {
             // other plans are busy fetching documents.
             QuerySolution* soln = pickBestPlan(cq);
             ASSERT(QueryPlannerTestLib::solutionMatches(
-                "{fetch: {filter: {a:1}, node: {andSorted: {nodes: ["
+                "{fetch: {node: {andSorted: {nodes: ["
                     "{ixscan: {filter: null, pattern: {b:1}}},"
                     "{ixscan: {filter: null, pattern: {c:1}}}]}}}}",
                 soln->root.get()));
@@ -777,7 +783,6 @@ namespace PlanRankingTests {
 
             // Use index on 'b'.
             QuerySolution* soln = pickBestPlan(cq);
-            std::cerr << "PlanRankingWorkPlansLongEnough: soln=" << soln->toString() << std::endl;
             ASSERT(QueryPlannerTestLib::solutionMatches(
                         "{fetch: {node: {ixscan: {pattern: {b: 1}}}}}",
                         soln->root.get()));

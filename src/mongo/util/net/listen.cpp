@@ -34,8 +34,12 @@
 
 #include "mongo/util/net/listen.h"
 
+#include <boost/scoped_array.hpp>
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/db/server_options.h"
 #include "mongo/base/owned_pointer_vector.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/message_port.h"
 #include "mongo/util/net/ssl_manager.h"
@@ -70,6 +74,11 @@
 #endif
 
 namespace mongo {
+
+    using boost::shared_ptr;
+    using std::endl;
+    using std::string;
+    using std::vector;
 
     // ----- Listener -------
 
@@ -155,10 +164,10 @@ namespace mongo {
             if (me.getType() == AF_UNIX) {
 #if !defined(_WIN32)
                 if (unlink(me.getAddr().c_str()) == -1) {
-                    int x = errno;
-                    if (x != ENOENT) {
-                        log() << "couldn't unlink socket file " << me << errnoWithDescription(x) << " skipping" << endl;
-                        continue;
+                    if (errno != ENOENT) {
+                        error() << "Failed to unlink socket file " << me << " "
+                                << errnoWithDescription(errno);
+                        fassertFailedNoTrace(28578);
                     }
                 }
 #endif
@@ -189,7 +198,9 @@ namespace mongo {
 #if !defined(_WIN32)
             if (me.getType() == AF_UNIX) {
                 if (chmod(me.getAddr().c_str(), serverGlobalParams.unixSocketPermissions) == -1) {
-                    error() << "couldn't chmod socket file " << me << errnoWithDescription() << endl;
+                    error() << "Failed to chmod socket file " << me << " "
+                            << errnoWithDescription(errno);
+                    fassertFailedNoTrace(28582);
                 }
                 ListeningSockets::get()->addPath( me.getAddr() );
             }
@@ -278,7 +289,7 @@ namespace mongo {
             }
 
 #if defined(__linux__)
-            _elapsedTime += max(ret, (int)(( 10000 - maxSelectTime.tv_usec ) / 1000));
+            _elapsedTime += std::max(ret, (int)(( 10000 - maxSelectTime.tv_usec ) / 1000));
 #else
             _elapsedTime += ret; // assume 1ms to grab connection. very rough
 #endif

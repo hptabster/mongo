@@ -1,5 +1,3 @@
-// rocks_engine.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -31,6 +29,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/storage/rocks/rocks_engine.h"
 
 #include <boost/filesystem/operations.hpp>
@@ -48,7 +48,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/rocks/rocks_record_store.h"
 #include "mongo/db/storage/rocks/rocks_recovery_unit.h"
-#include "mongo/db/storage/rocks/rocks_sorted_data_impl.h"
+#include "mongo/db/storage/rocks/rocks_index.h"
 #include "mongo/util/log.h"
 
 #define ROCKS_TRACE log()
@@ -58,13 +58,14 @@
 
 namespace mongo {
 
+    using boost::shared_ptr;
+
     const std::string RocksEngine::kOrderingPrefix("indexordering-");
     const std::string RocksEngine::kCollectionPrefix("collection-");
 
-    // TODO make create/drop operations support rollback?
-
-    RocksEngine::RocksEngine(const std::string& path)
-        : _path(path), _collectionComparator(RocksRecordStore::newRocksCollectionComparator()) {
+    RocksEngine::RocksEngine(const std::string& path, bool durable)
+        : _path(path),
+          _durable(durable) {
 
         auto columnFamilyNames = _loadColumnFamilies();       // vector of column family names
         std::unordered_map<std::string, Ordering> orderings;  // column family name -> Ordering
@@ -75,7 +76,7 @@ namespace mongo {
         } else {  // existing DB
             // open DB in read-only mode to load metadata
             rocksdb::DB* dbReadOnly;
-            auto s = rocksdb::DB::OpenForReadOnly(dbOptions(), path, &dbReadOnly);
+            auto s = rocksdb::DB::OpenForReadOnly(_dbOptions(), path, &dbReadOnly);
             ROCKS_STATUS_OK(s);
             auto itr = dbReadOnly->NewIterator(rocksdb::ReadOptions());
             orderings = _loadOrderingMetaData(itr);
@@ -112,7 +113,7 @@ namespace mongo {
 
         std::vector<rocksdb::ColumnFamilyHandle*> handles;
         rocksdb::DB* db;
-        auto s = rocksdb::DB::Open(dbOptions(), path, columnFamilies, &handles, &db);
+        auto s = rocksdb::DB::Open(_dbOptions(), path, columnFamilies, &handles, &db);
         ROCKS_STATUS_OK(s);
         invariant(handles.size() == columnFamilies.size());
         for (size_t i = 0; i < handles.size(); ++i) {
@@ -132,8 +133,7 @@ namespace mongo {
     RocksEngine::~RocksEngine() {}
 
     RecoveryUnit* RocksEngine::newRecoveryUnit() {
-        // TODO  change this to false once higher level code explicitly commits every transaction
-        return new RocksRecoveryUnit(_db.get(), true);
+        return new RocksRecoveryUnit(&_transactionEngine, _db.get(), _durable);
     }
 
     Status RocksEngine::createRecordStore(OperationContext* opCtx,
@@ -176,8 +176,13 @@ namespace mongo {
     SortedDataInterface* RocksEngine::getSortedDataInterface(OperationContext* opCtx,
                                                              const StringData& ident,
                                                              const IndexDescriptor* desc) {
-        return new RocksSortedDataImpl(_db.get(), _getColumnFamily(ident), ident.toString(),
-                                       Ordering::make(desc->keyPattern()));
+        if (desc->unique()) {
+            return new RocksUniqueIndex(_db.get(), _getColumnFamily(ident), ident.toString(),
+                                        Ordering::make(desc->keyPattern()));
+        } else {
+            return new RocksStandardIndex(_db.get(), _getColumnFamily(ident), ident.toString(),
+                                          Ordering::make(desc->keyPattern()));
+        }
     }
 
     Status RocksEngine::dropIdent(OperationContext* opCtx, const StringData& ident) {
@@ -283,7 +288,7 @@ namespace mongo {
     std::vector<std::string> RocksEngine::_loadColumnFamilies() {
         std::vector<std::string> names;
         if (boost::filesystem::exists(_path)) {
-            rocksdb::Status s = rocksdb::DB::ListColumnFamilies(dbOptions(), _path, &names);
+            rocksdb::Status s = rocksdb::DB::ListColumnFamilies(_dbOptions(), _path, &names);
 
             if (s.IsIOError()) {
                 // DNE, this means the directory exists but is empty, which is fine
@@ -296,7 +301,7 @@ namespace mongo {
         return names;
     }
 
-    rocksdb::Options RocksEngine::dbOptions() {
+    rocksdb::Options RocksEngine::_dbOptions() const {
         rocksdb::Options options(rocksdb::DBOptions(), _defaultCFOptions());
 
         // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
@@ -306,6 +311,8 @@ namespace mongo {
         // create the DB if it's not already present
         options.create_if_missing = true;
         options.create_missing_column_families = true;
+        options.wal_dir = _path + "/journal";
+        options.max_total_wal_size = 1 << 30;  // 1GB
 
         return options;
     }
@@ -318,16 +325,11 @@ namespace mongo {
 
     rocksdb::ColumnFamilyOptions RocksEngine::_collectionOptions() const {
         rocksdb::ColumnFamilyOptions options;
-        invariant( _collectionComparator.get() );
-        options.comparator = _collectionComparator.get();
         return options;
     }
 
     rocksdb::ColumnFamilyOptions RocksEngine::_indexOptions(const Ordering& order) const {
-        rocksdb::ColumnFamilyOptions options;
-        invariant( _collectionComparator.get() );
-        options.comparator = RocksSortedDataImpl::newRocksComparator(order);
-        return options;
+        return rocksdb::ColumnFamilyOptions();
     }
 
     Status toMongoStatus( rocksdb::Status s ) {

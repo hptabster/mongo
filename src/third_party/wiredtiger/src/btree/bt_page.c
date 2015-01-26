@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -36,8 +37,11 @@ __evict_force_check(WT_SESSION_IMPL *session, WT_PAGE *page)
 	    page->type != WT_PAGE_ROW_LEAF)
 		return (0);
 
-	/* Eviction may be turned off, although that's rare. */
-	if (F_ISSET(btree, WT_BTREE_NO_EVICTION))
+	/*
+	 * Eviction may be turned off (although that's rare), or we may be in
+	 * the middle of a checkpoint.
+	 */
+	if (F_ISSET(btree, WT_BTREE_NO_EVICTION) || btree->checkpointing)
 		return (0);
 
 	/*
@@ -48,7 +52,7 @@ __evict_force_check(WT_SESSION_IMPL *session, WT_PAGE *page)
 		return (0);
 
 	/* Trigger eviction on the next page release. */
-	page->read_gen = WT_READGEN_OLDEST;
+	__wt_page_evict_soon(page);
 
 	return (1);
 }
@@ -67,9 +71,10 @@ __wt_page_in_func(WT_SESSION_IMPL *session, WT_REF *ref, uint32_t flags
 {
 	WT_DECL_RET;
 	WT_PAGE *page;
+	u_int sleep_cnt, wait_cnt;
 	int busy, force_attempts, oldgen;
 
-	for (force_attempts = oldgen = 0;;) {
+	for (force_attempts = oldgen = 0, wait_cnt = 0;;) {
 		switch (ref->state) {
 		case WT_REF_DISK:
 		case WT_REF_DELETED:
@@ -88,11 +93,14 @@ __wt_page_in_func(WT_SESSION_IMPL *session, WT_REF *ref, uint32_t flags
 		case WT_REF_READING:
 			if (LF_ISSET(WT_READ_CACHE))
 				return (WT_NOTFOUND);
-			/* FALLTHROUGH */
+			if (LF_ISSET(WT_READ_NO_WAIT))
+				return (WT_NOTFOUND);
+			WT_STAT_FAST_CONN_INCR(session, page_read_blocked);
+			break;
 		case WT_REF_LOCKED:
 			if (LF_ISSET(WT_READ_NO_WAIT))
 				return (WT_NOTFOUND);
-			/* The page is busy -- wait. */
+			WT_STAT_FAST_CONN_INCR(session, page_locked_blocked);
 			break;
 		case WT_REF_SPLIT:
 			return (WT_RESTART);
@@ -109,8 +117,11 @@ __wt_page_in_func(WT_SESSION_IMPL *session, WT_REF *ref, uint32_t flags
 #else
 			WT_RET(__wt_hazard_set(session, ref, &busy));
 #endif
-			if (busy)
+			if (busy) {
+				WT_STAT_FAST_CONN_INCR(
+				    session, page_busy_blocked);
 				break;
+			}
 
 			page = ref->page;
 			WT_ASSERT(session, page != NULL);
@@ -120,7 +131,15 @@ __wt_page_in_func(WT_SESSION_IMPL *session, WT_REF *ref, uint32_t flags
 			    force_attempts < 10 &&
 			    __evict_force_check(session, page)) {
 				++force_attempts;
-				WT_RET(__wt_page_release(session, ref, flags));
+				if ((ret = __wt_page_release_busy(
+				    session, ref, flags)) == EBUSY) {
+					/* If forced eviction fails, stall. */
+					ret = 0;
+					wait_cnt += 1000;
+				} else
+					WT_RET(ret);
+				WT_STAT_FAST_CONN_INCR(
+				    session, page_forcible_evict_blocked);
 				break;
 			}
 
@@ -138,7 +157,7 @@ __wt_page_in_func(WT_SESSION_IMPL *session, WT_REF *ref, uint32_t flags
 			 * Otherwise, update the page's read generation.
 			 */
 			if (oldgen && page->read_gen == WT_READGEN_NOTSET)
-				page->read_gen = WT_READGEN_OLDEST;
+				__wt_page_evict_soon(page);
 			else if (!LF_ISSET(WT_READ_NO_GEN) &&
 			    page->read_gen < __wt_cache_read_gen(session))
 				page->read_gen =
@@ -148,8 +167,19 @@ __wt_page_in_func(WT_SESSION_IMPL *session, WT_REF *ref, uint32_t flags
 		WT_ILLEGAL_VALUE(session);
 		}
 
-		/* We failed to get the page -- yield before retrying. */
-		__wt_yield();
+		/*
+		 * We failed to get the page -- yield before retrying, and if
+		 * we've yielded enough times, start sleeping so we don't burn
+		 * CPU to no purpose.
+		 */
+		if (++wait_cnt < 1000)
+			__wt_yield();
+		else {
+			sleep_cnt = WT_MIN(wait_cnt, 10000);
+			wait_cnt *= 2;
+			WT_STAT_FAST_CONN_INCRV(session, page_sleep, sleep_cnt);
+			__wt_sleep(0, sleep_cnt);
+		}
 	}
 }
 
@@ -227,8 +257,8 @@ __wt_page_alloc(WT_SESSION_IMPL *session, uint8_t type,
 		WT_INTL_INDEX_SET(page, pindex);
 		if (alloc_refs)
 			for (i = 0; i < pindex->entries; ++i) {
-				WT_ERR(__wt_calloc_def(
-				    session, 1, &pindex->index[i]));
+				WT_ERR(__wt_calloc_one(
+				    session, &pindex->index[i]));
 				size += sizeof(WT_REF);
 			}
 		if (0) {
@@ -622,7 +652,7 @@ __inmem_row_int(WT_SESSION_IMPL *session, WT_PAGE *page, size_t *sizep)
 		}
 	}
 
-err:	__wt_scr_free(&current);
+err:	__wt_scr_free(session, &current);
 	return (ret);
 }
 

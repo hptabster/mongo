@@ -43,6 +43,8 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/mongoutils/str.h"
 
+using boost::scoped_ptr;
+
 namespace mongo {
 namespace repl {
 namespace {
@@ -411,8 +413,8 @@ namespace {
         stopCapturingLogMessages();
 
         ASSERT_EQUALS(shouldAbortElection(), FreshnessChecker::FresherNodeFound);
-        ASSERT_EQUALS(1, countLogLinesContaining("not electing self, h1:27017 would veto with '"
-                                                 "errmsg: \"I'd rather you didn't\"'"));
+        ASSERT_EQUALS(1, countLogLinesContaining("not electing self, h1:27017 would veto with "
+                                                 "'I'd rather you didn't'"));
     }
 
     int findIdForMember(const ReplicaSetConfig& rsConfig, const HostAndPort& host) {
@@ -677,8 +679,8 @@ namespace {
         waitOnChecker();
         stopCapturingLogMessages();
         ASSERT_EQUALS(shouldAbortElection(), FreshnessChecker::FresherNodeFound);
-        ASSERT_EQUALS(1, countLogLinesContaining("not electing self, h1:27017 would veto with '"
-                                                 "errmsg: \"I'd rather you didn't\"'"));
+        ASSERT_EQUALS(1, countLogLinesContaining("not electing self, h1:27017 would veto with "
+                                                 "'I'd rather you didn't'"));
     }
 
     TEST_F(FreshnessCheckerTest, ElectVetoedAndTiedFreshnessManyNodes) {
@@ -761,8 +763,8 @@ namespace {
         waitOnChecker();
         stopCapturingLogMessages();
         ASSERT_EQUALS(shouldAbortElection(), FreshnessChecker::FresherNodeFound);
-        ASSERT_EQUALS(1, countLogLinesContaining("not electing self, h4:27017 would veto with '"
-                                                 "errmsg: \"I'd rather you didn't\"'"));
+        ASSERT_EQUALS(1, countLogLinesContaining("not electing self, h4:27017 would veto with "
+                                                 "'I'd rather you didn't'"));
     }
 
     TEST_F(FreshnessCheckerTest, ElectManyNodesNotAllRespond) {

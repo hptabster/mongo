@@ -45,6 +45,9 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::endl;
+
 namespace authindex {
 
 namespace {
@@ -78,13 +81,13 @@ namespace {
         const NamespaceString systemUsers = AuthorizationManager::usersCollectionNamespace;
 
         // Make sure the old unique index from v2.4 on system.users doesn't exist.
+        ScopedTransaction scopedXact(txn, MODE_IX);
         AutoGetDb autoDb(txn, systemUsers.db(), MODE_X);
         if (!autoDb.getDb()) {
             return Status::OK();
         }
 
-        Collection* collection = autoDb.getDb()->getCollection(txn,
-                                                               NamespaceString(systemUsers));
+        Collection* collection = autoDb.getDb()->getCollection(NamespaceString(systemUsers));
         if (!collection) {
             return Status::OK();
         }

@@ -34,6 +34,17 @@
 
 #include "mongo/util/assert_util.h"
 
+#define MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN do { int wcr__Attempts = 0; do { try
+#define MONGO_WRITE_CONFLICT_RETRY_LOOP_END(OPDBG, OPSTR, NSSTR)        \
+        catch (const ::mongo::WriteConflictException &wce) {            \
+            ++(OPDBG).writeConflicts;                                   \
+            wce.logAndBackoff(wcr__Attempts, (OPSTR), (NSSTR));         \
+            ++wcr__Attempts;                                            \
+            continue;                                                   \
+        }                                                               \
+        break;                                                          \
+    } while (true); } while (false)
+
 namespace mongo {
 
     /**
@@ -43,7 +54,7 @@ namespace mongo {
      */
     class WriteConflictException : public DBException {
     public:
-        WriteConflictException() : DBException( "WriteConflict", ErrorCodes::WriteConflict ){}
+        WriteConflictException();
 
         /**
          * Will log a message if sensible and will do an exponential backoff to make sure
@@ -54,6 +65,12 @@ namespace mongo {
         static void logAndBackoff(int attempt,
                                   const StringData& operation,
                                   const StringData& ns);
+
+        /**
+         * If true, will call printStackTrace on every WriteConflictException created.
+         * Can be set via setParameter named traceWriteConflictExceptions.
+         */
+        static bool trace;
     };
 
 }

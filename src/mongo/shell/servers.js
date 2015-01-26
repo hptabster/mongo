@@ -112,12 +112,14 @@ MongoRunner.VersionSub = function(regex, version) {
 // version string to support the dev/stable MongoDB release cycle.
 MongoRunner.binVersionSubs = [ new MongoRunner.VersionSub(/^latest$/, ""),
                                new MongoRunner.VersionSub(/^oldest-supported$/, "1.8"),
-                               // To-be-updated when 2.8 becomes available
+                               // To-be-updated when 3.0 becomes available
                                new MongoRunner.VersionSub(/^last-stable$/, "2.6"),
                                // Latest unstable and next stable are effectively the
                                // same release
                                new MongoRunner.VersionSub(/^2\.7(\..*){0,1}/, ""),
-                               new MongoRunner.VersionSub(/^2\.8(\..*){0,1}/, "") ];
+                               new MongoRunner.VersionSub(/^2\.8(\..*){0,1}/, ""),
+                               new MongoRunner.VersionSub(/^3\.0(\..*){0,1}/, ""),
+                               new MongoRunner.VersionSub(/^3\.1(\..*){0,1}/, "") ];
 
 MongoRunner.getBinVersionFor = function(version) {
  
@@ -800,16 +802,18 @@ function appendSetParameterArgs(argArray) {
         else if (programName.endsWith('mongod')) {
             // set storageEngine for mongod
             if (jsTest.options().storageEngine) {
-                argArray.push.apply(argArray, ['--storageEngine', jsTest.options().storageEngine]);
+                if ( argArray.indexOf( "--storageEngine" ) < 0 ) {
+                    argArray.push.apply(argArray, ['--storageEngine', jsTest.options().storageEngine]);
+                }
             }
-            if (jsTest.options().wiredTigerEngineConfig) {
-                argArray.push.apply(argArray, ['--wiredTigerEngineConfig', jsTest.options().wiredTigerEngineConfig]);
+            if (jsTest.options().wiredTigerEngineConfigString) {
+                argArray.push.apply(argArray, ['--wiredTigerEngineConfigString', jsTest.options().wiredTigerEngineConfigString]);
             }
-            if (jsTest.options().wiredTigerCollectionConfig) {
-                argArray.push.apply(argArray, ['--wiredTigerCollectionConfig', jsTest.options().wiredTigerCollectionConfig]);
+            if (jsTest.options().wiredTigerCollectionConfigString) {
+                argArray.push.apply(argArray, ['--wiredTigerCollectionConfigString', jsTest.options().wiredTigerCollectionConfigString]);
             }
-            if (jsTest.options().wiredTigerIndexConfig) {
-                argArray.push.apply(argArray, ['--wiredTigerIndexConfig', jsTest.options().wiredTigerIndexConfig]);
+            if (jsTest.options().wiredTigerIndexConfigString) {
+                argArray.push.apply(argArray, ['--wiredTigerIndexConfigString', jsTest.options().wiredTigerIndexConfigString]);
             }
             // apply setParameters for mongod
             if (jsTest.options().setParameters) {
@@ -907,7 +911,6 @@ runMongoProgram = function() {
         args.unshift( progName,
                       '-u', jsTestOptions().authUser,
                       '-p', jsTestOptions().authPassword,
-                      '--authenticationMechanism', DB.prototype._defaultAuthenticationMechanism,
                       '--authenticationDatabase=admin'
                     );
     }
@@ -933,7 +936,6 @@ startMongoProgramNoConnect = function() {
         args.unshift(progName,
                      '-u', jsTestOptions().authUser,
                      '-p', jsTestOptions().authPassword,
-                     '--authenticationMechanism', DB.prototype._defaultAuthenticationMechanism,
                      '--authenticationDatabase=admin');
     }
 

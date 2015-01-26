@@ -29,7 +29,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h" // needed for log.h
+#include "mongo/platform/basic.h"
+#undef MONGO_PCH_WHITELISTED // needed for log.h
 
 #include "mongo/util/progress_meter.h"
 

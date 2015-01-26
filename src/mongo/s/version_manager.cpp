@@ -44,6 +44,10 @@
 
 namespace mongo {
 
+    using std::endl;
+    using std::map;
+    using std::string;
+
     // Global version manager
     VersionManager versionManager;
 
@@ -219,7 +223,7 @@ namespace mongo {
         LOG(3) << "initial sharding result : " << result << endl;
 
         connectionShardStatus.setSequence(conn, "", 0);
-        return true;
+        return ok;
     }
 
     /**

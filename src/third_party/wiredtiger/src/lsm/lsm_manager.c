@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -9,7 +10,6 @@
 
 static int __lsm_manager_aggressive_update(WT_SESSION_IMPL *, WT_LSM_TREE *);
 static int __lsm_manager_run_server(WT_SESSION_IMPL *);
-static int __lsm_manager_worker_setup(WT_SESSION_IMPL *);
 
 static void * __lsm_worker_manager(void *);
 
@@ -50,34 +50,61 @@ __lsm_general_worker_start(WT_SESSION_IMPL *session)
 	manager = &conn->lsm_manager;
 
 	/*
-	 * Start the remaining worker threads.
+	 * Start the worker threads or new worker threads if called via
+	 * reconfigure. The LSM manager is worker[0].
 	 * This should get more sophisticated in the future - only launching
 	 * as many worker threads as are required to keep up with demand.
 	 */
-	WT_ASSERT(session, manager->lsm_workers > 1);
+	WT_ASSERT(session, manager->lsm_workers > 0);
 	for (; manager->lsm_workers < manager->lsm_workers_max;
 	    manager->lsm_workers++) {
 		worker_args =
 		    &manager->lsm_worker_cookies[manager->lsm_workers];
 		worker_args->work_cond = manager->work_cond;
 		worker_args->id = manager->lsm_workers;
-		worker_args->type =
-		    WT_LSM_WORK_BLOOM |
-		    WT_LSM_WORK_DROP |
-		    WT_LSM_WORK_FLUSH |
-		    WT_LSM_WORK_SWITCH;
-		F_SET(worker_args, WT_LSM_WORKER_RUN);
 		/*
-		 * Only allow half of the threads to run merges to avoid all
-		 * all workers getting stuck in long-running merge operations.
-		 * Make sure the first worker is allowed, so that there is at
-		 * least one thread capable of running merges.  We know the
-		 * first worker is id 2, so set merges on even numbered workers.
+		 * The first worker only does switch and drop operations as
+		 * these are both short operations and it is essential
+		 * that switches are responsive to avoid introducing
+		 * throttling stalls.
 		 */
-		if (manager->lsm_workers % 2 == 0)
-			FLD_SET(worker_args->type, WT_LSM_WORK_MERGE);
+		if (manager->lsm_workers == 1)
+			worker_args->type =
+			    WT_LSM_WORK_DROP | WT_LSM_WORK_SWITCH;
+		else {
+			worker_args->type =
+			    WT_LSM_WORK_BLOOM |
+			    WT_LSM_WORK_DROP |
+			    WT_LSM_WORK_FLUSH |
+			    WT_LSM_WORK_SWITCH;
+			/*
+			 * Only allow half of the threads to run merges to
+			 * avoid all all workers getting stuck in long-running
+			 * merge operations. Make sure the first worker is
+			 * allowed, so that there is at least one thread
+			 * capable of running merges.  We know the first
+			 * worker is id 2, so set merges on even numbered
+			 * workers.
+			 */
+			if (manager->lsm_workers % 2 == 0)
+				FLD_SET(worker_args->type, WT_LSM_WORK_MERGE);
+		}
+		F_SET(worker_args, WT_LSM_WORKER_RUN);
 		WT_RET(__wt_lsm_worker_start(session, worker_args));
 	}
+
+	/*
+	 * Setup the first worker properly - if there are only a minimal
+	 * number of workers allow the first worker to flush. Otherwise a
+	 * single merge can lead to switched chunks filling up the cache.
+	 * This is separate to the main loop so that it is applied on startup
+	 * and reconfigure.
+	 */
+	if (manager->lsm_workers_max == WT_LSM_MIN_WORKERS)
+		FLD_SET(manager->lsm_worker_cookies[1].type, WT_LSM_WORK_FLUSH);
+	else
+		FLD_CLR(manager->lsm_worker_cookies[1].type, WT_LSM_WORK_FLUSH);
+
 	return (0);
 }
 
@@ -116,6 +143,15 @@ __lsm_stop_workers(WT_SESSION_IMPL *session)
 		 * statically when the connection was opened.
 		 */
 	}
+
+	/*
+	 * Setup the first worker properly - if there are only a minimal
+	 * number of workers it should flush. Since the number of threads
+	 * is being reduced the field can't already be set.
+	 */
+	if (manager->lsm_workers_max == WT_LSM_MIN_WORKERS)
+		FLD_SET(manager->lsm_worker_cookies[1].type, WT_LSM_WORK_FLUSH);
+
 	return (0);
 }
 
@@ -341,38 +377,6 @@ __lsm_manager_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 }
 
 /*
- * __lsm_manager_worker_setup --
- *	Do setup owned by the LSM manager thread including starting the worker
- *	threads.
- */
-static int
-__lsm_manager_worker_setup(WT_SESSION_IMPL *session)
-{
-	WT_CONNECTION_IMPL *conn;
-	WT_LSM_MANAGER *manager;
-	WT_LSM_WORKER_ARGS *worker_args;
-
-	conn = S2C(session);
-	manager = &conn->lsm_manager;
-
-	WT_ASSERT(session, manager->lsm_workers == 1);
-	/*
-	 * The LSM manager is worker[0].  The switch thread is worker[1].
-	 * Setup and start the switch/drop worker explicitly.
-	 */
-	worker_args = &manager->lsm_worker_cookies[1];
-	worker_args->work_cond = manager->work_cond;
-	worker_args->id = manager->lsm_workers++;
-	worker_args->type = WT_LSM_WORK_DROP | WT_LSM_WORK_SWITCH;
-	F_SET(worker_args, WT_LSM_WORKER_RUN);
-	/* Start the switch thread. */
-	WT_RET(__wt_lsm_worker_start(session, worker_args));
-	WT_RET(__lsm_general_worker_start(session));
-
-	return (0);
-}
-
-/*
  * __lsm_manager_worker_shutdown --
  *	Shutdown the LSM manager and worker threads.
  */
@@ -406,23 +410,28 @@ static int
 __lsm_manager_run_server(WT_SESSION_IMPL *session)
 {
 	WT_CONNECTION_IMPL *conn;
+	WT_DECL_RET;
 	WT_LSM_TREE *lsm_tree;
 	struct timespec now;
 	uint64_t fillms, pushms;
+	int dhandle_locked;
 
 	conn = S2C(session);
+	dhandle_locked = 0;
+
 	while (F_ISSET(conn, WT_CONN_SERVER_RUN)) {
-		if (TAILQ_EMPTY(&conn->lsmqh)) {
-			__wt_sleep(0, 10000);
-			continue;
-		}
 		__wt_sleep(0, 10000);
+		if (TAILQ_EMPTY(&conn->lsmqh))
+			continue;
+		__wt_spin_lock(session, &conn->dhandle_lock);
+		F_SET(session, WT_SESSION_HANDLE_LIST_LOCKED);
+		dhandle_locked = 1;
 		TAILQ_FOREACH(lsm_tree, &S2C(session)->lsmqh, q) {
 			if (!F_ISSET(lsm_tree, WT_LSM_TREE_ACTIVE))
 				continue;
-			WT_RET(__lsm_manager_aggressive_update(
+			WT_ERR(__lsm_manager_aggressive_update(
 			    session, lsm_tree));
-			WT_RET(__wt_epoch(session, &now));
+			WT_ERR(__wt_epoch(session, &now));
 			pushms = lsm_tree->work_push_ts.tv_sec == 0 ? 0 :
 			    WT_TIMEDIFF(
 			    now, lsm_tree->work_push_ts) / WT_MILLION;
@@ -453,15 +462,15 @@ __lsm_manager_run_server(WT_SESSION_IMPL *session)
 			    (lsm_tree->merge_aggressiveness > 3 &&
 			     !F_ISSET(lsm_tree, WT_LSM_TREE_COMPACTING)) ||
 			    pushms > fillms) {
-				WT_RET(__wt_lsm_manager_push_entry(
+				WT_ERR(__wt_lsm_manager_push_entry(
 				    session, WT_LSM_WORK_SWITCH, 0, lsm_tree));
-				WT_RET(__wt_lsm_manager_push_entry(
+				WT_ERR(__wt_lsm_manager_push_entry(
 				    session, WT_LSM_WORK_DROP, 0, lsm_tree));
-				WT_RET(__wt_lsm_manager_push_entry(
+				WT_ERR(__wt_lsm_manager_push_entry(
 				    session, WT_LSM_WORK_FLUSH, 0, lsm_tree));
-				WT_RET(__wt_lsm_manager_push_entry(
+				WT_ERR(__wt_lsm_manager_push_entry(
 				    session, WT_LSM_WORK_BLOOM, 0, lsm_tree));
-				WT_RET(__wt_verbose(session, WT_VERB_LSM,
+				WT_ERR(__wt_verbose(session, WT_VERB_LSM,
 				    "MGR %s: queue %d mod %d nchunks %d"
 				    " flags 0x%x aggressive %d pushms %" PRIu64
 				    " fillms %" PRIu64,
@@ -470,13 +479,20 @@ __lsm_manager_run_server(WT_SESSION_IMPL *session)
 				    lsm_tree->flags,
 				    lsm_tree->merge_aggressiveness,
 				    pushms, fillms));
-				WT_RET(__wt_lsm_manager_push_entry(
+				WT_ERR(__wt_lsm_manager_push_entry(
 				    session, WT_LSM_WORK_MERGE, 0, lsm_tree));
 			}
 		}
+		__wt_spin_unlock(session, &conn->dhandle_lock);
+		F_CLR(session, WT_SESSION_HANDLE_LIST_LOCKED);
+		dhandle_locked = 0;
 	}
 
-	return (0);
+err:	if (dhandle_locked) {
+		__wt_spin_unlock(session, &conn->dhandle_lock);
+		F_CLR(session, WT_SESSION_HANDLE_LIST_LOCKED);
+	}
+	return (ret);
 }
 
 /*
@@ -494,7 +510,7 @@ __lsm_worker_manager(void *arg)
 	cookie = (WT_LSM_WORKER_ARGS *)arg;
 	session = cookie->session;
 
-	WT_ERR(__lsm_manager_worker_setup(session));
+	WT_ERR(__lsm_general_worker_start(session));
 	WT_ERR(__lsm_manager_run_server(session));
 	WT_ERR(__lsm_manager_worker_shutdown(session));
 
@@ -644,7 +660,7 @@ __wt_lsm_manager_push_entry(WT_SESSION_IMPL *session,
 
 	WT_RET(__wt_epoch(session, &lsm_tree->work_push_ts));
 
-	WT_RET(__wt_calloc_def(session, 1, &entry));
+	WT_RET(__wt_calloc_one(session, &entry));
 	entry->type = type;
 	entry->flags = flags;
 	entry->lsm_tree = lsm_tree;

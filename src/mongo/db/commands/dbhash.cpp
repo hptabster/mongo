@@ -32,6 +32,8 @@
 
 #include "mongo/db/commands/dbhash.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/catalog/database.h"
@@ -42,6 +44,14 @@
 #include "mongo/util/timer.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::list;
+    using std::endl;
+    using std::set;
+    using std::string;
+    using std::vector;
 
     DBHashCmd dbhashCmd;
 
@@ -78,7 +88,7 @@ namespace mongo {
         }
 
         *fromCache = false;
-        Collection* collection = db->getCollection( opCtx, fullCollectionName );
+        Collection* collection = db->getCollection( fullCollectionName );
         if ( !collection )
             return "";
 
@@ -151,6 +161,7 @@ namespace mongo {
 
         // We lock the entire database in S-mode in order to ensure that the contents will not
         // change for the snapshot.
+        ScopedTransaction scopedXact(txn, MODE_IS);
         AutoGetDb autoDb(txn, ns, MODE_S);
         Database* db = autoDb.getDb();
         if (db) {

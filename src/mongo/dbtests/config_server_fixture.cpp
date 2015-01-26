@@ -30,6 +30,7 @@
 
 #include "mongo/dbtests/config_server_fixture.h"
 
+#include <boost/scoped_ptr.hpp>
 #include <list>
 
 #include "mongo/dbtests/dbtests.h"
@@ -46,7 +47,10 @@
 
 namespace mongo {
 
+    using boost::scoped_ptr;
+    using std::endl;
     using std::list;
+    using std::string;
 
     ConfigServerFixture::ConfigServerFixture()
         : _client(&_txn),

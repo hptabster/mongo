@@ -41,6 +41,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* IDHackStage::kStageType = "IDHACK";
 
@@ -50,7 +53,6 @@ namespace mongo {
           _collection(collection),
           _workingSet(ws),
           _key(query->getQueryObj()["_id"].wrap()),
-          _killed(false),
           _done(false),
           _idBeingPagedIn(WorkingSet::INVALID_ID),
           _commonStats(kStageType) {
@@ -68,7 +70,6 @@ namespace mongo {
           _collection(collection),
           _workingSet(ws),
           _key(key),
-          _killed(false),
           _done(false),
           _addKeyMetadata(false),
           _idBeingPagedIn(WorkingSet::INVALID_ID),
@@ -83,7 +84,7 @@ namespace mongo {
             return false;
         }
 
-        return _killed || _done;
+        return  _done;
     }
 
     PlanStage::StageState IDHackStage::work(WorkingSetID* out) {
@@ -92,7 +93,6 @@ namespace mongo {
         // Adds the amount of time taken by work() to executionTimeMillis.
         ScopedTimer timer(&_commonStats.executionTimeMillis);
 
-        if (_killed) { return PlanStage::DEAD; }
         if (_done) { return PlanStage::IS_EOF; }
 
         if (WorkingSet::INVALID_ID != _idBeingPagedIn) {
@@ -120,7 +120,7 @@ namespace mongo {
             static_cast<const BtreeBasedAccessMethod*>(catalog->getIndex(idDesc));
 
         // Look up the key by going directly to the Btree.
-        DiskLoc loc = accessMethod->findSingle(_txn, _key);
+        RecordId loc = accessMethod->findSingle(_txn, _key);
 
         // Key not found.
         if (loc.isNull()) {
@@ -183,8 +183,13 @@ namespace mongo {
         ++_commonStats.unyields;
     }
 
-    void IDHackStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void IDHackStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
+
+        // Since updates can't mutate the '_id' field, we can ignore mutation invalidations.
+        if (INVALIDATION_MUTATION == type) {
+            return;
+        }
 
         // It's possible that the loc getting invalidated is the one we're about to
         // fetch. In this case we do a "forced fetch" and put the WSM in owned object state.

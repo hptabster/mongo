@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -130,7 +131,7 @@ __wt_open(WT_SESSION_IMPL *session,
 		    "open failed for secondary handle: %s", path);
 
 setupfh:
-	WT_ERR(__wt_calloc(session, 1, sizeof(WT_FH), &fh));
+	WT_ERR(__wt_calloc_one(session, &fh));
 	WT_ERR(__wt_strdup(session, name, &fh->name));
 	fh->filehandle = filehandle;
 	fh->filehandle_secondary = filehandle_secondary;

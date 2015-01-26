@@ -50,6 +50,10 @@
 
 namespace mongo {
 
+    using boost::scoped_ptr;
+    using std::endl;
+    using std::vector;
+
     AuthzManagerExternalStateMongos::AuthzManagerExternalStateMongos() {}
 
     AuthzManagerExternalStateMongos::~AuthzManagerExternalStateMongos() {}
@@ -75,11 +79,16 @@ namespace mongo {
 
     Status AuthzManagerExternalStateMongos::getStoredAuthorizationVersion(
                                                 OperationContext* txn, int* outVersion) {
-        scoped_ptr<ScopedDbConnection> conn(getConnectionForAuthzCollection(
-                AuthorizationManager::usersCollectionNamespace));
-        Status status = auth::getRemoteStoredAuthorizationVersion(conn->get(), outVersion);
-        conn->done();
-        return status;
+        try {
+            scoped_ptr<ScopedDbConnection> conn(getConnectionForAuthzCollection(
+                    AuthorizationManager::usersCollectionNamespace));
+            Status status = auth::getRemoteStoredAuthorizationVersion(conn->get(), outVersion);
+            conn->done();
+            return status;
+        }
+        catch (const DBException& ex) {
+            return ex.toStatus();
+        }
     }
 
     Status AuthzManagerExternalStateMongos::getUserDescription(

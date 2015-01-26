@@ -32,12 +32,22 @@
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
+#include "mongo/db/catalog/cursor_manager.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/client.h"
+#include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/exec/queued_data_stage.h"
+#include "mongo/db/exec/working_set.h"
+#include "mongo/db/global_environment_experiment.h"
+#include "mongo/db/query/find_constants.h"
 #include "mongo/db/storage/storage_engine.h"
 
 namespace mongo {
+
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     /**
      * Lists the indexes for a given collection.
@@ -94,6 +104,15 @@ namespace mongo {
                               << "not the empty string",
                 !ns.coll().empty());
 
+            const long long defaultBatchSize = std::numeric_limits<long long>::max();
+            long long batchSize;
+            Status parseCursorStatus = parseCommandCursorOptions(cmdObj,
+                                                                 defaultBatchSize,
+                                                                 &batchSize);
+            if (!parseCursorStatus.isOK()) {
+                return appendCommandStatus(result, parseCursorStatus);
+            }
+
             AutoGetCollectionForRead autoColl(txn, ns);
             if (!autoColl.getDb()) {
                 return appendCommandStatus( result, Status( ErrorCodes::NamespaceNotFound,
@@ -112,12 +131,65 @@ namespace mongo {
             vector<string> indexNames;
             cce->getAllIndexes( txn, &indexNames );
 
-            BSONArrayBuilder arr;
+            std::auto_ptr<WorkingSet> ws(new WorkingSet());
+            std::auto_ptr<QueuedDataStage> root(new QueuedDataStage(ws.get()));
+
             for ( size_t i = 0; i < indexNames.size(); i++ ) {
-                arr.append( cce->getIndexSpec( txn, indexNames[i] ) );
+                BSONObj indexSpec = cce->getIndexSpec( txn, indexNames[i] );
+
+                WorkingSetID wsId = ws->allocate();
+                WorkingSetMember* member = ws->get(wsId);
+                member->state = WorkingSetMember::OWNED_OBJ;
+                member->keyData.clear();
+                member->loc = RecordId();
+                member->obj = indexSpec;
+                root->pushBack(*member);
             }
 
-            result.append( "indexes", arr.arr() );
+            std::string cursorNamespace = str::stream() << dbname << ".$cmd." << name << "."
+                                                        << ns.coll();
+            dassert(NamespaceString(cursorNamespace).isValid());
+            dassert(NamespaceString(cursorNamespace).isListIndexesGetMore());
+            dassert(ns == NamespaceString(cursorNamespace).getTargetNSForListIndexesGetMore());
+
+            PlanExecutor* rawExec;
+            Status makeStatus = PlanExecutor::make(txn,
+                                                   ws.release(),
+                                                   root.release(),
+                                                   cursorNamespace,
+                                                   PlanExecutor::YIELD_MANUAL,
+                                                   &rawExec);
+            std::auto_ptr<PlanExecutor> exec(rawExec);
+            if (!makeStatus.isOK()) {
+                return appendCommandStatus( result, makeStatus );
+            }
+
+            BSONArrayBuilder firstBatch;
+
+            const int byteLimit = MaxBytesToReturnToClientAtOnce;
+            for (long long objCount = 0;
+                 objCount < batchSize && firstBatch.len() < byteLimit;
+                 objCount++) {
+                BSONObj next;
+                PlanExecutor::ExecState state = exec->getNext(&next, NULL);
+                if ( state == PlanExecutor::IS_EOF ) {
+                    break;
+                }
+                invariant( state == PlanExecutor::ADVANCED );
+                firstBatch.append(next);
+            }
+
+            CursorId cursorId = 0LL;
+            if ( !exec->isEOF() ) {
+                exec->saveState();
+                ClientCursor* cursor = new ClientCursor(CursorManager::getGlobalCursorManager(),
+                                                        exec.release(),
+                                                        cursorNamespace);
+                cursorId = cursor->cursorid();
+            }
+
+            Command::appendCursorResponseObject( cursorId, cursorNamespace, firstBatch.arr(),
+                                                 &result );
 
             return true;
         }

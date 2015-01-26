@@ -44,6 +44,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* CollectionScan::kStageType = "COLLSCAN";
 
@@ -62,10 +65,10 @@ namespace mongo {
         _specificStats.direction = params.direction;
 
         // We pre-allocate a WSM and use it to pass up fetch requests. This should never be used
-        // for anything other than passing up NEED_FETCH. We use the loc and unowned obj state, but
+        // for anything other than passing up NEED_FETCH. We use the loc and owned obj state, but
         // the loc isn't really pointing at any obj. The obj field of the WSM should never be used.
         WorkingSetMember* member = _workingSet->get(_wsidForFetch);
-        member->state = WorkingSetMember::LOC_AND_UNOWNED_OBJ;
+        member->state = WorkingSetMember::LOC_AND_OWNED_OBJ;
     }
 
     PlanStage::StageState CollectionScan::work(WorkingSetID* out) {
@@ -112,7 +115,7 @@ namespace mongo {
         if (isEOF())
             return PlanStage::IS_EOF;
 
-        const DiskLoc curr = _iter->curr();
+        const RecordId curr = _iter->curr();
         if (curr.isNull()) {
             // We just hit EOF
             if (_params.tailable)
@@ -180,7 +183,7 @@ namespace mongo {
     }
 
     void CollectionScan::invalidate(OperationContext* txn,
-                                    const DiskLoc& dl,
+                                    const RecordId& dl,
                                     InvalidationType type) {
         ++_commonStats.invalidates;
 
@@ -218,7 +221,8 @@ namespace mongo {
         ++_commonStats.unyields;
         if (NULL != _iter) {
             if (!_iter->restoreState(opCtx)) {
-                warning() << "Collection dropped or state deleted during yield of CollectionScan";
+                warning() << "Collection dropped or state deleted during yield of CollectionScan: "
+                          << opCtx->getNS();
                 _isDead = true;
             }
         }

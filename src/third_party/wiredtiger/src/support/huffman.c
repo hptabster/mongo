@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -306,7 +307,7 @@ __wt_huffman_open(WT_SESSION_IMPL *session,
 	combined_nodes = leaves = NULL;
 	node = node2 = tempnode = NULL;
 
-	WT_RET(__wt_calloc_def(session, 1, &huffman));
+	WT_RET(__wt_calloc_one(session, &huffman));
 
 	/*
 	 * The frequency table is 4B pairs of symbol and frequency.  The symbol
@@ -381,8 +382,8 @@ __wt_huffman_open(WT_SESSION_IMPL *session,
 	    symcnt, sizeof(INDEXED_SYMBOL), indexed_freq_compare);
 
 	/* We need two node queues to build the tree. */
-	WT_ERR(__wt_calloc_def(session, 1, &leaves));
-	WT_ERR(__wt_calloc_def(session, 1, &combined_nodes));
+	WT_ERR(__wt_calloc_one(session, &leaves));
+	WT_ERR(__wt_calloc_one(session, &combined_nodes));
 
 	/*
 	 * Adding the leaves to the queue.
@@ -393,7 +394,7 @@ __wt_huffman_open(WT_SESSION_IMPL *session,
 	 */
 	for (i = 0; i < symcnt; ++i)
 		if (indexed_freqs[i].frequency > 0) {
-			WT_ERR(__wt_calloc_def(session, 1, &tempnode));
+			WT_ERR(__wt_calloc_one(session, &tempnode));
 			tempnode->symbol = (uint8_t)indexed_freqs[i].symbol;
 			tempnode->weight = indexed_freqs[i].frequency;
 			WT_ERR(node_queue_enqueue(session, leaves, tempnode));
@@ -431,7 +432,7 @@ __wt_huffman_open(WT_SESSION_IMPL *session,
 		 * In every second run, we have both node and node2 initialized.
 		 */
 		if (node != NULL && node2 != NULL) {
-			WT_ERR(__wt_calloc_def(session, 1, &tempnode));
+			WT_ERR(__wt_calloc_one(session, &tempnode));
 
 			/* The new weight is the sum of the two weights. */
 			tempnode->weight = node->weight + node2->weight;
@@ -686,7 +687,7 @@ __wt_huffman_encode(WT_SESSION_IMPL *session, void *huffman_arg,
 	    max_len, outlen);
 #endif
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	return (ret);
 
 }
@@ -809,7 +810,7 @@ __wt_huffman_decode(WT_SESSION_IMPL *session, void *huffman_arg,
 	    max_len, outlen);
 #endif
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	return (ret);
 }
 
@@ -845,7 +846,7 @@ node_queue_enqueue(
 	NODE_QUEUE_ELEM *elem;
 
 	/* Allocating a new linked list element */
-	WT_RET(__wt_calloc_def(session, 1, &elem));
+	WT_RET(__wt_calloc_one(session, &elem));
 
 	/* It holds the tree node, and has no next element yet */
 	elem->node = node;

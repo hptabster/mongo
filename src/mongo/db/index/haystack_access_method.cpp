@@ -32,6 +32,8 @@
 
 #include "mongo/db/index/haystack_access_method.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/base/status.h"
 #include "mongo/db/geo/hash.h"
 #include "mongo/db/index/expression_keys_private.h"
@@ -42,6 +44,8 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
 
     HaystackAccessMethod::HaystackAccessMethod(IndexCatalogEntry* btreeState, SortedDataInterface* btree)
         : BtreeBasedAccessMethod(btreeState, btree) {
@@ -97,18 +101,18 @@ namespace mongo {
 
                 BSONObj key = bb.obj();
 
-                unordered_set<DiskLoc, DiskLoc::Hasher> thisPass;
+                unordered_set<RecordId, RecordId::Hasher> thisPass;
 
 
                 scoped_ptr<PlanExecutor> exec(InternalPlanner::indexScan(txn,  collection,
                                                                      _descriptor, key, key, true));
                 PlanExecutor::ExecState state;
-                DiskLoc loc;
+                RecordId loc;
                 while (PlanExecutor::ADVANCED == (state = exec->getNext(NULL, &loc))) {
                     if (hopper.limitReached()) { break; }
-                    pair<unordered_set<DiskLoc, DiskLoc::Hasher>::iterator, bool> p
+                    pair<unordered_set<RecordId, RecordId::Hasher>::iterator, bool> p
                         = thisPass.insert(loc);
-                    // If a new element was inserted (haven't seen the DiskLoc before), p.second
+                    // If a new element was inserted (haven't seen the RecordId before), p.second
                     // is true.
                     if (p.second) {
                         hopper.consider(loc);

@@ -46,6 +46,10 @@
 
 namespace mongo {
 
+    using std::string;
+    using std::stringstream;
+    using std::vector;
+
     /**
      * Base class for mongos write commands.  Cluster write commands support batch writes and write
      * concern, and return per-item error information.  All cluster write commands use the entry
@@ -184,7 +188,7 @@ namespace mongo {
 
                 // Fixup the namespace to be a full ns internally
                 NamespaceString nss( dbName, request.getNS() );
-                request.setNS( nss.ns() );
+                request.setNSS( nss );
 
                 writer.write( request, &response );
             }

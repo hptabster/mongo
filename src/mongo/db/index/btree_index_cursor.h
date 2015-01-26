@@ -28,27 +28,21 @@
 
 #pragma once
 
+#include <boost/scoped_ptr.hpp>
 #include <vector>
 
 #include "mongo/base/status.h"
-#include "mongo/db/diskloc.h"
-#include "mongo/db/jsobj.h"
 #include "mongo/db/index/index_cursor.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/jsobj.h"
+#include "mongo/db/record_id.h"
 #include "mongo/db/storage/sorted_data_interface.h"
 
 namespace mongo {
 
     class BtreeIndexCursor : public IndexCursor {
     public:
-        virtual ~BtreeIndexCursor();
-
         bool isEOF() const;
-
-        /**
-         * Called from btree_logic.cpp when we're about to delete a Btree bucket.
-         */
-        static void aboutToDeleteBucket(const DiskLoc& bucket);
 
         virtual Status seek(const BSONObj& position);
 
@@ -71,7 +65,7 @@ namespace mongo {
                     const std::vector<bool>& keyEndInclusive);
 
         virtual BSONObj getKey() const;
-        virtual DiskLoc getValue() const;
+        virtual RecordId getValue() const;
         virtual void next();
 
         /**
@@ -105,10 +99,6 @@ namespace mongo {
          * and also skipping unused keys.
          */
         void advance();
-
-        // For handling bucket deletion.
-        static unordered_set<BtreeIndexCursor*> _activeCursors;
-        static SimpleMutex _activeCursorsMutex;
 
         boost::scoped_ptr<SortedDataInterface::Cursor> _cursor;
     };

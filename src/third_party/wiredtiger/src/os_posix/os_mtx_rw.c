@@ -1,4 +1,5 @@
 /*-
+ * Public Domain 2014-2015 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -53,7 +54,7 @@ __wt_rwlock_alloc(
 
 	WT_RET(__wt_verbose(session, WT_VERB_MUTEX, "rwlock: alloc %s", name));
 
-	WT_RET(__wt_calloc_def(session, 1, &rwlock));
+	WT_RET(__wt_calloc_one(session, &rwlock));
 
 	rwlock->name = name;
 

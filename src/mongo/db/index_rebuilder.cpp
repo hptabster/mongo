@@ -51,6 +51,10 @@
 
 namespace mongo {
 
+    using std::endl;
+    using std::string;
+    using std::vector;
+
 namespace {
     void checkNS(OperationContext* txn, const std::list<std::string>& nsToCheck) {
         bool firstTime = true;
@@ -68,7 +72,7 @@ namespace {
             Lock::DBLock lk(txn->lockState(), nsToDatabaseSubstring(ns), MODE_X);
             Client::Context ctx(txn, ns);
 
-            Collection* collection = ctx.db()->getCollection(txn, ns);
+            Collection* collection = ctx.db()->getCollection(ns);
             if ( collection == NULL )
                 continue;
 
@@ -156,6 +160,8 @@ namespace {
             for (std::vector<std::string>::const_iterator dbName = dbNames.begin();
                  dbName < dbNames.end();
                  ++dbName) {
+
+                ScopedTransaction scopedXact(txn, MODE_IS);
                 AutoGetDb autoDb(txn, *dbName, MODE_S);
 
                 Database* db = autoDb.getDb();

@@ -28,6 +28,8 @@
 #include "mongo/util/options_parser/option_section.h"
 
 #include <algorithm>
+#include <boost/shared_ptr.hpp>
+#include <iostream>
 #include <sstream>
 
 #include "mongo/bson/util/builder.h"
@@ -36,6 +38,8 @@
 
 namespace mongo {
 namespace optionenvironment {
+
+    using boost::shared_ptr;
 
     // Registration interface
 
@@ -327,7 +331,7 @@ namespace optionenvironment {
                        << oditerator->_dottedName << "\", but trying to use it on the command line "
                        << "or INI config file.  Only options that are exclusive to the YAML config "
                        << "file can have an empty single name";
-                    return Status(ErrorCodes::InternalError, oditerator->_dottedName);
+                    return Status(ErrorCodes::InternalError, sb.str());
                 }
 
                 boostOptions->add_options()(oditerator->_singleName.c_str(),

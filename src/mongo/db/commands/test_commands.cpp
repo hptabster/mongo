@@ -45,6 +45,10 @@
 
 namespace mongo {
 
+    using std::endl;
+    using std::string;
+    using std::stringstream;
+
     /* For testing only, not for general use. Enabled via command-line */
     class GodInsert : public Command {
     public:
@@ -71,7 +75,7 @@ namespace mongo {
             WriteUnitOfWork wunit(txn);
             Client::Context ctx(txn,  ns );
             Database* db = ctx.db();
-            Collection* collection = db->getCollection( txn, ns );
+            Collection* collection = db->getCollection( ns );
             if ( !collection ) {
                 collection = db->createCollection( txn, ns );
                 if ( !collection ) {
@@ -79,7 +83,7 @@ namespace mongo {
                     return false;
                 }
             }
-            StatusWith<DiskLoc> res = collection->insertDocument( txn, obj, false );
+            StatusWith<RecordId> res = collection->insertDocument( txn, obj, false );
             Status status = res.getStatus();
             if (status.isOK()) {
                 wunit.commit();
@@ -156,7 +160,7 @@ namespace mongo {
             Collection* collection = ctx.getCollection();
             massert( 13417, "captrunc collection not found or empty", collection);
 
-            DiskLoc end;
+            RecordId end;
             {
                 boost::scoped_ptr<PlanExecutor> exec(InternalPlanner::collectionScan(txn,
                                                                                      nss.ns(),
@@ -190,36 +194,42 @@ namespace mongo {
         virtual std::vector<BSONObj> stopIndexBuilds(OperationContext* opCtx,
                                                      Database* db, 
                                                      const BSONObj& cmdObj) {
-            std::string coll = cmdObj[ "emptycapped" ].valuestrsafe();
-            std::string ns = db->name() + '.' + coll;
+            const std::string ns = parseNsCollectionRequired(db->name(), cmdObj);
 
             IndexCatalog::IndexKillCriteria criteria;
             criteria.ns = ns;
-            return IndexBuilder::killMatchingIndexBuilds(db->getCollection(opCtx, ns), criteria);
+            return IndexBuilder::killMatchingIndexBuilds(db->getCollection(ns), criteria);
         }
 
         virtual bool run(OperationContext* txn, const string& dbname , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool fromRepl) {
-            string coll = cmdObj[ "emptycapped" ].valuestrsafe();
-            uassert( 13428, "emptycapped must specify a collection", !coll.empty() );
-            NamespaceString nss( dbname, coll );
+            const std::string ns = parseNsCollectionRequired(dbname, cmdObj);
 
-            Client::WriteContext ctx(txn,  nss.ns() );
-            WriteUnitOfWork wuow(txn);
-            Database* db = ctx.db();
-            Collection* collection = ctx.getCollection();
-            massert( 13429, "emptycapped no such collection", collection );
+            ScopedTransaction scopedXact(txn, MODE_IX);
+            AutoGetDb autoDb(txn, dbname, MODE_X);
+
+            Database* db = autoDb.getDb();
+            massert(13429, "no such database", db);
+
+            Collection* collection = db->getCollection(ns);
+            massert(28584, "no such collection", collection);
 
             std::vector<BSONObj> indexes = stopIndexBuilds(txn, db, cmdObj);
 
+            WriteUnitOfWork wuow(txn);
+
             Status status = collection->truncate(txn);
-            if ( !status.isOK() )
-                return appendCommandStatus( result, status );
+            if (!status.isOK()) {
+                return appendCommandStatus(result, status);
+            }
 
-            IndexBuilder::restoreIndexes(indexes);
+            IndexBuilder::restoreIndexes(txn, indexes);
 
-            if (!fromRepl)
-                repl::logOp(txn, "c",(dbname + ".$cmd").c_str(), cmdObj);
+            if (!fromRepl) {
+                repl::logOp(txn, "c", (dbname + ".$cmd").c_str(), cmdObj);
+            }
+
             wuow.commit();
+
             return true;
         }
     };

@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -83,7 +84,7 @@ __wt_cache_create(WT_SESSION_IMPL *session, const char *cfg[])
 	WT_ASSERT(session, conn->cache == NULL ||
 	    (F_ISSET(conn, WT_CONN_CACHE_POOL) && conn->cache != NULL));
 
-	WT_RET(__wt_calloc_def(session, 1, &conn->cache));
+	WT_RET(__wt_calloc_one(session, &conn->cache));
 
 	cache = conn->cache;
 
@@ -143,6 +144,8 @@ __wt_cache_stats_update(WT_SESSION_IMPL *session)
 	WT_STAT_SET(stats, cache_bytes_inuse, __wt_cache_bytes_inuse(cache));
 	WT_STAT_SET(stats, cache_pages_inuse, __wt_cache_pages_inuse(cache));
 	WT_STAT_SET(stats, cache_bytes_dirty, cache->bytes_dirty);
+	WT_STAT_SET(stats,
+	    cache_eviction_maximum_page_size, cache->evict_max_page_size);
 	WT_STAT_SET(stats, cache_pages_dirty, cache->pages_dirty);
 }
 

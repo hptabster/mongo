@@ -33,6 +33,9 @@
 
 #include "mongo/db/storage/in_memory/in_memory_record_store.h"
 
+#include <boost/shared_ptr.hpp>
+
+#include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/oplog_hack.h"
 #include "mongo/db/storage/recovery_unit.h"
@@ -41,9 +44,12 @@
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
+
+    using boost::shared_ptr;
+
     class InMemoryRecordStore::InsertChange : public RecoveryUnit::Change {
     public:
-        InsertChange(Data* data, DiskLoc loc) :_data(data), _loc(loc) {}
+        InsertChange(Data* data, RecordId loc) :_data(data), _loc(loc) {}
         virtual void commit() {}
         virtual void rollback() {
             Records::iterator it = _data->records.find(_loc);
@@ -55,13 +61,13 @@ namespace mongo {
 
     private:
         Data* const _data;
-        const DiskLoc _loc;
+        const RecordId _loc;
     };
 
     // Works for both removes and updates
     class InMemoryRecordStore::RemoveChange : public RecoveryUnit::Change {
     public:
-        RemoveChange(Data* data, DiskLoc loc, const InMemoryRecord& rec)
+        RemoveChange(Data* data, RecordId loc, const InMemoryRecord& rec)
             :_data(data), _loc(loc), _rec(rec)
         {}
 
@@ -78,7 +84,7 @@ namespace mongo {
 
     private:
         Data* const _data;
-        const DiskLoc _loc;
+        const RecordId _loc;
         const InMemoryRecord _rec;
     };
 
@@ -136,12 +142,12 @@ namespace mongo {
 
     const char* InMemoryRecordStore::name() const { return "InMemory"; }
 
-    RecordData InMemoryRecordStore::dataFor( OperationContext* txn, const DiskLoc& loc ) const {
+    RecordData InMemoryRecordStore::dataFor( OperationContext* txn, const RecordId& loc ) const {
         return recordFor(loc)->toRecordData();
     }
 
     const InMemoryRecordStore::InMemoryRecord* InMemoryRecordStore::recordFor(
-            const DiskLoc& loc) const {
+            const RecordId& loc) const {
         Records::const_iterator it = _data->records.find(loc);
         if ( it == _data->records.end() ) {
             error() << "InMemoryRecordStore::recordFor cannot find record for " << ns()
@@ -151,7 +157,7 @@ namespace mongo {
         return &it->second;
     }
 
-    InMemoryRecordStore::InMemoryRecord* InMemoryRecordStore::recordFor(const DiskLoc& loc) {
+    InMemoryRecordStore::InMemoryRecord* InMemoryRecordStore::recordFor(const RecordId& loc) {
         Records::iterator it = _data->records.find(loc);
         if ( it == _data->records.end() ) {
             error() << "InMemoryRecordStore::recordFor cannot find record for " << ns()
@@ -162,7 +168,7 @@ namespace mongo {
     }
 
     bool InMemoryRecordStore::findRecord( OperationContext* txn,
-                                          const DiskLoc& loc, RecordData* rd ) const {
+                                          const RecordId& loc, RecordData* rd ) const {
         Records::const_iterator it = _data->records.find(loc);
         if ( it == _data->records.end() ) {
             return false;
@@ -171,7 +177,7 @@ namespace mongo {
         return true;
     }
 
-    void InMemoryRecordStore::deleteRecord(OperationContext* txn, const DiskLoc& loc) {
+    void InMemoryRecordStore::deleteRecord(OperationContext* txn, const RecordId& loc) {
         InMemoryRecord* rec = recordFor(loc);
         txn->recoveryUnit()->registerChange(new RemoveChange(_data, loc, *rec));
         _data->dataSize -= rec->size;
@@ -195,44 +201,46 @@ namespace mongo {
         while (cappedAndNeedDelete(txn)) {
             invariant(!_data->records.empty());
 
-            DiskLoc oldest = _data->records.begin()->first;
+            Records::iterator oldest = _data->records.begin();
+            RecordId id = oldest->first;
+            RecordData data = oldest->second.toRecordData();
 
             if (_cappedDeleteCallback)
-                uassertStatusOK(_cappedDeleteCallback->aboutToDeleteCapped(txn, oldest));
+                uassertStatusOK(_cappedDeleteCallback->aboutToDeleteCapped(txn, id, data));
 
-            deleteRecord(txn, oldest);
+            deleteRecord(txn, id);
         }
     }
 
-    StatusWith<DiskLoc> InMemoryRecordStore::extractAndCheckLocForOplog(const char* data,
+    StatusWith<RecordId> InMemoryRecordStore::extractAndCheckLocForOplog(const char* data,
                                                                         int len) const {
-        StatusWith<DiskLoc> status = oploghack::extractKey(data, len);
+        StatusWith<RecordId> status = oploghack::extractKey(data, len);
         if (!status.isOK())
             return status;
 
         if (!_data->records.empty() && status.getValue() <= _data->records.rbegin()->first)
-            return StatusWith<DiskLoc>(ErrorCodes::BadValue, "ts not higher than highest");
+            return StatusWith<RecordId>(ErrorCodes::BadValue, "ts not higher than highest");
 
         return status;
     }
 
-    StatusWith<DiskLoc> InMemoryRecordStore::insertRecord(OperationContext* txn,
+    StatusWith<RecordId> InMemoryRecordStore::insertRecord(OperationContext* txn,
                                                           const char* data,
                                                           int len,
                                                           bool enforceQuota) {
         if (_isCapped && len > _cappedMaxSize) {
             // We use dataSize for capped rollover and we don't want to delete everything if we know
             // this won't fit.
-            return StatusWith<DiskLoc>(ErrorCodes::BadValue,
+            return StatusWith<RecordId>(ErrorCodes::BadValue,
                                        "object to insert exceeds cappedMaxSize");
         }
 
         InMemoryRecord rec(len);
         memcpy(rec.data.get(), data, len);
 
-        DiskLoc loc;
+        RecordId loc;
         if (_data->isOplog) {
-            StatusWith<DiskLoc> status = extractAndCheckLocForOplog(data, len);
+            StatusWith<RecordId> status = extractAndCheckLocForOplog(data, len);
             if (!status.isOK())
                 return status;
             loc = status.getValue();
@@ -247,26 +255,26 @@ namespace mongo {
 
         cappedDeleteAsNeeded(txn);
 
-        return StatusWith<DiskLoc>(loc);
+        return StatusWith<RecordId>(loc);
     }
 
-    StatusWith<DiskLoc> InMemoryRecordStore::insertRecord(OperationContext* txn,
+    StatusWith<RecordId> InMemoryRecordStore::insertRecord(OperationContext* txn,
                                                           const DocWriter* doc,
                                                           bool enforceQuota) {
         const int len = doc->documentSize();
         if (_isCapped && len > _cappedMaxSize) {
             // We use dataSize for capped rollover and we don't want to delete everything if we know
             // this won't fit.
-            return StatusWith<DiskLoc>(ErrorCodes::BadValue,
+            return StatusWith<RecordId>(ErrorCodes::BadValue,
                                        "object to insert exceeds cappedMaxSize");
         }
 
         InMemoryRecord rec(len);
         doc->writeDocument(rec.data.get());
 
-        DiskLoc loc;
+        RecordId loc;
         if (_data->isOplog) {
-            StatusWith<DiskLoc> status = extractAndCheckLocForOplog(rec.data.get(), len);
+            StatusWith<RecordId> status = extractAndCheckLocForOplog(rec.data.get(), len);
             if (!status.isOK())
                 return status;
             loc = status.getValue();
@@ -281,22 +289,31 @@ namespace mongo {
 
         cappedDeleteAsNeeded(txn);
 
-        return StatusWith<DiskLoc>(loc);
+        return StatusWith<RecordId>(loc);
     }
 
-    StatusWith<DiskLoc> InMemoryRecordStore::updateRecord(OperationContext* txn,
-                                                          const DiskLoc& loc,
+    StatusWith<RecordId> InMemoryRecordStore::updateRecord(OperationContext* txn,
+                                                          const RecordId& loc,
                                                           const char* data,
                                                           int len,
                                                           bool enforceQuota,
-                                                          UpdateMoveNotifier* notifier ) {
+                                                          UpdateNotifier* notifier ) {
         InMemoryRecord* oldRecord = recordFor( loc );
         int oldLen = oldRecord->size;
 
         if (_isCapped && len > oldLen) {
-            return StatusWith<DiskLoc>( ErrorCodes::InternalError,
+            return StatusWith<RecordId>( ErrorCodes::InternalError,
                                         "failing update: objects in a capped ns cannot grow",
                                         10003 );
+        }
+
+        if (notifier) {
+            // The in-memory KV engine uses the invalidation framework (does not support
+            // doc-locking), and therefore must notify that it is updating a document.
+            Status callbackStatus = notifier->recordStoreGoingToUpdateInPlace(txn, loc);
+            if (!callbackStatus.isOK()) {
+                return StatusWith<RecordId>(callbackStatus);
+            }
         }
 
         InMemoryRecord newRecord(len);
@@ -308,11 +325,15 @@ namespace mongo {
 
         cappedDeleteAsNeeded(txn);
 
-        return StatusWith<DiskLoc>(loc);
+        return StatusWith<RecordId>(loc);
+    }
+
+    bool InMemoryRecordStore::updateWithDamagesSupported() const {
+        return true;
     }
 
     Status InMemoryRecordStore::updateWithDamages( OperationContext* txn,
-                                                   const DiskLoc& loc,
+                                                   const RecordId& loc,
                                                    const RecordData& oldRec,
                                                    const char* damageSource,
                                                    const mutablebson::DamageVector& damages ) {
@@ -343,7 +364,7 @@ namespace mongo {
 
     RecordIterator* InMemoryRecordStore::getIterator(
             OperationContext* txn,
-            const DiskLoc& start,
+            const RecordId& start,
             const CollectionScanParams::Direction& dir) const {
 
         if (dir == CollectionScanParams::FORWARD) {
@@ -375,7 +396,7 @@ namespace mongo {
     }
 
     void InMemoryRecordStore::temp_cappedTruncateAfter(OperationContext* txn,
-                                                       DiskLoc end,
+                                                       RecordId end,
                                                        bool inclusive) {
         Records::iterator it = inclusive ? _data->records.lower_bound(end)
                                          : _data->records.upper_bound(end);
@@ -386,23 +407,12 @@ namespace mongo {
         }
     }
 
-    bool InMemoryRecordStore::compactSupported() const {
-        return false;
-    }
-    Status InMemoryRecordStore::compact(OperationContext* txn,
-                                        RecordStoreCompactAdaptor* adaptor,
-                                        const CompactOptions* options,
-                                        CompactStats* stats) {
-        // TODO might be possible to do something here
-        invariant(!"compact not yet implemented");
-    }
-
     Status InMemoryRecordStore::validate(OperationContext* txn,
                                          bool full,
                                          bool scanData,
                                          ValidateAdaptor* adaptor,
                                          ValidateResults* results,
-                                         BSONObjBuilder* output) const {
+                                         BSONObjBuilder* output) {
         results->valid = true;
         if (scanData && full) {
             for (Records::const_iterator it = _data->records.begin();
@@ -430,7 +440,7 @@ namespace mongo {
         result->appendBool( "capped", _isCapped );
         if ( _isCapped ) {
             result->appendIntOrLL( "max", _cappedMaxDocs );
-            result->appendIntOrLL( "maxSize", _cappedMaxSize );
+            result->appendIntOrLL( "maxSize", _cappedMaxSize / scale );
         }
     }
 
@@ -470,23 +480,23 @@ namespace mongo {
         return _data->dataSize + recordOverhead;
     }
 
-    DiskLoc InMemoryRecordStore::allocateLoc() {
-        const int64_t id = _data->nextId++;
-        // This is a hack, but both the high and low order bits of DiskLoc offset must be 0, and the
-        // file must fit in 23 bits. This gives us a total of 30 + 23 == 53 bits.
-        invariant(id < (1LL << 53));
-        return DiskLoc(int(id >> 30), int((id << 1) & ~(1<<31)));
+    RecordId InMemoryRecordStore::allocateLoc() {
+        RecordId out = RecordId(_data->nextId++);
+        invariant(out < RecordId::max());
+        return out;
     }
 
-    DiskLoc InMemoryRecordStore::oplogStartHack(OperationContext* txn,
-                                                const DiskLoc& startingPosition) const {
+    boost::optional<RecordId> InMemoryRecordStore::oplogStartHack(
+            OperationContext* txn,
+            const RecordId& startingPosition) const {
+
         if (!_data->isOplog)
-            return DiskLoc().setInvalid();
+            return boost::none;
 
         const Records& records = _data->records;
 
         if (records.empty())
-            return DiskLoc();
+            return RecordId();
 
         Records::const_iterator it = records.lower_bound(startingPosition);
         if (it == records.end() || it->first > startingPosition)
@@ -502,11 +512,11 @@ namespace mongo {
     InMemoryRecordIterator::InMemoryRecordIterator(OperationContext* txn,
                                                    const InMemoryRecordStore::Records& records,
                                                    const InMemoryRecordStore& rs,
-                                                   DiskLoc start,
+                                                   RecordId start,
                                                    bool tailable)
             : _txn(txn),
               _tailable(tailable),
-              _lastLoc(minDiskLoc),
+              _lastLoc(RecordId::min()),
               _killedByInvalidate(false),
               _records(records),
               _rs(rs) {
@@ -523,19 +533,19 @@ namespace mongo {
         return _it == _records.end();
     }
 
-    DiskLoc InMemoryRecordIterator::curr() {
+    RecordId InMemoryRecordIterator::curr() {
         if (isEOF())
-            return DiskLoc();
+            return RecordId();
         return _it->first;
     }
 
-    DiskLoc InMemoryRecordIterator::getNext() {
+    RecordId InMemoryRecordIterator::getNext() {
         if (isEOF()) {
             if (!_tailable)
-                return DiskLoc();
+                return RecordId();
 
             if (_records.empty())
-                return DiskLoc();
+                return RecordId();
 
             invariant(!_killedByInvalidate);
 
@@ -545,17 +555,17 @@ namespace mongo {
             invariant(_it != _records.end());
 
             if (++_it == _records.end())
-                return DiskLoc();
+                return RecordId();
         }
 
-        const DiskLoc out = _it->first;
+        const RecordId out = _it->first;
         ++_it;
         if (_tailable && _it == _records.end())
             _lastLoc = out;
         return out;
     }
 
-    void InMemoryRecordIterator::invalidate(const DiskLoc& loc) {
+    void InMemoryRecordIterator::invalidate(const RecordId& loc) {
         if (_rs.isCapped()) {
             // Capped iterators die on invalidation rather than advancing.
             if (isEOF()) {
@@ -582,7 +592,7 @@ namespace mongo {
         return !_killedByInvalidate;
     }
 
-    RecordData InMemoryRecordIterator::dataFor(const DiskLoc& loc) const {
+    RecordData InMemoryRecordIterator::dataFor(const RecordId& loc) const {
         return _rs.dataFor(_txn, loc);
     }
 
@@ -594,7 +604,7 @@ namespace mongo {
             OperationContext* txn,
             const InMemoryRecordStore::Records& records,
             const InMemoryRecordStore& rs,
-            DiskLoc start) : _txn(txn),
+            RecordId start) : _txn(txn),
                              _killedByInvalidate(false),
                              _records(records),
                              _rs(rs) {
@@ -615,22 +625,22 @@ namespace mongo {
         return _it == _records.rend();
     }
 
-    DiskLoc InMemoryRecordReverseIterator::curr() {
+    RecordId InMemoryRecordReverseIterator::curr() {
         if (isEOF())
-            return DiskLoc();
+            return RecordId();
         return _it->first;
     }
 
-    DiskLoc InMemoryRecordReverseIterator::getNext() {
+    RecordId InMemoryRecordReverseIterator::getNext() {
         if (isEOF())
-            return DiskLoc();
+            return RecordId();
 
-        const DiskLoc out = _it->first;
+        const RecordId out = _it->first;
         ++_it;
         return out;
     }
 
-    void InMemoryRecordReverseIterator::invalidate(const DiskLoc& loc) {
+    void InMemoryRecordReverseIterator::invalidate(const RecordId& loc) {
         if (_killedByInvalidate)
             return;
 
@@ -650,7 +660,7 @@ namespace mongo {
 
     void InMemoryRecordReverseIterator::saveState() {
         if (isEOF()) {
-            _savedLoc = DiskLoc();
+            _savedLoc = RecordId();
         }
         else {
             _savedLoc = _it->first;
@@ -667,7 +677,7 @@ namespace mongo {
         return !_killedByInvalidate;
     }
 
-    RecordData InMemoryRecordReverseIterator::dataFor(const DiskLoc& loc) const {
+    RecordData InMemoryRecordReverseIterator::dataFor(const RecordId& loc) const {
         return _rs.dataFor(_txn, loc);
     }
 

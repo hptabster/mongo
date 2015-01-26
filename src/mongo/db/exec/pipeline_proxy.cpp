@@ -30,10 +30,16 @@
 
 #include "mongo/db/exec/pipeline_proxy.h"
 
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression_context.h"
 
 namespace mongo {
+
+    using boost::intrusive_ptr;
+    using boost::shared_ptr;
+    using std::vector;
 
     PipelineProxyStage::PipelineProxyStage(intrusive_ptr<Pipeline> pipeline,
                                            const boost::shared_ptr<PlanExecutor>& child,
@@ -82,7 +88,7 @@ namespace mongo {
     }
 
     void PipelineProxyStage::invalidate(OperationContext* txn,
-                                        const DiskLoc& dl,
+                                        const RecordId& dl,
                                         InvalidationType type) {
         // propagate to child executor if still in use
         if (boost::shared_ptr<PlanExecutor> exec = _childExec.lock()) {

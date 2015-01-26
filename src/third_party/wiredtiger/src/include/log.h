@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -6,22 +7,32 @@
  */
 
 #define	WT_LOG_FILENAME	"WiredTigerLog"		/* Log file name */
+#define	WT_LOG_PREPNAME	"WiredTigerPreplog"	/* Log pre-allocated name */
+#define	WT_LOG_TMPNAME	"WiredTigerTmplog"	/* Log temporary name */
 
 /* Logging subsystem declarations. */
 #define	LOG_ALIGN		128
 #define	WT_LOG_SLOT_BUF_INIT_SIZE	64 * 1024
 
-#define	INIT_LSN(l)	do {						\
+#define	WT_INIT_LSN(l)	do {						\
 	(l)->file = 1;							\
 	(l)->offset = 0;						\
 } while (0)
 
-#define	ZERO_LSN(l)	do {						\
+#define	WT_MAX_LSN(l)	do {						\
+	(l)->file = UINT32_MAX;						\
+	(l)->offset = INT64_MAX;					\
+} while (0)
+
+#define	WT_ZERO_LSN(l)	do {						\
 	(l)->file = 0;							\
 	(l)->offset = 0;						\
 } while (0)
 
-#define	IS_INIT_LSN(l)	((l)->file == 1 && (l)->offset == 0)
+#define	WT_IS_INIT_LSN(l)						\
+	((l)->file == 1 && (l)->offset == 0)
+#define	WT_IS_MAX_LSN(l)						\
+	((l)->file == UINT32_MAX && (l)->offset == INT64_MAX)
 
 /*
  * Both of the macros below need to change if the content of __wt_lsn
@@ -35,11 +46,6 @@
     ((const uint8_t *)(data) + offsetof(WT_LOG_RECORD, record))
 #define	LOG_REC_SIZE(size)						\
     ((size) - offsetof(WT_LOG_RECORD, record))
-
-#define	MAX_LSN(l)	do {						\
-	(l)->file = UINT32_MAX;						\
-	(l)->offset = INT64_MAX;					\
-} while (0)
 
 /*
  * Compare 2 LSNs, return -1 if lsn0 < lsn1, 0 if lsn0 == lsn1
@@ -101,6 +107,8 @@ typedef struct {
 	 * Log file information
 	 */
 	uint32_t	 fileid;	/* Current log file number */
+	uint32_t	 prep_fileid;	/* Pre-allocated file number */
+	uint32_t	 prep_missed;	/* Pre-allocated file misses */
 	WT_FH           *log_fh;	/* Logging file handle */
 	WT_FH           *log_close_fh;	/* Logging file handle to close */
 	WT_FH           *log_dir_fh;	/* Log directory file handle */
@@ -148,7 +156,11 @@ typedef struct {
 typedef struct {
 	uint32_t	len;		/* 00-03: Record length including hdr */
 	uint32_t	checksum;	/* 04-07: Checksum of the record */
-	uint8_t		unused[8];	/* 08-15: Padding */
+
+#define	WT_LOG_RECORD_COMPRESSED	0x01	/* Compressed except hdr */
+	uint16_t	flags;		/* 08-09: Flags */
+	uint8_t		unused[2];	/* 10-11: Padding */
+	uint32_t	mem_len;	/* 12-15: Uncompressed len if needed */
 	uint8_t		record[0];	/* Beginning of actual data */
 } WT_LOG_RECORD;
 

@@ -32,13 +32,15 @@
 
 #include "mongo/db/repl/repl_set_seed_list.h"
 
-#include "mongo/db/repl/repl_coordinator_external_state.h"
+#include "mongo/db/repl/replication_coordinator_external_state.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
 
 namespace repl {
+
+    using std::string;
 
     /** @param cfgString <setname>/<seedhost1>,<seedhost2> */
     void parseReplSetSeedList(ReplicationCoordinatorExternalState* externalState,

@@ -38,6 +38,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* FetchStage::kStageType = "FETCH";
 
@@ -85,7 +88,7 @@ namespace mongo {
             return returnIfMatches(member, id, out);
         }
 
-        // If we're here, we're not waiting for a DiskLoc to be fetched.  Get another to-be-fetched
+        // If we're here, we're not waiting for a RecordId to be fetched.  Get another to-be-fetched
         // result from our child.
         WorkingSetID id = WorkingSet::INVALID_ID;
         StageState status = _child->work(&id);
@@ -118,7 +121,7 @@ namespace mongo {
                     }
                 }
 
-                // The doc is already in memory, so go ahead and grab it. Now we have a DiskLoc
+                // The doc is already in memory, so go ahead and grab it. Now we have a RecordId
                 // as well as an unowned object
                 member->obj = _collection->docFor(_txn, member->loc);
                 member->keyData.clear();
@@ -164,7 +167,7 @@ namespace mongo {
         _child->restoreState(opCtx);
     }
 
-    void FetchStage::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void FetchStage::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
 
         _child->invalidate(txn, dl, type);
@@ -183,6 +186,20 @@ namespace mongo {
     PlanStage::StageState FetchStage::returnIfMatches(WorkingSetMember* member,
                                                       WorkingSetID memberID,
                                                       WorkingSetID* out) {
+        // We consider "examining a document" to be every time that we pass a document through
+        // a filter by calling Filter::passes(...) below. Therefore, the 'docsExamined' metric
+        // is not always equal to the number of documents that were fetched from the collection.
+        // In particular, we can sometimes generate plans which have two fetch stages. The first
+        // one actually grabs the document from the collection, and the second passes the
+        // document through a second filter.
+        //
+        // One common example of this is geoNear. Suppose that a geoNear plan is searching an
+        // annulus to find 2dsphere-indexed documents near some point (x, y) on the globe.
+        // After fetching documents within geo hashes that intersect this annulus, the docs are
+        // fetched and filtered to make sure that they really do fall into this annulus. However,
+        // the user might also want to find only those documents for which accommodationType==
+        // "restaurant". The planner will add a second fetch stage to filter by this non-geo
+        // predicate.
         ++_specificStats.docsExamined;
 
         if (Filter::passes(member, _filter)) {

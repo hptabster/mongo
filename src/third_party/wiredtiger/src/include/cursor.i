@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -117,6 +118,15 @@ __curfile_leave(WT_CURSOR_BTREE *cbt)
 	}
 
 	/*
+	 * If we were scanning and saw a lot of deleted records on this page,
+	 * try to evict the page when we release it.
+	 */
+	if (cbt->ref != NULL &&
+	    cbt->page_deleted_count > WT_BTREE_DELETE_THRESHOLD)
+		__wt_page_evict_soon(cbt->ref->page);
+	cbt->page_deleted_count = 0;
+
+	/*
 	 * Release any page references we're holding.  This can trigger
 	 * eviction (e.g., forced eviction of big pages), so it is important to
 	 * do it after releasing our snapshot above.
@@ -127,6 +137,38 @@ __curfile_leave(WT_CURSOR_BTREE *cbt)
 }
 
 /*
+ * __wt_cursor_dhandle_incr_use --
+ *	Increment the in-use counter in cursor's data source.
+ */
+static inline void
+__wt_cursor_dhandle_incr_use(WT_SESSION_IMPL *session)
+{
+	WT_DATA_HANDLE *dhandle;
+
+	dhandle = session->dhandle;
+
+	/* If we open a handle with a time of death set, clear it. */
+	if (WT_ATOMIC_ADD4(dhandle->session_inuse, 1) == 1 &&
+	    dhandle->timeofdeath != 0)
+		dhandle->timeofdeath = 0;
+}
+
+/*
+ * __wt_cursor_dhandle_decr_use --
+ *	Decrement the in-use counter in cursor's data source.
+ */
+static inline void
+__wt_cursor_dhandle_decr_use(WT_SESSION_IMPL *session)
+{
+	WT_DATA_HANDLE *dhandle;
+
+	dhandle = session->dhandle;
+
+	WT_ASSERT(session, dhandle->session_inuse > 0);
+	(void)WT_ATOMIC_SUB4(dhandle->session_inuse, 1);
+}
+
+/*
  * __cursor_func_init --
  *	Cursor call setup.
  */
@@ -134,11 +176,23 @@ static inline int
 __cursor_func_init(WT_CURSOR_BTREE *cbt, int reenter)
 {
 	WT_SESSION_IMPL *session;
+	WT_TXN *txn;
 
 	session = (WT_SESSION_IMPL *)cbt->iface.session;
+	txn = &session->txn;
 
 	if (reenter)
 		WT_RET(__curfile_leave(cbt));
+
+	/*
+	 * If there is no transaction active in this thread and we haven't
+	 * checked if the cache is full, do it now.  If we have to block for
+	 * eviction, this is the best time to do it.
+	 */
+	if (F_ISSET(txn, TXN_RUNNING) &&
+	    !F_ISSET(txn, TXN_HAS_ID) && !F_ISSET(txn, TXN_HAS_SNAPSHOT))
+		WT_RET(__wt_cache_full_check(session));
+
 	if (!F_ISSET(cbt, WT_CBT_ACTIVE))
 		WT_RET(__curfile_enter(cbt));
 	__wt_txn_cursor_op(session);

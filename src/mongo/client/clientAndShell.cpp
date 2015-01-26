@@ -29,7 +29,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/client/clientOnly-private.h"
 #include "mongo/db/client_basic.h"
@@ -41,6 +41,10 @@
 #include "mongo/util/timer.h"
 
 namespace mongo {
+
+    using std::endl;
+    using std::string;
+    using std::vector;
 
     class OperationContext;
 

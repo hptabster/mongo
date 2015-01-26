@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -136,8 +137,6 @@ __wt_block_compact_page_skip(WT_SESSION_IMPL *session,
 	/* Crack the cookie. */
 	WT_RET(__wt_block_buffer_to_addr(block, addr, &offset, &size, &cksum));
 
-	__wt_spin_lock(session, &block->live_lock);
-
 	/*
 	 * If this block is in the last 10% of the file and there's a block on
 	 * the available list that's in the first 90% of the file, rewrite the
@@ -145,6 +144,7 @@ __wt_block_compact_page_skip(WT_SESSION_IMPL *session,
 	 * the block would extend the file), but there's an obvious race if the
 	 * file is sufficiently busy.
 	 */
+	__wt_spin_lock(session, &block->live_lock);
 	ninety = fh->size - fh->size / 10;
 	if (offset > ninety) {
 		el = &block->live.avail;
@@ -154,7 +154,6 @@ __wt_block_compact_page_skip(WT_SESSION_IMPL *session,
 				break;
 			}
 	}
-
 	__wt_spin_unlock(session, &block->live_lock);
 
 	return (ret);
@@ -175,7 +174,7 @@ __block_dump_avail(WT_SESSION_IMPL *session, WT_BLOCK *block)
 	el = &block->live.avail;
 	size = block->fh->size;
 
-	WT_RET(__wt_verbose(session, WT_VERB_BLOCK,
+	WT_RET(__wt_verbose(session, WT_VERB_COMPACT,
 	    "file size %" PRIuMAX "MB (%" PRIuMAX ") with %" PRIuMAX
 	    "%% space available %" PRIuMAX "MB (%" PRIuMAX ")",
 	    (uintmax_t)size / WT_MEGABYTE, (uintmax_t)size,
@@ -201,7 +200,7 @@ __block_dump_avail(WT_SESSION_IMPL *session, WT_BLOCK *block)
 #ifdef __VERBOSE_OUTPUT_PERCENTILE
 	for (i = 0; i < WT_ELEMENTS(percentile); ++i) {
 		v = percentile[i] * 512;
-		WT_RET(__wt_verbose(session, WT_VERB_BLOCK,
+		WT_RET(__wt_verbose(session, WT_VERB_COMPACT,
 		    "%2u%%: %12" PRIuMAX "MB, (%" PRIuMAX "B, %"
 		    PRIuMAX "%%)",
 		    i, (uintmax_t)v / WT_MEGABYTE, (uintmax_t)v,
@@ -210,7 +209,7 @@ __block_dump_avail(WT_SESSION_IMPL *session, WT_BLOCK *block)
 #endif
 	for (i = 0; i < WT_ELEMENTS(decile); ++i) {
 		v = decile[i] * 512;
-		WT_RET(__wt_verbose(session, WT_VERB_BLOCK,
+		WT_RET(__wt_verbose(session, WT_VERB_COMPACT,
 		    "%2u%%: %12" PRIuMAX "MB, (%" PRIuMAX "B, %"
 		    PRIuMAX "%%)",
 		    i * 10, (uintmax_t)v / WT_MEGABYTE, (uintmax_t)v,

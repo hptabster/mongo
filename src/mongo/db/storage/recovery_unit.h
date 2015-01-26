@@ -32,6 +32,7 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/platform/cstdint.h"
 
 namespace mongo {
 
@@ -97,6 +98,8 @@ namespace mongo {
          */
         virtual void commitAndRestart() = 0;
 
+        virtual uint64_t getMyTransactionCount() const { return 0; }
+
         /**
          * A Change is an action that is registerChange()'d while a WriteUnitOfWork exists. The
          * change is either rollback()'d or commit()'d when the WriteUnitOfWork goes out of scope.
@@ -155,6 +158,21 @@ namespace mongo {
             writingPtr(x, sizeof(T));
             return x;
         }
+
+        /**
+         * Sets a flag that declares this RecoveryUnit will skip rolling back writes, for the
+         * duration of the current outermost WriteUnitOfWork.  This function can only be called
+         * between a pair of unnested beginUnitOfWork() / endUnitOfWork() calls.
+         * The flag is cleared when endUnitOfWork() is called.
+         * While the flag is set, rollback will skip rolling back writes, but custom rollback
+         * change functions are still called.  Clearly, this functionality should only be used when
+         * writing to temporary collections that can be cleaned up externally.  For example,
+         * foreground index builds write to a temporary collection; if something goes wrong that
+         * normally requires a rollback, we can instead clean up the index by dropping the entire
+         * index.
+         * Setting the flag may permit increased performance.
+         */
+        virtual void setRollbackWritesDisabled() = 0;
 
     protected:
         RecoveryUnit() { }

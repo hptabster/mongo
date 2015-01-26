@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include <boost/shared_ptr.hpp>
+
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/db/storage/recovery_unit_noop.h"
 
@@ -74,6 +76,10 @@ namespace mongo {
             return true;
         }
 
+        virtual bool supportsDirectoryPerDB() const {
+            return false;
+        }
+
         virtual bool isDurable() const {
             return true;
         }
@@ -88,10 +94,17 @@ namespace mongo {
             return Status::OK();
         }
 
+        virtual bool hasIdent(OperationContext* opCtx, const StringData& ident) const {
+            return true;
+        }
+
         std::vector<std::string> getAllIdents( OperationContext* opCtx ) const {
             return std::vector<std::string>();
         }
 
-        virtual void cleanShutdown(OperationContext* txn) {};
+        virtual void cleanShutdown() {};
+
+    private:
+        boost::shared_ptr<void> _catalogInfo;
     };
 }

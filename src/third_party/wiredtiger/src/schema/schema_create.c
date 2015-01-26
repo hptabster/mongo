@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -122,7 +123,7 @@ __create_file(WT_SESSION_IMPL *session,
 	else
 		WT_ERR(__wt_session_release_btree(session));
 
-err:	__wt_scr_free(&val);
+err:	__wt_scr_free(session, &val);
 	__wt_free(session, fileconf);
 	return (ret);
 }
@@ -367,8 +368,8 @@ __create_index(WT_SESSION_IMPL *session,
 		    ",source=\"%s\"", source));
 	}
 
-	if (__wt_config_getones(session, config, "extractor", &cval) == 0 &&
-	    cval.len != 0) {
+	if (__wt_config_getones_none(
+	    session, config, "extractor", &cval) == 0 && cval.len != 0) {
 		have_extractor = 1;
 		/* Custom extractors must supply a key format. */
 		if ((ret = __wt_config_getones(
@@ -586,8 +587,8 @@ __create_data_source(WT_SESSION_IMPL *session,
 	/*
 	 * User-specified collators aren't supported for data-source objects.
 	 */
-	if (__wt_config_getones(
-	    session, config, "collator", &cval) != WT_NOTFOUND)
+	if (__wt_config_getones_none(
+	    session, config, "collator", &cval) != WT_NOTFOUND && cval.len != 0)
 		WT_RET_MSG(session, EINVAL,
 		    "WT_DATA_SOURCE objects do not support WT_COLLATOR "
 		    "ordering");

@@ -30,10 +30,14 @@
 
 #include "mongo/db/storage/sorted_data_interface_test_harness.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
 
     // Verify that calling touch() on an empty index returns an OK status.
     TEST( SortedDataInterface, TouchEmpty ) {
@@ -42,7 +46,8 @@ namespace mongo {
 
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
-            ASSERT_OK( sorted->touch( opCtx.get() ) );
+            Status status = sorted->touch( opCtx.get() );
+            ASSERT( status.isOK() || status.code() == ErrorCodes::CommandNotSupported );
         }
     }
 
@@ -76,7 +81,8 @@ namespace mongo {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             // XXX does not verify the index was brought into memory
             //     (even if supported by storage engine)
-            ASSERT_OK( sorted->touch( opCtx.get() ) );
+            Status status = sorted->touch( opCtx.get() );
+            ASSERT( status.isOK() || status.code() == ErrorCodes::CommandNotSupported );
         }
     }
 

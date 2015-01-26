@@ -35,17 +35,16 @@
 #include <algorithm>
 #include <string>
 
-#include "mongo/db/operation_context.h"
 #include "mongo/db/storage/mmap_v1/dur.h"
+#include "mongo/db/storage/mmap_v1/durable_mapped_file.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
 
-    DurRecoveryUnit::DurRecoveryUnit(OperationContext* txn)
-        : _txn(txn),
-          _mustRollback(false)
-    {}
+    DurRecoveryUnit::DurRecoveryUnit() : _mustRollback(false), _rollbackDisabled(false) {
+
+    }
 
     void DurRecoveryUnit::beginUnitOfWork() {
         _startOfUncommittedChangesForLevel.push_back(Indexes(_changes.size(), _writes.size()));
@@ -69,7 +68,7 @@ namespace mongo {
         commitChanges();
 
         // global journal flush opportunity
-        getDur().commitIfNeeded(_txn);
+        getDur().commitIfNeeded();
     }
 
     void DurRecoveryUnit::endUnitOfWork() {
@@ -78,6 +77,9 @@ namespace mongo {
         if (haveUncommitedChangesAtCurrentLevel()) {
             rollbackInnermostChanges();
         }
+
+        // Reset back to default.
+        _rollbackDisabled = false;
 
         _startOfUncommittedChangesForLevel.pop_back();
     }
@@ -103,7 +105,7 @@ namespace mongo {
             (*it)->commit();
         }
 
-        // We now reset to a "clean" state without any uncommited changes.
+        // We now reset to a "clean" state without any uncommitted changes.
         _changes.clear();
         _writes.clear();
         _preimageBuffer.clear();
@@ -145,21 +147,23 @@ namespace mongo {
         const int changesRollbackTo = _startOfUncommittedChangesForLevel.back().changeIndex;
         const int writesRollbackTo = _startOfUncommittedChangesForLevel.back().writeIndex;
 
-        // TODO SERVER-15043 reduce logging at default verbosity after a burn-in period
-        log() << "   ***** ROLLING BACK " << (_writes.size() - writesRollbackTo) << " disk writes"
-              << " and " << (_changes.size() - changesRollbackTo) << " custom changes";
-
         // First rollback disk writes, then Changes. This matches behavior in other storage engines
         // that either rollback a transaction or don't write a writebatch.
 
-        for (int i = _writes.size() - 1; i >= writesRollbackTo; i--) {
-            // TODO need to add these pages to our "dirty count" somehow.
-            _preimageBuffer.copy(_writes[i].addr, _writes[i].len, _writes[i].offset);
+        if (!_rollbackDisabled) {
+            LOG(2) << "   ***** ROLLING BACK " << (_writes.size() - writesRollbackTo)
+                   << " disk writes";
+
+            for (int i = _writes.size() - 1; i >= writesRollbackTo; i--) {
+                // TODO need to add these pages to our "dirty count" somehow.
+                _preimageBuffer.copy(_writes[i].addr, _writes[i].len, _writes[i].offset);
+            }
         }
 
+        LOG(2) << "   ***** ROLLING BACK " << (_changes.size() - changesRollbackTo)
+               << " custom changes";
         for (int i = _changes.size() - 1; i >= changesRollbackTo; i--) {
-            const type_info& type = typeid(*_changes[i]);
-            log() << "CUSTOM ROLLBACK " << demangleName(type);
+            LOG(2) << "CUSTOM ROLLBACK " << demangleName(typeid(*_changes[i]));
             _changes[i]->rollback();
         }
 
@@ -189,15 +193,22 @@ namespace mongo {
         invariant(inAUnitOfWork());
 
         if (len == 0) return data; // Don't need to do anything for empty ranges.
-        invariant(len < size_t(numeric_limits<int>::max()));
+        invariant(len < size_t(std::numeric_limits<int>::max()));
 
         // Windows requires us to adjust the address space *before* we write to anything.
-        MemoryMappedFile::makeWritable(data, len);
+        privateViews.makeWritable(data, len);
 
         _writes.push_back(Write(static_cast<char*>(data), len, _preimageBuffer.size()));
-        _preimageBuffer.append(static_cast<char*>(data), len);
+        if (!_rollbackDisabled) {
+            _preimageBuffer.append(static_cast<char*>(data), len);
+        }
 
         return data;
+    }
+
+    void DurRecoveryUnit::setRollbackWritesDisabled() {
+        invariant(inOutermostUnitOfWork());
+        _rollbackDisabled = true;
     }
 
     void DurRecoveryUnit::registerChange(Change* change) {

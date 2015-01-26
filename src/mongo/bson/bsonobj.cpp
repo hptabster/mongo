@@ -31,12 +31,13 @@
 
 #include "mongo/db/jsobj.h"
 
+#include <boost/functional/hash.hpp>
+
 #include "mongo/bson/bson_validate.h"
 #include "mongo/db/json.h"
 #include "mongo/util/allocator.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
-#include "mongo/util/md5.hpp"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -86,15 +87,6 @@ namespace mongo {
 
     BSONObjIterator BSONObj::begin() const {
         return BSONObjIterator(*this);
-    }
-
-    string BSONObj::md5() const {
-        md5digest d;
-        md5_state_t st;
-        md5_init(&st);
-        md5_append( &st , (const md5_byte_t*)_objdata , objsize() );
-        md5_finish(&st, d);
-        return digestToString( d );
     }
 
     string BSONObj::jsonString( JsonStringFormat format, int pretty, bool isArray ) const {
@@ -242,6 +234,14 @@ namespace mongo {
                 return x;
         }
         return -1;
+    }
+
+    size_t BSONObj::Hasher::operator()(const BSONObj& obj) const {
+        size_t hash = 0;
+        BSONForEach(elem, obj) {
+            boost::hash_combine(hash, BSONElement::Hasher()(elem));
+        }
+        return hash;
     }
 
     bool BSONObj::isPrefixOf( const BSONObj& otherObj ) const {

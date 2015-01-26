@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -12,12 +13,13 @@
  *	Callback function from log_scan to get a log record.
  */
 static int
-__curlog_logrec(
-    WT_SESSION_IMPL *session, WT_ITEM *logrec, WT_LSN *lsnp, void *cookie)
+__curlog_logrec(WT_SESSION_IMPL *session,
+    WT_ITEM *logrec, WT_LSN *lsnp, void *cookie, int firstrecord)
 {
 	WT_CURSOR_LOG *cl;
 
 	cl = cookie;
+	WT_UNUSED(firstrecord);
 
 	/* Set up the LSNs and take a copy of the log record for the cursor. */
 	*cl->cur_lsn = *lsnp;
@@ -148,6 +150,7 @@ static int
 __curlog_kv(WT_SESSION_IMPL *session, WT_CURSOR *cursor)
 {
 	WT_CURSOR_LOG *cl;
+	WT_ITEM item;
 	uint32_t fileid, key_count, opsize, optype;
 
 	cl = (WT_CURSOR_LOG *)cursor;
@@ -178,11 +181,37 @@ __curlog_kv(WT_SESSION_IMPL *session, WT_CURSOR *cursor)
 	 * The log cursor sets the LSN and step count as the cursor key and
 	 * and log record related data in the value.  The data in the value
 	 * contains any operation key/value that was in the log record.
+	 * For the special case that the caller needs the result in raw form,
+	 * we create packed versions of the key/value.
 	 */
-	__wt_cursor_set_key(cursor, cl->cur_lsn->file, cl->cur_lsn->offset,
-	    key_count);
-	__wt_cursor_set_value(cursor, cl->txnid, cl->rectype, optype,
-	    fileid, cl->opkey, cl->opvalue);
+	if (FLD_ISSET(cursor->flags, WT_CURSTD_RAW)) {
+		memset(&item, 0, sizeof(item));
+		WT_RET(wiredtiger_struct_size((WT_SESSION *)session,
+		    &item.size, LOGC_KEY_FORMAT, cl->cur_lsn->file,
+		    cl->cur_lsn->offset, key_count));
+		WT_RET(__wt_realloc(session, NULL, item.size, &cl->packed_key));
+		item.data = cl->packed_key;
+		WT_RET(wiredtiger_struct_pack((WT_SESSION *)session,
+		    cl->packed_key, item.size, LOGC_KEY_FORMAT,
+		    cl->cur_lsn->file, cl->cur_lsn->offset, key_count));
+		__wt_cursor_set_key(cursor, &item);
+
+		WT_RET(wiredtiger_struct_size((WT_SESSION *)session,
+		    &item.size, LOGC_VALUE_FORMAT, cl->txnid, cl->rectype,
+		    optype, fileid, cl->opkey, cl->opvalue));
+		WT_RET(__wt_realloc(session, NULL, item.size,
+		    &cl->packed_value));
+		item.data = cl->packed_value;
+		WT_RET(wiredtiger_struct_pack((WT_SESSION *)session,
+		    cl->packed_value, item.size, LOGC_VALUE_FORMAT, cl->txnid,
+		    cl->rectype, optype, fileid, cl->opkey, cl->opvalue));
+		__wt_cursor_set_value(cursor, &item);
+	} else {
+		__wt_cursor_set_key(cursor, cl->cur_lsn->file,
+		    cl->cur_lsn->offset, key_count);
+		__wt_cursor_set_value(cursor, cl->txnid, cl->rectype, optype,
+		    fileid, cl->opkey, cl->opvalue);
+	}
 	return (0);
 }
 
@@ -263,8 +292,8 @@ __curlog_reset(WT_CURSOR *cursor)
 	cl = (WT_CURSOR_LOG *)cursor;
 	cl->stepp = cl->stepp_end = NULL;
 	cl->step_count = 0;
-	INIT_LSN(cl->cur_lsn);
-	INIT_LSN(cl->next_lsn);
+	WT_INIT_LSN(cl->cur_lsn);
+	WT_INIT_LSN(cl->next_lsn);
 	return (0);
 }
 
@@ -284,15 +313,17 @@ __curlog_close(WT_CURSOR *cursor)
 	CURSOR_API_CALL(cursor, session, close, NULL);
 	cl = (WT_CURSOR_LOG *)cursor;
 	conn = S2C(session);
-	WT_ASSERT(session, conn->logging);
+	WT_ASSERT(session, FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED));
 	log = conn->log;
 	WT_TRET(__wt_readunlock(session, log->log_archive_lock));
 	WT_TRET(__curlog_reset(cursor));
 	__wt_free(session, cl->cur_lsn);
 	__wt_free(session, cl->next_lsn);
-	__wt_scr_free(&cl->logrec);
-	__wt_scr_free(&cl->opkey);
-	__wt_scr_free(&cl->opvalue);
+	__wt_scr_free(session, &cl->logrec);
+	__wt_scr_free(session, &cl->opkey);
+	__wt_scr_free(session, &cl->opvalue);
+	__wt_free(session, cl->packed_key);
+	__wt_free(session, cl->packed_value);
 	WT_TRET(__wt_cursor_close(cursor));
 
 err:	API_END_RET(session, ret);
@@ -313,6 +344,7 @@ __wt_curlog_open(WT_SESSION_IMPL *session,
 	    __wt_cursor_set_key,	/* set-key */
 	    __wt_cursor_set_value,	/* set-value */
 	    __curlog_compare,		/* compare */
+	    __wt_cursor_equal,		/* equals */
 	    __curlog_next,		/* next */
 	    __wt_cursor_notsup,		/* prev */
 	    __curlog_reset,		/* reset */
@@ -321,6 +353,7 @@ __wt_curlog_open(WT_SESSION_IMPL *session,
 	    __wt_cursor_notsup,		/* insert */
 	    __wt_cursor_notsup,		/* update */
 	    __wt_cursor_notsup,		/* remove */
+	    __wt_cursor_notsup,		/* reconfigure */
 	    __curlog_close);		/* close */
 	WT_CURSOR *cursor;
 	WT_CURSOR_LOG *cl;
@@ -329,31 +362,29 @@ __wt_curlog_open(WT_SESSION_IMPL *session,
 
 	WT_STATIC_ASSERT(offsetof(WT_CURSOR_LOG, iface) == 0);
 	conn = S2C(session);
-	if (!conn->logging)
+	if (!FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
 		WT_RET_MSG(session, EINVAL,
 		    "Cannot open a log cursor without logging enabled");
 
 	log = conn->log;
 	cl = NULL;
-	WT_RET(__wt_calloc_def(session, 1, &cl));
+	WT_RET(__wt_calloc_one(session, &cl));
 	cursor = &cl->iface;
 	*cursor = iface;
 	cursor->session = &session->iface;
-	WT_ERR(__wt_calloc_def(session, 1, &cl->cur_lsn));
-	WT_ERR(__wt_calloc_def(session, 1, &cl->next_lsn));
+	WT_ERR(__wt_calloc_one(session, &cl->cur_lsn));
+	WT_ERR(__wt_calloc_one(session, &cl->next_lsn));
 	WT_ERR(__wt_scr_alloc(session, 0, &cl->logrec));
 	WT_ERR(__wt_scr_alloc(session, 0, &cl->opkey));
 	WT_ERR(__wt_scr_alloc(session, 0, &cl->opvalue));
 	cursor->key_format = LOGC_KEY_FORMAT;
 	cursor->value_format = LOGC_VALUE_FORMAT;
 
-	INIT_LSN(cl->cur_lsn);
-	INIT_LSN(cl->next_lsn);
+	WT_INIT_LSN(cl->cur_lsn);
+	WT_INIT_LSN(cl->next_lsn);
 
 	WT_ERR(__wt_cursor_init(cursor, uri, NULL, cfg, cursorp));
 
-	/* Log cursors are read only. */
-	WT_ERR(__wt_cursor_config_readonly(cursor, cfg, 1));
 	/* Log cursors block archiving. */
 	WT_ERR(__wt_readlock(session, log->log_archive_lock));
 
@@ -363,9 +394,9 @@ err:		if (F_ISSET(cursor, WT_CURSTD_OPEN))
 		else {
 			__wt_free(session, cl->cur_lsn);
 			__wt_free(session, cl->next_lsn);
-			__wt_scr_free(&cl->logrec);
-			__wt_scr_free(&cl->opkey);
-			__wt_scr_free(&cl->opvalue);
+			__wt_scr_free(session, &cl->logrec);
+			__wt_scr_free(session, &cl->opkey);
+			__wt_scr_free(session, &cl->opvalue);
 			/*
 			 * NOTE:  We cannot get on the error path with the
 			 * readlock held.  No need to unlock it unless that

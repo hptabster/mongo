@@ -30,9 +30,12 @@
 
 #include "mongo/db/storage/record_store_test_harness.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/storage/record_store.h"
 #include "mongo/unittest/unittest.h"
 
+using boost::scoped_ptr;
 using std::string;
 using std::stringstream;
 
@@ -52,7 +55,8 @@ namespace mongo {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 BSONObjBuilder stats;
-                ASSERT_OK( rs->touch( opCtx.get(), &stats ) );
+                Status status = rs->touch( opCtx.get(), &stats );
+                ASSERT( status.isOK() || status.code() == ErrorCodes::CommandNotSupported );
             }
         }
     }
@@ -77,7 +81,7 @@ namespace mongo {
                 string data = ss.str();
 
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             data.c_str(),
                                                             data.size() + 1,
                                                             false );
@@ -97,7 +101,8 @@ namespace mongo {
                 BSONObjBuilder stats;
                 // XXX does not verify the collection was loaded into cache
                 // (even if supported by storage engine)
-                ASSERT_OK( rs->touch( opCtx.get(), &stats ) );
+                Status status = rs->touch( opCtx.get(), &stats );
+                ASSERT( status.isOK() || status.code() == ErrorCodes::CommandNotSupported );
             }
         }
     }
@@ -115,7 +120,8 @@ namespace mongo {
 
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
-            ASSERT_OK( rs->touch( opCtx.get(), NULL /* stats output */ ) );
+            Status status = rs->touch( opCtx.get(), NULL /* stats output */ );
+            ASSERT( status.isOK() || status.code() == ErrorCodes::CommandNotSupported );
         }
     }
 
@@ -139,7 +145,7 @@ namespace mongo {
                 string data = ss.str();
 
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             data.c_str(),
                                                             data.size() + 1,
                                                             false );
@@ -157,7 +163,8 @@ namespace mongo {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             // XXX does not verify the collection was loaded into cache
             // (even if supported by storage engine)
-            ASSERT_OK( rs->touch( opCtx.get(), NULL /* stats output */ ) );
+            Status status = rs->touch( opCtx.get(), NULL /* stats output */ );
+            ASSERT( status.isOK() || status.code() == ErrorCodes::CommandNotSupported );
         }
     }
 

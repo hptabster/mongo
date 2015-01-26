@@ -27,29 +27,21 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
- 
-#include "mongo/util/options_parser/startup_option_init.h"
-#include "mongo/util/options_parser/startup_options.h"
 
+#include "mongo/util/options_parser/startup_option_init.h"
+
+#include <iostream>
+
+#include "mongo/util/options_parser/startup_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_global_options.h"
 
 namespace mongo {
-
-    // Interface to MongoDB option parsing.
-    WiredTigerGlobalOptions wiredTigerGlobalOptions;
 
     MONGO_MODULE_STARTUP_OPTIONS_REGISTER(WiredTigerOptions)(InitializerContext* context) {
         return wiredTigerGlobalOptions.add(&moe::startupOptions);
     }
 
     MONGO_STARTUP_OPTIONS_VALIDATE(WiredTigerOptions)(InitializerContext* context) {
-        if (!wiredTigerGlobalOptions.handlePreValidation(moe::startupOptionsParsed)) {
-            ::_exit(EXIT_SUCCESS);
-        }
-        Status ret = moe::startupOptionsParsed.validate();
-        if (!ret.isOK()) {
-            return ret;
-        }
         return Status::OK();
     }
 

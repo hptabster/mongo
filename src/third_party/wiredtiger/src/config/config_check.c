@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -73,7 +74,7 @@ __wt_configure_method(WT_SESSION_IMPL *session,
 	/*
 	 * !!!
 	 * We ignore the specified uri, that is, all new configuration options
-	 * will be valid for all data sources.   That's shouldn't be too bad
+	 * will be valid for all data sources.   That shouldn't be too bad
 	 * as the worst that can happen is an application might specify some
 	 * configuration option and not get an error -- the option should be
 	 * ignored by the underlying implementation since it's unexpected, so
@@ -122,7 +123,7 @@ __wt_configure_method(WT_SESSION_IMPL *session,
 	 * The new base value is the previous base value, a separator and the
 	 * new configuration string.
 	 */
-	WT_ERR(__wt_calloc_def(session, 1, &entry));
+	WT_ERR(__wt_calloc_one(session, &entry));
 	entry->method = (*epp)->method;
 	WT_ERR(__wt_calloc_def(session,
 	    strlen((*epp)->base) + strlen(",") + strlen(config) + 1, &p));

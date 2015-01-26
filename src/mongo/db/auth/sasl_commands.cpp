@@ -57,6 +57,8 @@
 namespace mongo {
 namespace {
 
+    using std::stringstream;
+
     const bool autoAuthorizeDefault = true;
 
     class CmdSaslStart : public Command {
@@ -218,8 +220,10 @@ namespace {
         if (!status.isOK())
             return status;
 
-
-        if (!sequenceContains(saslGlobalParams.authenticationMechanisms, mechanism)) {
+        if (!sequenceContains(saslGlobalParams.authenticationMechanisms, mechanism) &&
+            mechanism != "SCRAM-SHA-1") {
+            // Always allow SCRAM-SHA-1 to pass to the first sasl step since we need to
+            // handle internal user authentication, SERVER-16534
             result->append(saslCommandMechanismListFieldName,
                            saslGlobalParams.authenticationMechanisms);
             return Status(ErrorCodes::BadValue,
@@ -364,7 +368,7 @@ namespace {
         if (!sequenceContains(saslGlobalParams.authenticationMechanisms, "MONGODB-X509"))
             CmdAuthenticate::disableAuthMechanism("MONGODB-X509");
 
-        // For backwards compatibility, in 2.8 we are letting MONGODB-CR imply general
+        // For backwards compatibility, in 3.0 we are letting MONGODB-CR imply general
         // challenge-response auth and hence SCRAM-SHA-1 is enabled by either specifying
         // SCRAM-SHA-1 or MONGODB-CR in the authenticationMechanism server parameter.
         if (!sequenceContains(saslGlobalParams.authenticationMechanisms, "SCRAM-SHA-1") &&

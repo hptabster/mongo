@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -156,13 +157,13 @@ __checkpoint_apply_all(WT_SESSION_IMPL *session, const char *cfg[],
 		}
 		WT_ERR(ckpt_closed ?
 		    __wt_meta_btree_apply(session, op, cfg) :
-		    __wt_conn_btree_apply(session, 0, op, cfg));
+		    __wt_conn_btree_apply(session, 0, NULL, op, cfg));
 	}
 
 	if (fullp != NULL)
 		*fullp = !target_list;
 
-err:	__wt_scr_free(&tmp);
+err:	__wt_scr_free(session, &tmp);
 	return (ret);
 }
 
@@ -311,7 +312,6 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 {
 	struct timespec start, stop;
 	WT_CONNECTION_IMPL *conn;
-	WT_DATA_HANDLE *dhandle;
 	WT_DECL_RET;
 	WT_TXN *txn;
 	WT_TXN_ISOLATION saved_isolation;
@@ -326,6 +326,9 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	saved_isolation = session->isolation;
 	txn = &session->txn;
 	full = logging = tracking = 0;
+
+	/* Ensure the metadata table is open before taking any locks. */
+	WT_RET(__wt_metadata_open(session));
 
 	/*
 	 * Do a pass over the configuration arguments and figure out what kind
@@ -376,7 +379,7 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	tracking = 1;
 
 	/* Tell logging that we are about to start a database checkpoint. */
-	if (conn->logging && full)
+	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED) && full)
 		WT_ERR(__wt_txn_checkpoint_log(
 		    session, full, WT_TXN_LOG_CKPT_PREPARE, NULL));
 
@@ -392,7 +395,7 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	WT_ERR(__wt_txn_begin(session, txn_cfg));
 
 	/* Tell logging that we have started a database checkpoint. */
-	if (conn->logging && full) {
+	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED) && full) {
 		WT_ERR(__wt_txn_checkpoint_log(
 		    session, full, WT_TXN_LOG_CKPT_START, NULL));
 		logging = 1;
@@ -410,16 +413,6 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	if (F_ISSET(conn, WT_CONN_CKPT_SYNC))
 		WT_ERR(__checkpoint_apply(session, cfg, __wt_checkpoint_sync));
 
-	/* Checkpoint the metadata file. */
-	SLIST_FOREACH(dhandle, &conn->dhlh, l) {
-		if (WT_IS_METADATA(dhandle) ||
-		    !WT_PREFIX_MATCH(dhandle->name, "file:"))
-			break;
-	}
-	if (dhandle == NULL)
-		WT_ERR_MSG(session, EINVAL,
-		    "checkpoint unable to find open meta-data handle");
-
 	/*
 	 * Disable metadata tracking during the metadata checkpoint.
 	 *
@@ -430,11 +423,12 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	session->isolation = txn->isolation = TXN_ISO_READ_UNCOMMITTED;
 	saved_meta_next = session->meta_track_next;
 	session->meta_track_next = NULL;
-	WT_WITH_DHANDLE(session, dhandle, ret = __wt_checkpoint(session, cfg));
+	WT_WITH_DHANDLE(session,
+	    session->meta_dhandle, ret = __wt_checkpoint(session, cfg));
 	session->meta_track_next = saved_meta_next;
 	WT_ERR(ret);
 	if (F_ISSET(conn, WT_CONN_CKPT_SYNC)) {
-		WT_WITH_DHANDLE(session, dhandle,
+		WT_WITH_DHANDLE(session, session->meta_dhandle,
 		    ret = __wt_checkpoint_sync(session, NULL));
 		WT_ERR(ret);
 	}
@@ -600,20 +594,28 @@ __checkpoint_worker(
 	WT_DECL_RET;
 	WT_LSN ckptlsn;
 	const char *name;
-	int deleted, force, hot_backup_locked, track_ckpt, was_modified;
+	int deleted, fake_ckpt, force, hot_backup_locked, was_modified;
 	char *name_alloc;
 
 	btree = S2BT(session);
 	bm = btree->bm;
 	conn = S2C(session);
 	ckpt = ckptbase = NULL;
-	INIT_LSN(&ckptlsn);
 	dhandle = session->dhandle;
 	name_alloc = NULL;
 	hot_backup_locked = 0;
 	name_alloc = NULL;
-	track_ckpt = 1;
+	fake_ckpt = 0;
 	was_modified = btree->modified;
+
+	/*
+	 * Set the checkpoint LSN to the maximum LSN so that if logging is
+	 * disabled, recovery will never roll old changes forward over the
+	 * non-logged changes in this checkpoint.  If logging is enabled, a
+	 * real checkpoint LSN will be assigned later for this checkpoint and
+	 * overwrite this.
+	 */
+	WT_MAX_LSN(&ckptlsn);
 
 	/* Get the list of checkpoints for this file. */
 	WT_RET(__wt_meta_ckptlist_get(session, dhandle->name, &ckptbase));
@@ -706,17 +708,18 @@ __checkpoint_worker(
 			if (F_ISSET(ckpt, WT_CKPT_DELETE))
 				++deleted;
 		/*
-		 * Complicated test: if we only deleted a single checkpoint, and
-		 * it was the last checkpoint in the object, and it has the same
-		 * name as the checkpoint we're taking (correcting for internal
-		 * checkpoint names with their generational suffix numbers), we
-		 * can skip the checkpoint, there's nothing to do.
+		 * Complicated test: if the last checkpoint in the object has
+		 * the same name as the checkpoint we're taking (correcting for
+		 * internal checkpoint names with their generational suffix
+		 * numbers), we can skip the checkpoint, there's nothing to do.
+		 * The exception is if we're deleting two or more checkpoints:
+		 * then we may save space.
 		 */
-		if (deleted == 1 &&
-		    F_ISSET(ckpt - 1, WT_CKPT_DELETE) &&
+		if (ckpt > ckptbase &&
 		    (strcmp(name, (ckpt - 1)->name) == 0 ||
 		    (WT_PREFIX_MATCH(name, WT_CHECKPOINT) &&
-		    WT_PREFIX_MATCH((ckpt - 1)->name, WT_CHECKPOINT))))
+		    WT_PREFIX_MATCH((ckpt - 1)->name, WT_CHECKPOINT))) &&
+		    deleted < 2)
 			goto done;
 	}
 
@@ -820,7 +823,7 @@ __checkpoint_worker(
 					WT_ERR_MSG(session, ret,
 					    "block-manager checkpoint found "
 					    "for a bulk-loaded file");
-			track_ckpt = 0;
+			fake_ckpt = 1;
 			goto fake;
 		case WT_BTREE_SALVAGE:
 		case WT_BTREE_UPGRADE:
@@ -845,7 +848,7 @@ __checkpoint_worker(
 	 */
 	if (is_checkpoint)
 		if (btree->bulk_load_ok) {
-			track_ckpt = 0;
+			fake_ckpt = 1;
 			goto fake;
 		}
 
@@ -876,7 +879,7 @@ __checkpoint_worker(
 	WT_FULL_BARRIER();
 
 	/* Tell logging that a file checkpoint is starting. */
-	if (conn->logging)
+	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
 		WT_ERR(__wt_txn_checkpoint_log(
 		    session, 0, WT_TXN_LOG_CKPT_START, &ckptlsn));
 
@@ -894,7 +897,15 @@ __checkpoint_worker(
 		if (F_ISSET(ckpt, WT_CKPT_ADD))
 			ckpt->write_gen = btree->write_gen;
 
-fake:	/* Update the object's metadata. */
+fake:	/*
+	 * If we're faking a checkpoint and logging is enabled, recovery should
+	 * roll forward any changes made between now and the next checkpoint,
+	 * so set the checkpoint LSN to the beginning of time.
+	 */
+	if (fake_ckpt && FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
+		WT_INIT_LSN(&ckptlsn);
+
+	/* Update the object's metadata. */
 	WT_ERR(__wt_meta_ckptlist_set(
 	    session, dhandle->name, ckptbase, &ckptlsn));
 
@@ -905,7 +916,7 @@ fake:	/* Update the object's metadata. */
 	 * is being discarded, in which case the handle will be gone by the
 	 * time we try to apply or unroll the meta tracking event.
 	 */
-	if (track_ckpt) {
+	if (!fake_ckpt) {
 		if (WT_META_TRACKING(session) && is_checkpoint)
 			WT_ERR(__wt_meta_track_checkpoint(session));
 		else
@@ -913,7 +924,7 @@ fake:	/* Update the object's metadata. */
 	}
 
 	/* Tell logging that the checkpoint is complete. */
-	if (conn->logging)
+	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
 		WT_ERR(__wt_txn_checkpoint_log(
 		    session, 0, WT_TXN_LOG_CKPT_STOP, NULL));
 

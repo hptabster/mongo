@@ -30,7 +30,9 @@
 
 #include "mongo/db/storage/record_store_test_harness.h"
 
-#include "mongo/db/diskloc.h"
+#include <boost/scoped_ptr.hpp>
+
+#include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/unittest/unittest.h"
@@ -39,6 +41,8 @@ using std::string;
 using std::stringstream;
 
 namespace mongo {
+
+    using boost::scoped_ptr;
 
     // Insert a record and try to delete it.
     TEST( RecordStoreTestHarness, DeleteRecord ) {
@@ -51,12 +55,12 @@ namespace mongo {
         }
 
         string data = "my record";
-        DiskLoc loc;
+        RecordId loc;
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             data.c_str(),
                                                             data.size() + 1,
                                                             false );
@@ -97,7 +101,7 @@ namespace mongo {
         }
 
         const int nToInsert = 10;
-        DiskLoc locs[nToInsert];
+        RecordId locs[nToInsert];
         for ( int i = 0; i < nToInsert; i++ ) {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
@@ -106,7 +110,7 @@ namespace mongo {
                 string data = ss.str();
 
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             data.c_str(),
                                                             data.size() + 1,
                                                             false );

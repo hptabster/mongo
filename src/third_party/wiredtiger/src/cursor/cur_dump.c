@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -351,6 +352,7 @@ __wt_curdump_create(WT_CURSOR *child, WT_CURSOR *owner, WT_CURSOR **cursorp)
 	    __curdump_set_key,		/* set-key */
 	    __curdump_set_value,	/* set-value */
 	    __wt_cursor_notsup,		/* compare */
+	    __wt_cursor_notsup,		/* equals */
 	    __curdump_next,		/* next */
 	    __curdump_prev,		/* prev */
 	    __curdump_reset,		/* reset */
@@ -359,6 +361,7 @@ __wt_curdump_create(WT_CURSOR *child, WT_CURSOR *owner, WT_CURSOR **cursorp)
 	    __curdump_insert,		/* insert */
 	    __curdump_update,		/* update */
 	    __curdump_remove,		/* remove */
+	    __wt_cursor_notsup,		/* reconfigure */
 	    __curdump_close);		/* close */
 	WT_CURSOR *cursor;
 	WT_CURSOR_DUMP *cdump;
@@ -371,7 +374,7 @@ __wt_curdump_create(WT_CURSOR *child, WT_CURSOR *owner, WT_CURSOR **cursorp)
 
 	session = (WT_SESSION_IMPL *)child->session;
 
-	WT_RET(__wt_calloc_def(session, 1, &cdump));
+	WT_RET(__wt_calloc_one(session, &cdump));
 	cursor = &cdump->iface;
 	*cursor = iface;
 	cursor->session = child->session;
@@ -384,7 +387,7 @@ __wt_curdump_create(WT_CURSOR *child, WT_CURSOR *owner, WT_CURSOR **cursorp)
 	F_SET(cursor, F_ISSET(child,
 	    WT_CURSTD_DUMP_HEX | WT_CURSTD_DUMP_JSON | WT_CURSTD_DUMP_PRINT));
 	if (F_ISSET(cursor, WT_CURSTD_DUMP_JSON)) {
-		WT_ERR(__wt_calloc_def(session, 1, &json));
+		WT_ERR(__wt_calloc_one(session, &json));
 		cursor->json_private = child->json_private = json;
 	}
 

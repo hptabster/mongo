@@ -28,6 +28,7 @@
 
 #include "mongo/s/shard_key_pattern.h"
 
+#include <boost/scoped_ptr.hpp>
 #include <boost/shared_ptr.hpp>
 #include <vector>
 
@@ -41,11 +42,14 @@
 
 namespace mongo {
 
+    using boost::scoped_ptr;
     using boost::shared_ptr;
     using std::auto_ptr;
     using std::pair;
     using std::make_pair;
     using std::vector;
+    using std::string;
+
     using pathsupport::EqualityMatches;
     using mongoutils::str::stream;
 

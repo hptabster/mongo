@@ -29,7 +29,9 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
+
+#include <iostream>
 
 #include "mongo/bson/mutable/mutable_bson_test_utils.h"
 #include "mongo/client/dbclientcursor.h"
@@ -42,6 +44,12 @@
 #include "mongo/dbtests/dbtests.h"
 
 namespace UpdateTests {
+
+    using std::auto_ptr;
+    using std::numeric_limits;
+    using std::string;
+    using std::stringstream;
+    using std::vector;
 
     class ClientBase {
     public:

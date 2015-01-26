@@ -39,14 +39,18 @@
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/bgsync.h"
-#include "mongo/db/repl/repl_coordinator.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/stats/timer_stats.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mmap.h"
 
 namespace mongo {
+
+    using std::endl;
+    using std::string;
+
 namespace repl {
 namespace {
     // todo / idea: the prefetcher, when it fetches _id, on an upsert, will see if the record exists. if it does not, 
@@ -179,7 +183,7 @@ namespace {
         // lock on the database, instead of optimizing with IS.
         Lock::CollectionLock collLock(txn->lockState(), ns, MODE_S);
 
-        Collection* collection = db->getCollection( txn, ns );
+        Collection* collection = db->getCollection( ns );
         if (!collection) {
             return;
         }

@@ -31,12 +31,15 @@
 
 #pragma once
 
+#include <boost/noncopyable.hpp>
+
 #include "mongo/db/client.h"
 #include "mongo/db/server_options.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/concurrency/spin_lock.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/progress_meter.h"
+#include "mongo/util/thread_safe_string.h"
 #include "mongo/util/time_support.h"
 
 
@@ -129,19 +132,10 @@ namespace mongo {
         std::string report( const CurOp& curop ) const;
 
         /**
-         * Appends stored data and information from curop to the builder.
-         *
-         * @param curop information about the current operation which will be
-         *     use to append data to the builder.
-         * @param builder the BSON builder to use for appending data. Data can
-         *     still be appended even if this method returns false.
-         * @param maxSize the maximum allowed combined size for the query object
-         *     and update object
-         *
-         * @return false if the sum of the sizes for the query object and update
-         *     object exceeded maxSize
+         * Appends information about the current operation to "builder".  "curop" must be a
+         * reference to the CurOp that owns this OpDebug.
          */
-        bool append(const CurOp& curop, BSONObjBuilder& builder, size_t maxSize) const;
+        void append(const CurOp& curop, BSONObjBuilder& builder) const;
 
         // -------------------
         
@@ -174,6 +168,7 @@ namespace mongo {
         bool fastmodinsert;  // upsert of an $operation. builds a default object
         bool upsert;         // true if the update actually did an insert
         int keyUpdates;
+        int writeConflicts;
         ThreadSafeString planSummary; // a brief std::string describing the query solution
 
         // New Query Framework debugging/profiling info
@@ -206,7 +201,7 @@ namespace mongo {
         void reset( const HostAndPort& remote, int op );
         void markCommand() { _isCommand = true; }
         OpDebug& debug()           { return _debug; }
-        string getNS() const { return _ns.toString(); }
+        std::string getNS() const { return _ns.toString(); }
 
         bool shouldDBProfile( int ms ) const {
             if ( _dbprofile <= 0 )

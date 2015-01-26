@@ -30,10 +30,11 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/util/concurrency/thread_pool.h"
 
+#include <boost/noncopyable.hpp>
 #include <boost/thread/thread.hpp>
 
 #include "mongo/util/concurrency/mvar.h"
@@ -43,6 +44,8 @@
 namespace mongo {
     namespace threadpool {
 
+        using std::endl;
+        
         // Worker thread
         class Worker : boost::noncopyable {
         public:

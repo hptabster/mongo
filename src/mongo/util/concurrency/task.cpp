@@ -29,19 +29,23 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include <boost/thread/condition.hpp>
+#include <iostream>
 
 #include "mongo/util/concurrency/task.h"
 
 #include "mongo/db/repl/server.h"
-#include "mongo/util/goodies.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/startup_test.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
+
+    using std::cout;
+    using std::endl;
 
     namespace task {
 

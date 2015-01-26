@@ -22,6 +22,8 @@
 
 #include "mongo/dbtests/dbtests.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/db.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/exec/oplogstart.h"
@@ -35,14 +37,19 @@
 
 namespace OplogStartTests {
 
+    using boost::scoped_ptr;
+    using std::string;
+
     class Base {
     public:
-        Base() : _lk(_txn.lockState()),
+        Base() : _txn(),
+                 _scopedXact(&_txn, MODE_X),
+                 _lk(_txn.lockState()),
                  _wunit(&_txn),
                  _context(&_txn, ns()),
                  _client(&_txn) {
 
-            Collection* c = _context.db()->getCollection(&_txn, ns());
+            Collection* c = _context.db()->getCollection(ns());
             if (!c) {
                 c = _context.db()->createCollection(&_txn, ns());
             }
@@ -69,7 +76,7 @@ namespace OplogStartTests {
         }
 
         Collection* collection() {
-            return _context.db()->getCollection( &_txn, ns() );
+            return _context.db()->getCollection( ns() );
         }
 
         DBDirectClient* client() { return &_client; }
@@ -98,6 +105,7 @@ namespace OplogStartTests {
     private:
         // The order of these is important in order to ensure order of destruction
         OperationContextImpl _txn;
+        ScopedTransaction _scopedXact;
         Lock::GlobalWrite _lk;
         WriteUnitOfWork _wunit;
         Client::Context _context;

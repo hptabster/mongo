@@ -36,13 +36,21 @@
 #include "mongo/s/balancer_policy.h"
 #include "mongo/s/chunk.h"
 #include "mongo/s/config.h"
+#include "mongo/s/type_shard.h"
 #include "mongo/s/type_tags.h"
 #include "mongo/util/log.h"
 #include "mongo/util/stringutils.h"
 #include "mongo/util/text.h"
 
-
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::endl;
+    using std::map;
+    using std::numeric_limits;
+    using std::set;
+    using std::string;
+    using std::vector;
 
     string TagRange::toString() const {
         return str::stream() << min << " -->> " << max << "  on  " << tag;
@@ -232,30 +240,66 @@ namespace mongo {
         }
     }
 
-    void DistributionStatus::populateShardInfoMap(const vector<Shard> allShards,
-                                                  ShardInfoMap* shardInfo) {
-        for (vector<Shard>::const_iterator it = allShards.begin();
-                it != allShards.end(); ++it ) {
-            const Shard& shard = *it;
-            ShardStatus status = shard.getStatus();
-            shardInfo->insert(make_pair(shard.getName(),
-                                        ShardInfo(shard.getMaxSize(),
-                                                  status.mapped(),
-                                                  shard.isDraining(),
-                                                  shard.tags(),
-                                                  status.mongoVersion())));
+    Status DistributionStatus::populateShardInfoMap(ShardInfoMap* shardInfo) {
+        try {
+            ScopedDbConnection conn(configServer.getPrimary().getConnString(), 30);
+
+            auto_ptr<DBClientCursor> cursor(conn->query(ShardType::ConfigNS , Query()));
+            uassert(28597, "Failed to load shard config", cursor.get() != NULL);
+
+            while (cursor->more()) {
+                ShardType shard;
+                std::string errMsg;
+                bool parseOk = shard.parseBSON(cursor->next(), &errMsg);
+
+                if (!parseOk) {
+                    return Status(ErrorCodes::UnsupportedFormat,
+                                  errMsg);
+                }
+
+                std::set<std::string> dummy;
+                ShardInfo newShardEntry(shard.getMaxSize(),
+                                        Shard::getShardDataSizeBytes(shard.getHost()) /
+                                            1024 / 1024,
+                                        shard.getDraining(),
+                                        dummy,
+                                        Shard::getShardMongoVersion(shard.getHost()));
+
+                if (shard.isTagsSet()) {
+                    BSONArrayIteratorSorted tagIter(shard.getTags());
+                    while (tagIter.more()) {
+                        BSONElement tagElement = tagIter.next();
+                        if (tagElement.type() != String) {
+                            return Status(ErrorCodes::UnsupportedFormat,
+                                          str::stream() << "shard tags only supports strings, "
+                                              << "found " << typeName(tagElement.type()));
+                        }
+
+                        newShardEntry.addTag(tagElement.String());
+                    }
+                }
+
+                shardInfo->insert(make_pair(shard.getName(), newShardEntry));
+            }
+
+            conn.done();
         }
+        catch (const DBException& ex) {
+            return ex.toStatus();
+        }
+
+        return Status::OK();
     }
 
-    void DistributionStatus::populateShardToChunksMap(const vector<Shard>& allShards,
+    void DistributionStatus::populateShardToChunksMap(const ShardInfoMap& allShards,
                                                       const ChunkManager& chunkMgr,
                                                       ShardToChunksMap* shardToChunksMap) {
         // Makes sure there is an entry in shardToChunksMap for every shard.
-        for (vector<Shard>::const_iterator it = allShards.begin();
+        for (ShardInfoMap::const_iterator it = allShards.begin();
                 it != allShards.end(); ++it) {
 
             OwnedPointerVector<ChunkType>*& chunkList =
-                    (*shardToChunksMap)[it->getName()];
+                    (*shardToChunksMap)[it->first];
 
             if (chunkList == NULL) {
                 chunkList = new OwnedPointerVector<ChunkType>();
@@ -479,8 +523,8 @@ namespace mongo {
             }
 
             if ( numJumboChunks ) {
-                error() << "shard: " << from << "ns: " << ns
-                        << "has too many chunks, but they are all jumbo "
+                error() << "shard: " << from << " ns: " << ns
+                        << " has too many chunks, but they are all jumbo "
                         << " numJumboChunks: " << numJumboChunks
                         << endl;
                 continue;
@@ -494,21 +538,22 @@ namespace mongo {
     }
 
 
-    ShardInfo::ShardInfo( long long maxSize, long long currSize,
-                          bool draining,
-                          const set<string>& tags, 
-                          const string& mongoVersion )
-        : _maxSize( maxSize ),
-          _currSize( currSize ),
-          _draining( draining ),
-          _tags( tags ),
-          _mongoVersion( mongoVersion ) {
+    ShardInfo::ShardInfo(long long maxSizeMB,
+                         long long currSizeMB,
+                         bool draining,
+                         const set<string>& tags,
+                         const string& mongoVersion):
+        _maxSizeMB(maxSizeMB),
+        _currSizeMB(currSizeMB),
+        _draining(draining),
+        _tags(tags),
+        _mongoVersion(mongoVersion) {
     }
 
     ShardInfo::ShardInfo()
-        : _maxSize( 0 ),
-          _currSize( 0 ),
-          _draining( false ) {
+        : _maxSizeMB(0),
+          _currSizeMB(0),
+          _draining(false) {
     }
 
     void ShardInfo::addTag( const string& tag ) {
@@ -517,10 +562,10 @@ namespace mongo {
 
 
     bool ShardInfo::isSizeMaxed() const {
-        if ( _maxSize == 0 || _currSize == 0 )
+        if (_maxSizeMB == 0 || _currSizeMB == 0)
             return false;
 
-        return _currSize >= _maxSize;
+        return _currSizeMB >= _maxSizeMB;
     }
 
     bool ShardInfo::hasTag( const string& tag ) const {
@@ -531,8 +576,8 @@ namespace mongo {
 
     string ShardInfo::toString() const {
         StringBuilder ss;
-        ss << " maxSize: " << _maxSize;
-        ss << " currSize: " << _currSize;
+        ss << " maxSizeMB: " << _maxSizeMB;
+        ss << " currSizeMB: " << _currSizeMB;
         ss << " draining: " << _draining;
         if ( _tags.size() > 0 ) {
             ss << "tags : ";

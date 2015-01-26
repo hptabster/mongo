@@ -26,13 +26,21 @@
  *    it in the license file.
  */
 
+#include <string>
+
 #include "mongo/db/storage/sorted_data_interface.h"
+
+#include <boost/scoped_ptr.hpp>
 
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/mmap_v1/btree/btree_logic.h"
-
+#include "mongo/db/storage/mmap_v1/record_store_v1_base.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::string;
+    using std::vector;
 
     template <class OnDiskFormat>
     class BtreeBuilderInterfaceImpl : public SortedDataBuilderInterface {
@@ -41,8 +49,8 @@ namespace mongo {
                                   typename BtreeLogic<OnDiskFormat>::Builder* builder)
             : _builder(builder), _trans(trans) { }
 
-        Status addKey(const BSONObj& key, const DiskLoc& loc) {
-            return _builder->addKey(key, loc);
+        Status addKey(const BSONObj& key, const RecordId& loc) {
+            return _builder->addKey(key, DiskLoc::fromRecordId(loc));
         }
 
     private:
@@ -56,16 +64,15 @@ namespace mongo {
     class BtreeInterfaceImpl : public SortedDataInterface {
     public:
         BtreeInterfaceImpl(HeadManager* headManager,
-                                RecordStore* recordStore,
-                                const Ordering& ordering,
-                                const string& indexName,
-                                BucketDeletionNotification* bucketDeletionNotification) {
-
+                           RecordStore* recordStore,
+                           SavedCursorRegistry* cursorRegistry,
+                           const Ordering& ordering,
+                           const string& indexName) {
             _btree.reset(new BtreeLogic<OnDiskFormat>(headManager,
                                                       recordStore,
+                                                      cursorRegistry,
                                                       ordering,
-                                                      indexName,
-                                                      bucketDeletionNotification));
+                                                      indexName));
         }
 
         virtual ~BtreeInterfaceImpl() { }
@@ -79,23 +86,28 @@ namespace mongo {
 
         virtual Status insert(OperationContext* txn,
                               const BSONObj& key,
-                              const DiskLoc& loc,
+                              const RecordId& loc,
                               bool dupsAllowed) {
 
-            return _btree->insert(txn, key, loc, dupsAllowed);
+            return _btree->insert(txn, key, DiskLoc::fromRecordId(loc), dupsAllowed);
         }
 
         virtual void unindex(OperationContext* txn,
                              const BSONObj& key,
-                             const DiskLoc& loc,
+                             const RecordId& loc,
                              bool dupsAllowed) {
 
-            _btree->unindex(txn, key, loc);
+            _btree->unindex(txn, key, DiskLoc::fromRecordId(loc));
         }
 
         virtual void fullValidate(OperationContext* txn, bool full, long long *numKeysOut,
                                   BSONObjBuilder* output) const {
             *numKeysOut = _btree->fullValidate(txn, NULL, false, false, 0);
+        }
+
+        virtual bool appendCustomStats(OperationContext* txn, BSONObjBuilder* output, double scale)
+            const {
+            return false;
         }
 
         virtual long long getSpaceUsedBytes( OperationContext* txn ) const {
@@ -104,8 +116,8 @@ namespace mongo {
 
         virtual Status dupKeyCheck(OperationContext* txn,
                                    const BSONObj& key,
-                                   const DiskLoc& loc) {
-            return _btree->dupKeyCheck(txn, key, loc);
+                                   const RecordId& loc) {
+            return _btree->dupKeyCheck(txn, key, DiskLoc::fromRecordId(loc));
         }
 
         virtual bool isEmpty(OperationContext* txn) {
@@ -141,13 +153,14 @@ namespace mongo {
 
             }
 
-            virtual void aboutToDeleteBucket(const DiskLoc& bucket) {
-                if (_bucket == bucket)
+            virtual void aboutToDeleteBucket(const RecordId& bucket) {
+                if (_bucket.toRecordId() == bucket)
                     _ofs = -1;
             }
 
-            virtual bool locate(const BSONObj& key, const DiskLoc& loc) {
-                return _btree->locate(_txn, key, loc, _direction, &_ofs, &_bucket);
+            virtual bool locate(const BSONObj& key, const RecordId& loc) {
+                return _btree->locate(_txn, key, DiskLoc::fromRecordId(loc), _direction, &_ofs,
+                                      &_bucket);
             }
 
             virtual void customLocate(const BSONObj& keyBegin,
@@ -161,7 +174,7 @@ namespace mongo {
                                      &_ofs,
                                      keyBegin,
                                      keyBeginLen,
-                                     afterKey, 
+                                     afterKey,
                                      keyEnd,
                                      keyEndInclusive,
                                      _direction);
@@ -188,8 +201,12 @@ namespace mongo {
                 return _btree->getKey(_txn, _bucket, _ofs);
             }
 
-            virtual DiskLoc getDiskLoc() const {
+            DiskLoc getDiskLoc() const {
                 return _btree->getDiskLoc(_txn, _bucket, _ofs);
+            }
+
+            virtual RecordId getRecordId() const {
+                return getDiskLoc().toRecordId();
             }
 
             virtual void advance() {
@@ -200,16 +217,26 @@ namespace mongo {
 
             virtual void savePosition() {
                 if (!_bucket.isNull()) {
-                    _savedKey = getKey().getOwned();
-                    _savedLoc = getDiskLoc();
+                    _saved.bucket = _bucket;
+                    _saved.key = getKey().getOwned();
+                    _saved.loc = getDiskLoc();
+                    _btree->savedCursors()->registerCursor(&_saved);
                 }
             }
 
             virtual void restorePosition(OperationContext* txn) {
                 if (!_bucket.isNull()) {
+                    invariant(!_saved.bucket.isNull());
+                    _saved.bucket = DiskLoc(); // guard against accidental double restore
+
+                    if (!_btree->savedCursors()->unregisterCursor(&_saved)) {
+                        locate(_saved.key, _saved.loc.toRecordId());
+                        return;
+                    }
+
                     _btree->restorePosition(_txn,
-                                            _savedKey,
-                                            _savedLoc,
+                                            _saved.key,
+                                            _saved.loc,
                                             _direction,
                                             &_bucket,
                                             &_ofs);
@@ -225,8 +252,7 @@ namespace mongo {
             int _ofs;
 
             // Only used by save/restorePosition() if _bucket is non-Null.
-            BSONObj _savedKey;
-            DiskLoc _savedLoc;
+            SavedCursorRegistry::SavedCursor _saved;
         };
 
         virtual Cursor* newCursor(OperationContext* txn, int direction) const {
@@ -243,25 +269,24 @@ namespace mongo {
 
     SortedDataInterface* getMMAPV1Interface(HeadManager* headManager,
                                             RecordStore* recordStore,
+                                            SavedCursorRegistry* cursorRegistry,
                                             const Ordering& ordering,
                                             const string& indexName,
-                                            int version,
-                                            BucketDeletionNotification* bucketDeletion) {
-
+                                            int version) {
         if (0 == version) {
             return new BtreeInterfaceImpl<BtreeLayoutV0>(headManager,
                                                          recordStore,
+                                                         cursorRegistry,
                                                          ordering,
-                                                         indexName,
-                                                         bucketDeletion);
+                                                         indexName);
         }
         else {
             invariant(1 == version);
             return new BtreeInterfaceImpl<BtreeLayoutV1>(headManager,
                                                          recordStore,
+                                                         cursorRegistry,
                                                          ordering,
-                                                         indexName,
-                                                         bucketDeletion);
+                                                         indexName);
         }
     }
 

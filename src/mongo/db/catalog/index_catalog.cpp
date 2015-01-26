@@ -56,12 +56,18 @@
 #include "mongo/db/keypattern.h"
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/query/internal_plans.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::endl;
+    using std::string;
+    using std::vector;
 
     static const int INDEX_CATALOG_INIT = 283711;
     static const int INDEX_CATALOG_UNINIT = 654321;
@@ -129,9 +135,9 @@ namespace mongo {
                                                                   descriptorCleanup.release(),
                                                                   _collection->infoCache() ) );
 
-        entry->init( txn, _collection->_database->_dbEntry->getIndex( txn,
-                                                                      _collection->getCatalogEntry(),
-                                                                      entry.get() ) );
+        entry->init( txn, _collection->_dbce->getIndex( txn,
+                                                        _collection->getCatalogEntry(),
+                                                        entry.get() ) );
 
         IndexCatalogEntry* save = entry.get();
         _entries.add( entry.release() );
@@ -169,7 +175,7 @@ namespace mongo {
         string pluginName = IndexNames::findPluginName(keyPattern);
         bool known = IndexNames::isKnownName(pluginName);
 
-        if ( !_collection->_database->getDatabaseCatalogEntry()->isOlderThan24( txn ) ) {
+        if ( !_collection->_dbce->isOlderThan24( txn ) ) {
             // RulesFor24+
             // This assert will be triggered when downgrading from a future version that
             // supports an index plugin unsupported by this version.
@@ -216,20 +222,21 @@ namespace mongo {
             return Status::OK();
         }
 
-        Database* db = _collection->_database;
+        DatabaseCatalogEntry* dbce = _collection->_dbce;
 
-        if ( !db->getDatabaseCatalogEntry()->isOlderThan24( txn ) ) {
+        if ( !dbce->isOlderThan24( txn ) ) {
             return Status::OK(); // these checks have already been done
         }
 
-        auto_ptr<PlanExecutor> exec(
-            InternalPlanner::collectionScan(txn,
-                                            db->_indexesName,
-                                            db->getCollection(txn, db->_indexesName)));
+        // Everything below is MMAPv1 specific since it was the only storage engine that existed
+        // before 2.4. We look at all indexes in this database to make sure that none of them use
+        // plugins that didn't exist before 2.4. If that holds, we mark the database as "2.4-clean"
+        // which allows creation of indexes using new plugins.
 
-        BSONObj index;
-        PlanExecutor::ExecState state;
-        while ( PlanExecutor::ADVANCED == (state = exec->getNext(&index, NULL)) ) {
+        RecordStore* indexes = dbce->getRecordStore(dbce->name() + ".system.indexes");
+        boost::scoped_ptr<RecordIterator> it(indexes->getIterator(txn));
+        while (!it->isEOF()) {
+            const BSONObj index = it->dataFor(it->getNext()).toBson();
             const BSONObj key = index.getObjectField("key");
             const string plugin = IndexNames::findPluginName(key);
             if ( IndexNames::existedBefore24(plugin) )
@@ -244,11 +251,7 @@ namespace mongo {
             return Status( ErrorCodes::CannotCreateIndex, errmsg );
         }
 
-        if ( PlanExecutor::IS_EOF != state ) {
-            warning() << "Internal error while reading system.indexes collection";
-        }
-
-        db->_dbEntry->markIndexSafe24AndUp( txn );
+        dbce->markIndexSafe24AndUp( txn );
 
         return Status::OK();
     }
@@ -343,7 +346,8 @@ namespace {
 } // namespace
 
     Status IndexCatalog::createIndexOnEmptyCollection(OperationContext* txn, BSONObj spec) {
-        txn->lockState()->assertWriteLocked( _collection->_database->name() );
+        invariant(txn->lockState()->isCollectionLockedForMode(_collection->ns().toString(),
+                                                              MODE_X));
         invariant(_collection->numRecords(txn) == 0);
 
         _checkMagic();
@@ -512,6 +516,14 @@ namespace {
                                str::stream() << "non-numeric value for \"v\" field:" << vElt );
             }
             double v = vElt.Number();
+
+            // SERVER-16893 Forbid use of v0 indexes with non-mmapv1 engines
+            if (v == 0 && !getGlobalEnvironment()->getGlobalStorageEngine()->isMmapV1()) {
+                return Status( ErrorCodes::CannotCreateIndex,
+                               str::stream() << "use of v0 indexes is only allowed with the "
+                                             << "mmapv1 storage engine");
+            }
+
             // note (one day) we may be able to fresh build less versions than we can use
             // isASupportedIndexVersionNumber() is what we can use
             if ( v != 0 && v != 1 ) {
@@ -534,21 +546,26 @@ namespace {
             return Status( ErrorCodes::IndexAlreadyExists, "cannot index freelist" );
         }
 
-        StringData specNamespace = spec.getStringField("ns");
-        if ( specNamespace.size() == 0 )
+        const BSONElement specNamespace = spec["ns"];
+        if ( specNamespace.type() != String )
             return Status( ErrorCodes::CannotCreateIndex,
-                           "the index spec needs a 'ns' field'" );
+                           "the index spec needs a 'ns' string field" );
 
-        if ( nss.ns() != specNamespace )
+        if ( nss.ns() != specNamespace.valueStringData())
             return Status( ErrorCodes::CannotCreateIndex,
                            "the index spec ns does not match" );
 
         // logical name of the index
-        const char *name = spec.getStringField("name");
-        if ( !name[0] )
-            return Status( ErrorCodes::CannotCreateIndex, "no index name specified" );
+        const BSONElement nameElem = spec["name"];
+        if (nameElem.type() != String)
+            return Status(ErrorCodes::CannotCreateIndex,
+                          "index name must be specified as a string");
 
-        string indexNamespace = IndexDescriptor::makeIndexNamespace( specNamespace, name );
+        const StringData name = nameElem.valueStringData();
+        if (name.find('\0') != std::string::npos)
+            return Status(ErrorCodes::CannotCreateIndex, "index names cannot contain NUL bytes");
+
+        const std::string indexNamespace = IndexDescriptor::makeIndexNamespace( nss.ns(), name );
         if ( indexNamespace.length() > NamespaceString::MaxNsLen )
             return Status( ErrorCodes::CannotCreateIndex,
                            str::stream() << "namespace name generated from index name \"" <<
@@ -571,12 +588,30 @@ namespace {
         else {
             // for non _id indexes, we check to see if replication has turned off all indexes
             // we _always_ created _id index
-            repl::ReplicationCoordinator* replCoord = repl::getGlobalReplicationCoordinator();
-            if (replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet &&
-                    !repl::getGlobalReplicationCoordinator()->buildsIndexes()) {
+            if (!repl::getGlobalReplicationCoordinator()->buildsIndexes()) {
                 // this is not exactly the right error code, but I think will make the most sense
                 return Status( ErrorCodes::IndexAlreadyExists, "no indexes per repl" );
             }
+        }
+
+        BSONElement storageEngineElement = spec.getField("storageEngine");
+        if (storageEngineElement.eoo()) {
+            return Status::OK();
+        }
+        if (storageEngineElement.type() != mongo::Object) {
+            return Status(ErrorCodes::BadValue, "'storageEngine' has to be a document.");
+        }
+        BSONObj storageEngineOptions = storageEngineElement.Obj();
+        if (storageEngineOptions.isEmpty()) {
+            return Status(ErrorCodes::BadValue,
+                          "Empty 'storageEngine' options are invalid. "
+                          "Please remove, or include valid options.");
+
+        }
+        Status storageEngineStatus = validateStorageOptions(storageEngineOptions,
+            &StorageEngine::Factory::validateIndexStorageOptions);
+        if (!storageEngineStatus.isOK()) {
+            return storageEngineStatus;
         }
 
         return Status::OK();
@@ -675,13 +710,14 @@ namespace {
     Status IndexCatalog::dropAllIndexes(OperationContext* txn,
                                         bool includingIdIndex) {
 
-        txn->lockState()->assertWriteLocked( _collection->_database->name() );
+        invariant(txn->lockState()->isCollectionLockedForMode(_collection->ns().toString(),
+                                                              MODE_X));
 
         BackgroundOperation::assertNoBgOpInProgForNs( _collection->ns().ns() );
 
         // there may be pointers pointing at keys in the btree(s).  kill them.
         // TODO: can this can only clear cursors on this index?
-        _collection->cursorCache()->invalidateAll( false );
+        _collection->getCursorManager()->invalidateAll( false );
 
         // make sure nothing in progress
         massert( 17348,
@@ -746,8 +782,8 @@ namespace {
 
     Status IndexCatalog::dropIndex(OperationContext* txn,
                                    IndexDescriptor* desc ) {
-
-        txn->lockState()->assertWriteLocked( _collection->_database->name() );
+        invariant(txn->lockState()->isCollectionLockedForMode(_collection->ns().toString(),
+                                                              MODE_X));
         IndexCatalogEntry* entry = _entries.find( desc );
 
         if ( !entry )
@@ -781,7 +817,7 @@ namespace {
 
         // there may be pointers pointing at keys in the btree(s).  kill them.
         // TODO: can this can only clear cursors on this index?
-        _collection->cursorCache()->invalidateAll( false );
+        _collection->getCursorManager()->invalidateAll( false );
 
         // wipe out stats
         _collection->infoCache()->reset(txn);
@@ -811,14 +847,8 @@ namespace {
 
             log() << "error dropping index: " << indexNamespace
                   << " going to leak some memory to be safe";
-
-
-            _collection->_database->_clearCollectionCache( txn, indexNamespace );
-
             throw;
         }
-
-        _collection->_database->_clearCollectionCache( txn, indexNamespace );
 
         _checkMagic();
 
@@ -858,7 +888,7 @@ namespace {
     bool IndexCatalog::isMultikey( OperationContext* txn, const IndexDescriptor* idx ) {
         IndexCatalogEntry* entry = _entries.find( idx );
         invariant( entry );
-        return entry->isMultikey( txn );
+        return entry->isMultikey();
     }
 
 
@@ -1014,6 +1044,39 @@ namespace {
         return entry;
     }
 
+
+    const IndexDescriptor* IndexCatalog::refreshEntry( OperationContext* txn,
+                                                       const IndexDescriptor* oldDesc ) {
+        invariant(txn->lockState()->isCollectionLockedForMode(_collection->ns().ns(),
+                                                              MODE_X));
+
+        const std::string indexName = oldDesc->indexName();
+        invariant( _collection->getCatalogEntry()->isIndexReady( txn, indexName ) );
+
+        // Notify other users of the IndexCatalog that we're about to invalidate 'oldDesc'.
+        const bool collectionGoingAway = false;
+        _collection->getCursorManager()->invalidateAll( collectionGoingAway );
+
+        // Delete the IndexCatalogEntry that owns this descriptor.  After deletion, 'oldDesc' is
+        // invalid and should not be dereferenced.
+        const bool removed = _entries.remove( oldDesc );
+        invariant( removed );
+
+        // Ask the CollectionCatalogEntry for the new index spec.
+        BSONObj spec = _collection->getCatalogEntry()->getIndexSpec( txn, indexName ).getOwned();
+        BSONObj keyPattern = spec.getObjectField( "key" );
+
+        // Re-register this index in the index catalog with the new spec.
+        IndexDescriptor* newDesc = new IndexDescriptor( _collection,
+                                                        _getAccessMethodName( txn, keyPattern ),
+                                                        spec );
+        const IndexCatalogEntry* entry = _setupInMemoryStructures( txn, newDesc );
+        invariant( entry->isReady( txn ) );
+
+        // Return the new descriptor.
+        return entry->descriptor();
+    }
+
     // ---------------------------
 
     namespace {
@@ -1030,7 +1093,7 @@ namespace {
     Status IndexCatalog::_indexRecord(OperationContext* txn,
                                       IndexCatalogEntry* index,
                                       const BSONObj& obj,
-                                      const DiskLoc &loc ) {
+                                      const RecordId &loc ) {
         InsertDeleteOptions options;
         options.logIfError = false;
         options.dupsAllowed = isDupsAllowed( index->descriptor() );
@@ -1042,7 +1105,7 @@ namespace {
     Status IndexCatalog::_unindexRecord(OperationContext* txn,
                                         IndexCatalogEntry* index,
                                         const BSONObj& obj,
-                                        const DiskLoc &loc,
+                                        const RecordId &loc,
                                         bool logIfError) {
         InsertDeleteOptions options;
         options.logIfError = logIfError;
@@ -1063,7 +1126,7 @@ namespace {
 
     Status IndexCatalog::indexRecord(OperationContext* txn,
                                    const BSONObj& obj,
-                                   const DiskLoc &loc ) {
+                                   const RecordId &loc ) {
 
         for ( IndexCatalogEntryContainer::const_iterator i = _entries.begin();
               i != _entries.end();
@@ -1078,7 +1141,7 @@ namespace {
 
     void IndexCatalog::unindexRecord(OperationContext* txn,
                                      const BSONObj& obj,
-                                     const DiskLoc& loc,
+                                     const RecordId& loc,
                                      bool noWarn) {
 
         for ( IndexCatalogEntryContainer::const_iterator i = _entries.begin();

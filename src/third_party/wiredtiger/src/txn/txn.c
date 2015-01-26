@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -322,6 +323,7 @@ __wt_txn_release(WT_SESSION_IMPL *session)
 	__wt_logrec_free(session, &txn->logrec);
 
 	/* Discard any memory from the session's split stash that we can. */
+	WT_ASSERT(session, session->split_gen == 0);
 	if (session->split_stash_cnt > 0)
 		__wt_split_stash_discard(session);
 
@@ -357,10 +359,17 @@ __wt_txn_commit(WT_SESSION_IMPL *session, const char *cfg[])
 		    (WT_SESSION *)session, txn->id, 1));
 
 	/* If we are logging, write a commit log record. */
-	if (ret == 0 &&
-	    txn->mod_count > 0 && S2C(session)->logging &&
-	    !F_ISSET(session, WT_SESSION_NO_LOGGING))
+	if (ret == 0 && txn->mod_count > 0 &&
+	    FLD_ISSET(S2C(session)->log_flags, WT_CONN_LOG_ENABLED) &&
+	    !F_ISSET(session, WT_SESSION_NO_LOGGING)) {
+		/*
+		 * We are about to block on I/O writing the log.
+		 * Release our snapshot in case it is keeping data pinned.
+		 * This is particularly important for checkpoints.
+		 */
+		__wt_txn_release_snapshot(session);
 		ret = __wt_txn_log_commit(session, cfg);
+	}
 
 	/*
 	 * If anything went wrong, roll back.
@@ -529,9 +538,8 @@ __wt_txn_global_init(WT_SESSION_IMPL *session, const char *cfg[])
 	conn = S2C(session);
 
 	txn_global = &conn->txn_global;
-	txn_global->current = 1;
-	txn_global->oldest_id = 1;
-	txn_global->last_running = 1;
+	txn_global->current = txn_global->last_running =
+	    txn_global->oldest_id = WT_TXN_FIRST;
 
 	WT_RET(__wt_calloc_def(
 	    session, conn->session_size, &txn_global->states));

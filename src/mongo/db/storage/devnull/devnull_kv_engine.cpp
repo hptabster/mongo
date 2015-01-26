@@ -1,5 +1,3 @@
-// devnull_kv_engine.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -28,8 +26,12 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/storage/devnull/devnull_kv_engine.h"
 
+#include "mongo/base/disallow_copying.h"
+#include "mongo/db/storage/in_memory/in_memory_record_store.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
 
@@ -38,12 +40,12 @@ namespace mongo {
     class EmptyRecordIterator: public RecordIterator {
     public:
         virtual bool isEOF() { return true; }
-        virtual DiskLoc curr() { return DiskLoc(); }
-        virtual DiskLoc getNext() { return DiskLoc(); }
-        virtual void invalidate(const DiskLoc& dl) { }
+        virtual RecordId curr() { return RecordId(); }
+        virtual RecordId getNext() { return RecordId(); }
+        virtual void invalidate(const RecordId& dl) { }
         virtual void saveState() { }
         virtual bool restoreState(OperationContext* txn) { return false; }
-        virtual RecordData dataFor( const DiskLoc& loc ) const {
+        virtual RecordData dataFor( const RecordId& loc ) const {
             invariant( false );
         }
     };
@@ -72,50 +74,54 @@ namespace mongo {
             return 0;
         }
 
-        virtual RecordData dataFor( OperationContext* txn, const DiskLoc& loc) const {
+        virtual RecordData dataFor( OperationContext* txn, const RecordId& loc) const {
             return RecordData( _dummy.objdata(), _dummy.objsize() );
         }
 
-        virtual bool findRecord( OperationContext* txn, const DiskLoc& loc, RecordData* rd ) const {
+        virtual bool findRecord( OperationContext* txn, const RecordId& loc, RecordData* rd ) const {
             return false;
         }
 
-        virtual void deleteRecord( OperationContext* txn, const DiskLoc& dl ) {}
+        virtual void deleteRecord( OperationContext* txn, const RecordId& dl ) {}
 
-        virtual StatusWith<DiskLoc> insertRecord( OperationContext* txn,
+        virtual StatusWith<RecordId> insertRecord( OperationContext* txn,
                                                   const char* data,
                                                   int len,
                                                   bool enforceQuota ) {
             _numInserts++;
-            return StatusWith<DiskLoc>( DiskLoc( 6, 4 ) );
+            return StatusWith<RecordId>( RecordId( 6, 4 ) );
         }
 
-        virtual StatusWith<DiskLoc> insertRecord( OperationContext* txn,
+        virtual StatusWith<RecordId> insertRecord( OperationContext* txn,
                                                   const DocWriter* doc,
                                                   bool enforceQuota ) {
             _numInserts++;
-            return StatusWith<DiskLoc>( DiskLoc( 6, 4 ) );
+            return StatusWith<RecordId>( RecordId( 6, 4 ) );
         }
 
-        virtual StatusWith<DiskLoc> updateRecord( OperationContext* txn,
-                                                  const DiskLoc& oldLocation,
+        virtual StatusWith<RecordId> updateRecord( OperationContext* txn,
+                                                  const RecordId& oldLocation,
                                                   const char* data,
                                                   int len,
                                                   bool enforceQuota,
-                                                  UpdateMoveNotifier* notifier ) {
-            return StatusWith<DiskLoc>( oldLocation );
+                                                  UpdateNotifier* notifier ) {
+            return StatusWith<RecordId>( oldLocation );
+        }
+
+        virtual bool updateWithDamagesSupported() const {
+            return false;
         }
 
         virtual Status updateWithDamages( OperationContext* txn,
-                                          const DiskLoc& loc,
+                                          const RecordId& loc,
                                           const RecordData& oldRec,
                                           const char* damageSource,
                                           const mutablebson::DamageVector& damages ) {
-            return Status::OK();
+            invariant(false);
         }
 
         virtual RecordIterator* getIterator( OperationContext* txn,
-                                             const DiskLoc& start,
+                                             const RecordId& start,
                                              const CollectionScanParams::Direction& dir ) const {
             return new EmptyRecordIterator();
         }
@@ -133,19 +139,13 @@ namespace mongo {
         virtual Status truncate( OperationContext* txn ) { return Status::OK(); }
 
         virtual void temp_cappedTruncateAfter(OperationContext* txn,
-                                              DiskLoc end,
+                                              RecordId end,
                                               bool inclusive) { }
-
-        virtual bool compactSupported() const { return false; }
-        virtual Status compact( OperationContext* txn,
-                                RecordStoreCompactAdaptor* adaptor,
-                                const CompactOptions* options,
-                                CompactStats* stats ) { return Status::OK(); }
 
         virtual Status validate( OperationContext* txn,
                                  bool full, bool scanData,
                                  ValidateAdaptor* adaptor,
-                                 ValidateResults* results, BSONObjBuilder* output ) const {
+                                 ValidateResults* results, BSONObjBuilder* output ) {
             return Status::OK();
         }
 
@@ -165,23 +165,85 @@ namespace mongo {
             return Status::OK();
         }
 
+        virtual void updateStatsAfterRepair(OperationContext* txn,
+                                            long long numRecords,
+                                            long long dataSize) {
+        }
+
     private:
         CollectionOptions _options;
         long long _numInserts;
         BSONObj _dummy;
     };
 
+    class DevNullSortedDataBuilderInterface : public SortedDataBuilderInterface {
+        MONGO_DISALLOW_COPYING(DevNullSortedDataBuilderInterface);
+
+    public:
+        DevNullSortedDataBuilderInterface() { }
+
+        virtual Status addKey(const BSONObj& key, const RecordId& loc) {
+            return Status::OK();
+        }
+    };
+
+    class DevNullSortedDataInterface : public SortedDataInterface {
+    public:
+        virtual ~DevNullSortedDataInterface() { }
+
+        virtual SortedDataBuilderInterface* getBulkBuilder(OperationContext* txn,
+                                                           bool dupsAllowed) {
+            return new DevNullSortedDataBuilderInterface();
+        }
+
+        virtual Status insert(OperationContext* txn,
+                              const BSONObj& key,
+                              const RecordId& loc,
+                              bool dupsAllowed) { return Status::OK(); }
+
+        virtual void unindex(OperationContext* txn,
+                             const BSONObj& key,
+                             const RecordId& loc,
+                             bool dupsAllowed) { }
+
+        virtual Status dupKeyCheck(OperationContext* txn,
+                                   const BSONObj& key,
+                                   const RecordId& loc) { return Status::OK(); }
+
+        virtual void fullValidate(OperationContext* txn, bool full, long long* numKeysOut,
+                                  BSONObjBuilder* output) const { }
+
+        virtual bool appendCustomStats(OperationContext* txn, BSONObjBuilder* output, double scale)
+            const {
+            return false;
+        }
+
+        virtual long long getSpaceUsedBytes( OperationContext* txn ) const { return 0; }
+
+        virtual bool isEmpty(OperationContext* txn) { return true; }
+
+        virtual SortedDataInterface::Cursor* newCursor(OperationContext* txn, int direction) const {
+            return NULL;
+        }
+
+        virtual Status initAsEmpty(OperationContext* txn) { return Status::OK(); }
+    };
+
+
     RecordStore* DevNullKVEngine::getRecordStore( OperationContext* opCtx,
                                                   const StringData& ns,
                                                   const StringData& ident,
                                                   const CollectionOptions& options ) {
+        if ( ident == "_mdb_catalog" ) {
+            return new InMemoryRecordStore( ns, &_catalogInfo );
+        }
         return new DevNullRecordStore( ns, options );
     }
 
     SortedDataInterface* DevNullKVEngine::getSortedDataInterface( OperationContext* opCtx,
                                                                   const StringData& ident,
                                                                   const IndexDescriptor* desc ) {
-        return NULL;
+        return new DevNullSortedDataInterface();
     }
 
 }

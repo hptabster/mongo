@@ -37,8 +37,8 @@
 #include <boost/scoped_ptr.hpp>
 
 #include "mongo/base/owned_pointer_vector.h"
-#include "mongo/db/diskloc.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/record_id.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/util/timer.h"
 
@@ -74,19 +74,23 @@ namespace mongo {
 
         // un-used API
         virtual void* writingPtr(void* data, size_t len) { invariant(!"don't call writingPtr"); }
-        virtual void syncDataAndTruncateJournal() {}
+
+        virtual void setRollbackWritesDisabled() {}
+
+        virtual uint64_t getMyTransactionCount() const;
 
         // ---- WT STUFF
 
         WiredTigerSession* getSession();
         WiredTigerSessionCache* getSessionCache() { return _sessionCache; }
         bool inActiveTxn() const { return _active; }
+        void assertInActiveTxn() const;
 
         bool everStartedWrite() const { return _everStartedWrite; }
         int depth() const { return _depth; }
 
-        void setOplogReadTill( const DiskLoc& loc );
-        DiskLoc getOplogReadTill() const { return _oplogReadTill; }
+        void setOplogReadTill( const RecordId& loc );
+        RecordId getOplogReadTill() const { return _oplogReadTill; }
 
         static WiredTigerRecoveryUnit* get(OperationContext *txn);
 
@@ -103,11 +107,12 @@ namespace mongo {
         bool _defaultCommit;
         int _depth;
         bool _active;
+        uint64_t _myTransactionCount;
         bool _everStartedWrite;
         Timer _timer;
         bool _currentlySquirreled;
         bool _syncing;
-        DiskLoc _oplogReadTill;
+        RecordId _oplogReadTill;
 
         typedef OwnedPointerVector<Change> Changes;
         Changes _changes;
@@ -118,13 +123,19 @@ namespace mongo {
      */
     class WiredTigerCursor {
     public:
-        WiredTigerCursor(const std::string& uri, uint64_t uriID, OperationContext* txn);
-        WiredTigerCursor(const std::string& uri, uint64_t uriID, WiredTigerRecoveryUnit* ru);
+        WiredTigerCursor(const std::string& uri,
+                         uint64_t uriID,
+                         bool forRecordStore,
+                         OperationContext* txn);
+        WiredTigerCursor(const std::string& uri,
+                         uint64_t uriID,
+                         bool forRecordStore,
+                         WiredTigerRecoveryUnit* ru);
         ~WiredTigerCursor();
 
 
         WT_CURSOR* get() const {
-            dassert(_session == _ru->getSession());
+            // TODO(SERVER-16816): assertInActiveTxn();
             return _cursor;
         }
 
@@ -135,8 +146,13 @@ namespace mongo {
 
         void reset();
 
+        void assertInActiveTxn() const { _ru->assertInActiveTxn(); }
+
     private:
-        void _init( const std::string& uri, uint64_t uriID, WiredTigerRecoveryUnit* ru );
+        void _init( const std::string& uri,
+                    uint64_t uriID,
+                    bool forRecordStore,
+                    WiredTigerRecoveryUnit* ru );
 
         uint64_t _uriID;
         WiredTigerRecoveryUnit* _ru; // not owned

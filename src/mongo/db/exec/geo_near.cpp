@@ -1,3 +1,4 @@
+
 /**
  *    Copyright (C) 2014 10gen Inc.
  *
@@ -46,9 +47,14 @@
 #include "mongo/db/index/expression_params.h"
 #include "mongo/util/log.h"
 
+#include <boost/scoped_ptr.hpp>
 #include <algorithm>
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::abs;
+    using std::auto_ptr;
 
     //
     // Shared GeoNear search functionality
@@ -442,6 +448,7 @@ namespace mongo {
           _boundsIncrement(0.0) {
 
         getNearStats()->keyPattern = twoDIndex->keyPattern();
+        getNearStats()->indexName = twoDIndex->indexName();
     }
 
     GeoNear2DStage::~GeoNear2DStage() {
@@ -850,6 +857,7 @@ namespace mongo {
           _boundsIncrement(0.0) {
 
         getNearStats()->keyPattern = s2Index->keyPattern();
+        getNearStats()->indexName = s2Index->indexName();
     }
 
     GeoNear2DSphereStage::~GeoNear2DSphereStage() {

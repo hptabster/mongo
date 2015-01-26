@@ -29,7 +29,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/log.h"
 #include "mongo/db/jsobj.h"

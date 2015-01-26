@@ -28,7 +28,7 @@
 
 #pragma once
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/client.h"
 #include "mongo/db/curop.h"

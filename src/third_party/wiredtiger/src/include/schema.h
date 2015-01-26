@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -50,6 +51,7 @@ struct __wt_index {
 struct __wt_table {
 	const char *name, *config, *plan;
 	const char *key_format, *value_format;
+	uint64_t name_hash;		/* Hash of name */
 
 	WT_CONFIG_ITEM cgconf, colconf;
 
@@ -57,7 +59,8 @@ struct __wt_table {
 	WT_INDEX **indices;
 	size_t idx_alloc;
 
-	TAILQ_ENTRY(__wt_table) q;
+	SLIST_ENTRY(__wt_table) l;
+	SLIST_ENTRY(__wt_table) hashl;
 
 	int cg_complete, idx_complete, is_simple;
 	u_int ncolgroups, nindices, nkey_columns;
@@ -95,7 +98,6 @@ struct __wt_table {
 #define	WT_WITH_DHANDLE_LOCK(session, op)				\
 	WT_WITH_LOCK(session,						\
 	    &S2C(session)->dhandle_lock, WT_SESSION_HANDLE_LIST_LOCKED, op)
-
 /*
  * WT_WITH_SCHEMA_LOCK --
  *	Acquire the schema lock, perform an operation, drop the lock.

@@ -26,7 +26,7 @@
 *    it in the license file.
 */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
@@ -54,6 +54,9 @@
 #include "mongo/db/storage_options.h"
 
 namespace mongo {
+
+    using std::string;
+    using std::stringstream;
 
     /* Usage:
      * admindb.$cmd.findOne( { copydb: 1, fromhost: <connection string>, fromdb: <db>,

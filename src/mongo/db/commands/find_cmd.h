@@ -35,7 +35,7 @@
 namespace mongo {
 
     /**
-     * The find command will be the main entry point for running queries once newRunQuery()
+     * The find command will be the main entry point for running queries once runQuery()
      * is deprecated.
      *
      * Currently, only explains run through the FindCmd, and regular queries use the old code
@@ -55,7 +55,7 @@ namespace mongo {
 
         virtual bool adminOnly() const { return false; }
 
-        virtual void help( stringstream& help ) const {
+        virtual void help( std::stringstream& help ) const {
             help << "query for documents";
         }
 
@@ -77,9 +77,9 @@ namespace mongo {
          * TODO: This needs to be implemented. Currently it does nothing.
          */
         virtual bool run(OperationContext* txn,
-                         const string& dbname,
+                         const std::string& dbname,
                          BSONObj& cmdObj, int options,
-                         string& errmsg,
+                         std::string& errmsg,
                          BSONObjBuilder& result,
                          bool fromRepl);
 

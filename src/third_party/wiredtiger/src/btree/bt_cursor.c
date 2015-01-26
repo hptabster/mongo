@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -505,6 +506,34 @@ err:	if (ret == WT_RESTART)
 }
 
 /*
+ * __curfile_update_check --
+ *	Check whether an update would conflict.
+ *
+ *	This function expects the cursor to already be positioned.  It should
+ *	be called before deciding whether to skip an update operation based on
+ *	existence of a visible update for a key -- even if there is no value
+ *	visible to the transaction, an update could still conflict.
+ */
+static int
+__curfile_update_check(WT_CURSOR_BTREE *cbt)
+{
+	WT_BTREE *btree;
+	WT_SESSION_IMPL *session;
+
+	btree = cbt->btree;
+	session = (WT_SESSION_IMPL *)cbt->iface.session;
+
+	if (cbt->compare != 0)
+		return (0);
+	if (cbt->ins != NULL)
+		return (__wt_txn_update_check(session, cbt->ins->upd));
+	if (btree->type == BTREE_ROW && cbt->ref->page->pg_row_upd != NULL)
+		return (__wt_txn_update_check(
+		    session, cbt->ref->page->pg_row_upd[cbt->slot]));
+	return (0);
+}
+
+/*
  * __wt_btcur_update_check --
  *	Check whether an update would conflict.
  *
@@ -532,10 +561,9 @@ retry:	WT_RET(__cursor_func_init(cbt, 1));
 		WT_ERR(__cursor_row_search(session, cbt, 1));
 
 		/*
-		 * We are only interested in checking for conflicts.
+		 * Just check for conflicts.
 		 */
-		if (cbt->compare == 0 && cbt->ins != NULL)
-			ret = __wt_txn_update_check(session, cbt->ins->upd);
+		ret = __curfile_update_check(cbt);
 		break;
 	case BTREE_COL_FIX:
 	case BTREE_COL_VAR:
@@ -580,6 +608,13 @@ retry:	WT_RET(__cursor_func_init(cbt, 1));
 	case BTREE_COL_VAR:
 		WT_ERR(__cursor_col_search(session, cbt));
 
+		/*
+		 * If we find a matching record, check whether an update would
+		 * conflict.  Do this before checking if the update is visible
+		 * in __cursor_valid, or we can miss conflict.
+		 */
+		WT_ERR(__curfile_update_check(cbt));
+
 		/* Remove the record if it exists. */
 		if (cbt->compare != 0 || !__cursor_valid(cbt, NULL)) {
 			if (!__cursor_fix_implicit(btree, cbt))
@@ -601,6 +636,10 @@ retry:	WT_RET(__cursor_func_init(cbt, 1));
 	case BTREE_ROW:
 		/* Remove the record if it exists. */
 		WT_ERR(__cursor_row_search(session, cbt, 0));
+
+		/* Check whether an update would conflict. */
+		WT_ERR(__curfile_update_check(cbt));
+
 		if (cbt->compare != 0 || !__cursor_valid(cbt, NULL))
 			WT_ERR(WT_NOTFOUND);
 
@@ -666,26 +705,32 @@ retry:	WT_RET(__cursor_func_init(cbt, 1));
 		WT_ERR(__cursor_col_search(session, cbt));
 
 		/*
-		 * If not overwriting, fail if the key doesn't exist.  Update
-		 * the record if it exists.  Creating a record past the end of
-		 * the tree in a fixed-length column-store implicitly fills the
-		 * gap with empty records.  Update the record in that case, the
+		 * If not overwriting, fail if the key doesn't exist.  If we
+		 * find an update for the key, check for conflicts.  Update the
+		 * record if it exists.  Creating a record past the end of the
+		 * tree in a fixed-length column-store implicitly fills the gap
+		 * with empty records.  Update the record in that case, the
 		 * record exists.
 		 */
-		if (!F_ISSET(cursor, WT_CURSTD_OVERWRITE) &&
-		    (cbt->compare != 0 || !__cursor_valid(cbt, NULL)) &&
-		    !__cursor_fix_implicit(btree, cbt))
-			WT_ERR(WT_NOTFOUND);
+		if (!F_ISSET(cursor, WT_CURSTD_OVERWRITE)) {
+			WT_ERR(__curfile_update_check(cbt));
+			if ((cbt->compare != 0 || !__cursor_valid(cbt, NULL)) &&
+			    !__cursor_fix_implicit(btree, cbt))
+				WT_ERR(WT_NOTFOUND);
+		}
 		ret = __cursor_col_modify(session, cbt, 0);
 		break;
 	case BTREE_ROW:
 		WT_ERR(__cursor_row_search(session, cbt, 1));
 		/*
-		 * If not overwriting, fail if the key does not exist.
+		 * If not overwriting, check for conflicts and fail if the key
+		 * does not exist.
 		 */
-		if (!F_ISSET(cursor, WT_CURSTD_OVERWRITE) &&
-		    (cbt->compare != 0 || !__cursor_valid(cbt, NULL)))
-			WT_ERR(WT_NOTFOUND);
+		if (!F_ISSET(cursor, WT_CURSTD_OVERWRITE)) {
+			WT_ERR(__curfile_update_check(cbt));
+			if (cbt->compare != 0 || !__cursor_valid(cbt, NULL))
+				WT_ERR(WT_NOTFOUND);
+		}
 		ret = __cursor_row_modify(session, cbt, 0);
 		break;
 	WT_ILLEGAL_VALUE_ERR(session);
@@ -755,16 +800,19 @@ err:	if (ret != 0)
 int
 __wt_btcur_compare(WT_CURSOR_BTREE *a_arg, WT_CURSOR_BTREE *b_arg, int *cmpp)
 {
-	WT_BTREE *btree;
 	WT_CURSOR *a, *b;
 	WT_SESSION_IMPL *session;
 
 	a = (WT_CURSOR *)a_arg;
 	b = (WT_CURSOR *)b_arg;
-	btree = a_arg->btree;
 	session = (WT_SESSION_IMPL *)a->session;
 
-	switch (btree->type) {
+	/* Confirm both cursors reference the same object. */
+	if (a_arg->btree != b_arg->btree)
+		WT_RET_MSG(
+		    session, EINVAL, "Cursors must reference the same object");
+
+	switch (a_arg->btree->type) {
 	case BTREE_COL_FIX:
 	case BTREE_COL_VAR:
 		/*
@@ -781,7 +829,7 @@ __wt_btcur_compare(WT_CURSOR_BTREE *a_arg, WT_CURSOR_BTREE *b_arg, int *cmpp)
 		break;
 	case BTREE_ROW:
 		WT_RET(__wt_compare(
-		    session, btree->collator, &a->key, &b->key, cmpp));
+		    session, a_arg->btree->collator, &a->key, &b->key, cmpp));
 		break;
 	WT_ILLEGAL_VALUE(session);
 	}
@@ -792,7 +840,7 @@ __wt_btcur_compare(WT_CURSOR_BTREE *a_arg, WT_CURSOR_BTREE *b_arg, int *cmpp)
  * __cursor_equals --
  *	Return if two cursors reference the same row.
  */
-static int
+static inline int
 __cursor_equals(WT_CURSOR_BTREE *a, WT_CURSOR_BTREE *b)
 {
 	switch (a->btree->type) {
@@ -817,6 +865,43 @@ __cursor_equals(WT_CURSOR_BTREE *a, WT_CURSOR_BTREE *b)
 		if (a->slot == b->slot)
 			return (1);
 		break;
+	}
+	return (0);
+}
+
+/*
+ * __wt_btcur_equals --
+ *	Return an equality comparison between two cursors.
+ */
+int
+__wt_btcur_equals(
+    WT_CURSOR_BTREE *a_arg, WT_CURSOR_BTREE *b_arg, int *equalp)
+{
+	WT_CURSOR *a, *b;
+	WT_SESSION_IMPL *session;
+	int cmp;
+
+	a = (WT_CURSOR *)a_arg;
+	b = (WT_CURSOR *)b_arg;
+	session = (WT_SESSION_IMPL *)a->session;
+
+	/* Confirm both cursors reference the same object. */
+	if (a_arg->btree != b_arg->btree)
+		WT_RET_MSG(
+		    session, EINVAL, "Cursors must reference the same object");
+
+	/*
+	 * The reason for an equals method is because we can avoid doing
+	 * a full key comparison in some cases. If both cursors point into the
+	 * tree, take the fast path, otherwise fall back to the slower compare
+	 * method; in both cases, return 1 if the cursors are equal, 0 if they
+	 * are not.
+	 */
+	if (F_ISSET(a, WT_CURSTD_KEY_INT) && F_ISSET(b, WT_CURSTD_KEY_INT))
+		*equalp = __cursor_equals(a_arg, b_arg);
+	else {
+		WT_RET(__wt_btcur_compare(a_arg, b_arg, &cmp));
+		*equalp = (cmp == 0) ? 1 : 0;
 	}
 	return (0);
 }
@@ -968,7 +1053,7 @@ __wt_btcur_range_truncate(WT_CURSOR_BTREE *start, WT_CURSOR_BTREE *stop)
 	 * the logging code) disabling writing of the in-memory remove records
 	 * to disk.
 	 */
-	if (S2C(session)->logging)
+	if (FLD_ISSET(S2C(session)->log_flags, WT_CONN_LOG_ENABLED))
 		WT_RET(__wt_txn_truncate_log(session, start, stop));
 
 	switch (btree->type) {
@@ -1000,7 +1085,7 @@ __wt_btcur_range_truncate(WT_CURSOR_BTREE *start, WT_CURSOR_BTREE *stop)
 		break;
 	}
 
-err:	if (S2C(session)->logging)
+err:	if (FLD_ISSET(S2C(session)->log_flags, WT_CONN_LOG_ENABLED))
 		WT_TRET(__wt_txn_truncate_end(session));
 	return (ret);
 }

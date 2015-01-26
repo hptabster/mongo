@@ -29,7 +29,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/client/connpool.h"
 #include "mongo/db/auth/authorization_manager.h"
@@ -50,6 +50,10 @@
 
  */
 namespace mongo {
+
+    using std::endl;
+    using std::string;
+    using std::stringstream;
 
     void* remapPrivateView(void *oldPrivateAddr) {
         log() << "remapPrivateView called in mongos, aborting" << endl;

@@ -28,7 +28,7 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
@@ -55,6 +55,11 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+    using std::auto_ptr;
+    using std::string;
+    using std::stringstream;
+    using std::endl;
 
     class CmdCloneCollection : public Command {
     public:

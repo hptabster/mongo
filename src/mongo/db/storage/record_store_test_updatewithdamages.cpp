@@ -30,11 +30,14 @@
 
 #include "mongo/db/storage/record_store_test_harness.h"
 
-#include "mongo/db/diskloc.h"
+#include <boost/scoped_ptr.hpp>
+
+#include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/unittest/unittest.h"
 
+using boost::scoped_ptr;
 using std::string;
 
 namespace mongo {
@@ -44,19 +47,22 @@ namespace mongo {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
 
+        if (!rs->updateWithDamagesSupported())
+            return;
+
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             ASSERT_EQUALS( 0, rs->numRecords( opCtx.get() ) );
         }
 
         string data = "00010111";
-        DiskLoc loc;
+        RecordId loc;
         const RecordData rec(data.c_str(), data.size() + 1);
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             rec.data(),
                                                             rec.size(),
                                                             false );
@@ -107,19 +113,22 @@ namespace mongo {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
 
+        if (!rs->updateWithDamagesSupported())
+            return;
+
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             ASSERT_EQUALS( 0, rs->numRecords( opCtx.get() ) );
         }
 
         string data = "00010111";
-        DiskLoc loc;
+        RecordId loc;
         const RecordData rec(data.c_str(), data.size() + 1);
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             rec.data(),
                                                             rec.size(),
                                                             false );
@@ -168,19 +177,22 @@ namespace mongo {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
 
+        if (!rs->updateWithDamagesSupported())
+            return;
+
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             ASSERT_EQUALS( 0, rs->numRecords( opCtx.get() ) );
         }
 
         string data = "00010111";
-        DiskLoc loc;
+        RecordId loc;
         const RecordData rec(data.c_str(), data.size() + 1);
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             rec.data(),
                                                             rec.size(),
                                                             false );
@@ -227,19 +239,22 @@ namespace mongo {
         scoped_ptr<HarnessHelper> harnessHelper( newHarnessHelper() );
         scoped_ptr<RecordStore> rs( harnessHelper->newNonCappedRecordStore() );
 
+        if (!rs->updateWithDamagesSupported())
+            return;
+
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             ASSERT_EQUALS( 0, rs->numRecords( opCtx.get() ) );
         }
 
         string data = "my record";
-        DiskLoc loc;
+        RecordId loc;
         const RecordData rec(data.c_str(), data.size() + 1);
         {
             scoped_ptr<OperationContext> opCtx( harnessHelper->newOperationContext() );
             {
                 WriteUnitOfWork uow( opCtx.get() );
-                StatusWith<DiskLoc> res = rs->insertRecord( opCtx.get(),
+                StatusWith<RecordId> res = rs->insertRecord( opCtx.get(),
                                                             rec.data(),
                                                             rec.size(),
                                                             false );

@@ -33,6 +33,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* KeepMutationsStage::kStageType = "KEEP_MUTATIONS";
 
@@ -125,7 +128,7 @@ namespace mongo {
     }
 
     void KeepMutationsStage::invalidate(OperationContext* txn,
-                                        const DiskLoc& dl,
+                                        const RecordId& dl,
                                         InvalidationType type) {
         ++_commonStats.invalidates;
         _child->invalidate(txn, dl, type);

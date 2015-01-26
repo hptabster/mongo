@@ -46,21 +46,21 @@ namespace mongo {
         struct Record;
 
     public:
-        // DiskLoc(0,0) isn't valid for records.
+        // RecordId(0,0) isn't valid for records.
         explicit HeapRecordStoreBtree(const StringData& ns): RecordStore(ns), _nextId(1) { }
 
-        virtual RecordData dataFor(OperationContext* txn, const DiskLoc& loc) const;
+        virtual RecordData dataFor(OperationContext* txn, const RecordId& loc) const;
 
-        virtual bool findRecord(OperationContext* txn, const DiskLoc& loc, RecordData* out) const;
+        virtual bool findRecord(OperationContext* txn, const RecordId& loc, RecordData* out) const;
 
-        virtual void deleteRecord(OperationContext* txn, const DiskLoc& dl);
+        virtual void deleteRecord(OperationContext* txn, const RecordId& dl);
 
-        virtual StatusWith<DiskLoc> insertRecord(OperationContext* txn,
+        virtual StatusWith<RecordId> insertRecord(OperationContext* txn,
                                                  const char* data,
                                                  int len,
                                                  bool enforceQuota);
 
-        virtual StatusWith<DiskLoc> insertRecord(OperationContext* txn,
+        virtual StatusWith<RecordId> insertRecord(OperationContext* txn,
                                                  const DocWriter* doc,
                                                  bool enforceQuota);
 
@@ -68,23 +68,25 @@ namespace mongo {
 
         virtual Status touch(OperationContext* txn, BSONObjBuilder* output) const;
 
-        typedef std::map<DiskLoc, HeapRecordStoreBtree::Record> Records;
-
         // public methods below here are not necessary to test btree, and will crash when called.
 
         // ------------------------------
 
-        virtual StatusWith<DiskLoc> updateRecord(OperationContext* txn,
-                                                 const DiskLoc& oldLocation,
+        virtual StatusWith<RecordId> updateRecord(OperationContext* txn,
+                                                 const RecordId& oldLocation,
                                                  const char* data,
                                                  int len,
                                                  bool enforceQuota,
-                                                 UpdateMoveNotifier* notifier) {
+                                                 UpdateNotifier* notifier) {
             invariant(false);
         }
 
+        virtual bool updateWithDamagesSupported() const {
+            return true;
+        }
+
         virtual Status updateWithDamages(OperationContext* txn,
-                                         const DiskLoc& loc,
+                                         const RecordId& loc,
                                          const RecordData& oldRec,
                                          const char* damageSource,
                                          const mutablebson::DamageVector& damages) {
@@ -92,7 +94,7 @@ namespace mongo {
         }
 
         virtual RecordIterator* getIterator(OperationContext* txn,
-                                            const DiskLoc& start,
+                                            const RecordId& start,
                                             const CollectionScanParams::Direction& dir) const {
             invariant(false);
         }
@@ -108,25 +110,18 @@ namespace mongo {
         virtual Status truncate(OperationContext* txn) { invariant(false); }
 
         virtual void temp_cappedTruncateAfter(OperationContext* txn,
-                                              DiskLoc end,
+                                              RecordId end,
                                               bool inclusive) {
             invariant(false);
         }
 
         virtual bool compactSupported() const { invariant(false); }
 
-        virtual Status compact(OperationContext* txn,
-                               RecordStoreCompactAdaptor* adaptor,
-                               const CompactOptions* options,
-                               CompactStats* stats) {
-            invariant(false);
-        }
-
         virtual Status validate(OperationContext* txn,
                                 bool full,
                                 bool scanData,
                                 ValidateAdaptor* adaptor,
-                                ValidateResults* results, BSONObjBuilder* output) const {
+                                ValidateResults* results, BSONObjBuilder* output) {
             invariant(false);
         }
 
@@ -154,11 +149,17 @@ namespace mongo {
 
         virtual long long dataSize(OperationContext* txn) const { invariant(false); }
 
-        virtual Record* recordFor(const DiskLoc& loc) const { invariant(false); }
+        virtual Record* recordFor(const RecordId& loc) const { invariant(false); }
 
         virtual bool isCapped() const { invariant(false); }
 
         virtual const char* name() const { invariant(false); }
+
+        virtual void updateStatsAfterRepair(OperationContext* txn,
+                                            long long numRecords,
+                                            long long dataSize) {
+            invariant(false);
+        }
         // more things that we actually care about below
 
     private:
@@ -170,8 +171,9 @@ namespace mongo {
             boost::shared_array<char> data;
         };
 
-        DiskLoc allocateLoc();
+        RecordId allocateLoc();
 
+        typedef std::map<RecordId, HeapRecordStoreBtree::Record> Records;
         Records _records;
         int64_t _nextId;
     };
@@ -202,17 +204,19 @@ namespace mongo {
 
         virtual void* writingPtr(void* data, size_t len);
 
+        virtual void setRollbackWritesDisabled() {}
+
         // -----------------------
 
-        void notifyInsert( HeapRecordStoreBtree* rs, const DiskLoc& loc );
+        void notifyInsert( HeapRecordStoreBtree* rs, const RecordId& loc );
         static void notifyInsert( OperationContext* ctx,
-                                  HeapRecordStoreBtree* rs, const DiskLoc& loc );
+                                  HeapRecordStoreBtree* rs, const RecordId& loc );
 
     private:
         int _depth;
         struct InsertEntry {
             HeapRecordStoreBtree* rs;
-            DiskLoc loc;
+            RecordId loc;
         };
         std::vector<InsertEntry> _insertions;
 

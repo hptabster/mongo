@@ -37,6 +37,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* DistinctScan::kStageType = "DISTINCT";
 
@@ -50,6 +53,7 @@ namespace mongo {
           _params(params),
           _commonStats(kStageType) {
         _specificStats.keyPattern = _params.descriptor->keyPattern();
+        _specificStats.indexName = _params.descriptor->indexName();
     }
 
     void DistinctScan::initIndexCursor() {
@@ -127,7 +131,7 @@ namespace mongo {
         if (GETTING_NEXT == _scanState) {
             // Grab the next (key, value) from the index.
             BSONObj ownedKeyObj = _btreeCursor->getKey().getOwned();
-            DiskLoc loc = _btreeCursor->getValue();
+            RecordId loc = _btreeCursor->getValue();
 
             // The underlying IndexCursor points at the *next* thing we want to return.  We do this
             // so that if we're scanning an index looking for docs to delete we don't continually
@@ -203,7 +207,7 @@ namespace mongo {
         }
     }
 
-    void DistinctScan::invalidate(OperationContext* txn, const DiskLoc& dl, InvalidationType type) {
+    void DistinctScan::invalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) {
         ++_commonStats.invalidates;
     }
 

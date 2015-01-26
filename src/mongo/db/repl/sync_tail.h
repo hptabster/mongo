@@ -101,7 +101,7 @@ namespace repl {
         // Prefetch and write a deque of operations, using the supplied function.
         // Initial Sync and Sync Tail each use a different function.
         // Returns the last OpTime applied.
-        OpTime multiApply(std::deque<BSONObj>& ops);
+        OpTime multiApply(OperationContext* txn, std::deque<BSONObj>& ops);
 
         /**
          * Applies oplog entries until reaching "endOpTime".
@@ -111,13 +111,6 @@ namespace repl {
         void _applyOplogUntil(OperationContext* txn, const OpTime& endOpTime);
 
     private:
-        // After ops have been written to db, call this
-        // to update local oplog.rs, as well as notify the primary
-        // that we have applied the ops.
-        // Ops are removed from the deque.
-        // Returns the optime of the last op applied.
-        OpTime applyOpsToOplog(std::deque<BSONObj>* ops);
-
         BackgroundSyncInterface* _networkQueue;
 
         // Function to use during applyOps

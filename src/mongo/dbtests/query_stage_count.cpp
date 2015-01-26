@@ -26,6 +26,7 @@
  *    it in the license file.
  */
 
+#include <boost/scoped_ptr.hpp>
 #include <memory>
 
 #include "mongo/db/exec/collection_scan.h"
@@ -41,16 +42,23 @@
 
 namespace QueryStageCount {
 
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::vector;
+
     const int kDocuments = 100;
     const int kInterjections = kDocuments;
 
     class CountStageTest {
     public:
         CountStageTest()
-            : _dbLock(_txn.lockState(), nsToDatabaseSubstring(ns()), MODE_X)
-            , _ctx(&_txn, ns())
-            , _coll(NULL)
-        {}
+            : _txn(),
+              _scopedXact(&_txn, MODE_IX),
+              _dbLock(_txn.lockState(), nsToDatabaseSubstring(ns()), MODE_X),
+              _ctx(&_txn, ns()),
+              _coll(NULL) {
+
+        }
 
         virtual ~CountStageTest() {}
 
@@ -106,15 +114,16 @@ namespace QueryStageCount {
             wunit.commit();
         }
 
-        void remove(const DiskLoc& loc) {
+        void remove(const RecordId& loc) {
             WriteUnitOfWork wunit(&_txn);
             _coll->deleteDocument(&_txn, loc, false, false, NULL);
             wunit.commit();
         }
 
-        void update(const DiskLoc& oldLoc, const BSONObj& newDoc) {
+        void update(const RecordId& oldLoc, const BSONObj& newDoc) {
             WriteUnitOfWork wunit(&_txn);
-            _coll->updateDocument(&_txn, oldLoc, newDoc, false, NULL);
+            BSONObj oldDoc = _coll->getRecordStore()->dataFor( &_txn, oldLoc ).releaseToBson();
+            _coll->updateDocument(&_txn, oldLoc, oldDoc, newDoc, false, true, NULL);
             wunit.commit();
         }
 
@@ -216,8 +225,9 @@ namespace QueryStageCount {
         static const char* ns() { return "unittest.QueryStageCount"; }
 
     protected:
-        vector<DiskLoc> _locs;
+        vector<RecordId> _locs;
         OperationContextImpl _txn;
+        ScopedTransaction _scopedXact;
         Lock::DBLock _dbLock;
         Client::Context _ctx;
         Collection* _coll;

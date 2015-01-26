@@ -32,6 +32,8 @@
 
 #include "mongo/s/balance.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/base/owned_pointer_map.h"
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/jsobj.h"
@@ -51,12 +53,21 @@
 #include "mongo/s/type_mongos.h"
 #include "mongo/s/type_settings.h"
 #include "mongo/s/type_tags.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/version.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::auto_ptr;
+    using std::endl;
+    using std::map;
+    using std::set;
+    using std::string;
+    using std::vector;
 
     MONGO_FP_DECLARE(skipBalanceRound);
 
@@ -123,10 +134,10 @@ namespace mongo {
                     verify( cm );
                     c = cm->findIntersectingChunk( chunkInfo.chunk.min );
 
-                    log() << "forcing a split because migrate failed for size reasons" << endl;
+                    log() << "performing a split because migrate failed for size reasons";
 
-                    Status status = c->split(true /* atMedian */, NULL, NULL);
-                    log() << "forced split results: " << status << endl;
+                    Status status = c->split(Chunk::normal, NULL, NULL);
+                    log() << "split results: " << status << endl;
 
                     if ( !status.isOK() ) {
                         log() << "marking chunk as jumbo: " << c->toString() << endl;
@@ -345,16 +356,19 @@ namespace mongo {
         // TODO: skip unresponsive shards and mark information as stale.
         //
 
-        vector<Shard> allShards;
-        Shard::getAllShards( allShards );
-        if ( allShards.size() < 2) {
-            LOG(1) << "can't balance without more active shards" << endl;
+        ShardInfoMap shardInfo;
+        Status loadStatus = DistributionStatus::populateShardInfoMap(&shardInfo);
+
+        if (!loadStatus.isOK()) {
+            warning() << "failed to load shard metadata" << causedBy(loadStatus);
+            return;
+        }
+
+        if (shardInfo.size() < 2) {
+            LOG(1) << "can't balance without more active shards";
             return;
         }
         
-        ShardInfoMap shardInfo;
-        DistributionStatus::populateShardInfoMap(allShards, &shardInfo);
-
         OCCASIONALLY warnOnMultiVersion( shardInfo );
 
         //
@@ -398,11 +412,10 @@ namespace mongo {
                 continue;
             }
 
-            for ( vector<Shard>::iterator i=allShards.begin(); i!=allShards.end(); ++i ) {
+            for (ShardInfoMap::const_iterator i = shardInfo.begin(); i != shardInfo.end(); ++i) {
                 // this just makes sure there is an entry in shardToChunksMap for every shard
-                Shard s = *i;
                 OwnedPointerVector<ChunkType>*& chunkList =
-                        shardToChunksMap.mutableMap()[s.getName()];
+                        shardToChunksMap.mutableMap()[i->first];
 
                 if (chunkList == NULL) {
                     chunkList = new OwnedPointerVector<ChunkType>();

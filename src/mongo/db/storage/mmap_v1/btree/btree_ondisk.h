@@ -28,9 +28,9 @@
 
 #pragma once
 
-#include "mongo/db/diskloc.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/storage/mmap_v1/btree/key.h"
+#include "mongo/db/storage/mmap_v1/diskloc.h"
 
 namespace mongo {
 
@@ -272,6 +272,10 @@ namespace mongo {
         //
         // Type Conversion
         //
+
+        RecordId toRecordId() const {
+            return DiskLoc(*this).toRecordId();
+        }
 
         operator DiskLoc() const {
             // endian

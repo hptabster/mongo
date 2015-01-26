@@ -30,6 +30,8 @@
 
 #include "mongo/db/commands/group.h"
 
+#include <boost/scoped_ptr.hpp>
+
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
@@ -41,6 +43,9 @@
 #include "mongo/db/query/get_executor.h"
 
 namespace mongo {
+
+    using boost::scoped_ptr;
+    using std::string;
 
     static GroupCommand cmdGroup;
 
@@ -153,7 +158,7 @@ namespace mongo {
         BSONObj retval;
         PlanExecutor::ExecState state = planExecutor->getNext(&retval, NULL);
         if (PlanExecutor::ADVANCED != state) {
-            if (PlanExecutor::EXEC_ERROR == state &&
+            if (PlanExecutor::FAILURE == state &&
                 WorkingSetCommon::isValidStatusMemberObject(retval)) {
                 return appendCommandStatus(out, WorkingSetCommon::getMemberObjectStatus(retval));
             }

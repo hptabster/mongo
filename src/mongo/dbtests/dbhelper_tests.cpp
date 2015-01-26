@@ -38,6 +38,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::set;
+
     /**
      * Unit tests related to DBHelpers
      */
@@ -134,12 +137,13 @@ namespace mongo {
 
         long long maxSizeBytes = 1024 * 1024 * 1024;
 
-        set<DiskLoc> locs;
+        set<RecordId> locs;
         long long numDocsFound;
         long long estSizeBytes;
         {
             // search _id range (0, 10)
-            Lock::DBRead lk(txn.lockState(), ns);
+            ScopedTransaction transaction(&txn, MODE_IS);
+            Lock::DBLock lk(txn.lockState(), nsToDatabaseSubstring(ns), MODE_S);
 
             KeyRange range( ns,
                             BSON( "_id" << 0 ),
@@ -159,10 +163,10 @@ namespace mongo {
             ASSERT_LESS_THAN( estSizeBytes, maxSizeBytes );
 
             Database* db = dbHolder().get( &txn, nsToDatabase(range.ns) );
-            const Collection* collection = db->getCollection(&txn, ns);
+            const Collection* collection = db->getCollection(ns);
 
             // Make sure all the disklocs actually correspond to the right info
-            for ( set<DiskLoc>::const_iterator it = locs.begin(); it != locs.end(); ++it ) {
+            for ( set<RecordId>::const_iterator it = locs.begin(); it != locs.end(); ++it ) {
                 const BSONObj obj = collection->docFor(&txn, *it);
                 ASSERT_EQUALS(obj["tag"].OID(), tag);
             }
@@ -182,11 +186,12 @@ namespace mongo {
 
         long long maxSizeBytes = 1024 * 1024 * 1024;
 
-        set<DiskLoc> locs;
+        set<RecordId> locs;
         long long numDocsFound;
         long long estSizeBytes;
         {
-            Lock::DBRead lk(txn.lockState(), ns);
+            ScopedTransaction transaction(&txn, MODE_IS);
+            Lock::DBLock lk(txn.lockState(), nsToDatabaseSubstring(ns), MODE_S);
 
             // search invalid index range
             KeyRange range( ns,
@@ -227,11 +232,12 @@ namespace mongo {
         // Very small max size
         long long maxSizeBytes = 10;
 
-        set<DiskLoc> locs;
+        set<RecordId> locs;
         long long numDocsFound;
         long long estSizeBytes;
         {
-            Lock::DBRead lk(txn.lockState(), ns);
+            ScopedTransaction transaction(&txn, MODE_IS);
+            Lock::DBLock lk(txn.lockState(), nsToDatabaseSubstring(ns), MODE_S);
 
             KeyRange range( ns,
                             BSON( "_id" << 0 ),

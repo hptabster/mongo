@@ -1,4 +1,5 @@
 /*-
+ * Copyright (c) 2014-2015 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -419,7 +420,7 @@ __wt_block_manager_open(WT_SESSION_IMPL *session,
 
 	*bmp = NULL;
 
-	WT_RET(__wt_calloc_def(session, 1, &bm));
+	WT_RET(__wt_calloc_one(session, &bm));
 	__bm_method_set(bm, 0);
 
 	WT_ERR(__wt_block_open(session, filename, cfg,

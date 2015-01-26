@@ -27,11 +27,14 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/pch.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/dbmessage.h"
 
 namespace mongo {
+
+    using std::string;
+    using std::stringstream;
 
     string Message::toString() const {
         stringstream ss;
@@ -84,7 +87,7 @@ namespace mongo {
 
             // Validate there is room for a null byte in the buffer
             // Strings can be zero length
-            uassert(18633, "Failed to parse ns string", _nsLen <= (limit - 1));
+            uassert(18633, "Failed to parse ns string", _nsLen < limit);
 
             _nextjsobj += _nsLen + 1; // skip namespace + null
         }

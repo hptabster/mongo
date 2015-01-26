@@ -38,6 +38,9 @@
 
 namespace mongo {
 
+    using std::auto_ptr;
+    using std::vector;
+
     // static
     const char* ShardFilterStage::kStageType = "SHARDING_FILTER";
 
@@ -132,7 +135,7 @@ namespace mongo {
     }
 
     void ShardFilterStage::invalidate(OperationContext* txn,
-                                      const DiskLoc& dl,
+                                      const RecordId& dl,
                                       InvalidationType type) {
         ++_commonStats.invalidates;
         _child->invalidate(txn, dl, type);

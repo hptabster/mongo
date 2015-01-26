@@ -42,7 +42,10 @@
 
 #include "mongo/db/repl/master_slave.h"
 
+#include <iostream>
 #include <pcrecpp.h>
+#include <boost/scoped_ptr.hpp>
+#include <boost/shared_ptr.hpp>
 #include <boost/thread/thread.hpp>
 
 #include "mongo/db/auth/authorization_manager.h"
@@ -56,7 +59,7 @@
 #include "mongo/db/ops/update.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/repl_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/sync.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/operation_context_impl.h"
@@ -65,8 +68,17 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 
-namespace mongo {
+using boost::scoped_ptr;
+using std::auto_ptr;
+using std::cout;
+using std::endl;
+using std::max;
+using std::min;
+using std::set;
+using std::stringstream;
+using std::vector;
 
+namespace mongo {
 namespace repl {
 
     void pretouchOperation(OperationContext* txn, const BSONObj& op);
@@ -233,7 +245,7 @@ namespace repl {
             }
         }
 
-        v.push_back( shared_ptr< ReplSource >( new ReplSource( s ) ) );
+        v.push_back( boost::shared_ptr< ReplSource >( new ReplSource( s ) ) );
     }
 
     /* we reuse our existing objects so that we can keep our existing connection
@@ -254,7 +266,7 @@ namespace repl {
             auto_ptr<PlanExecutor> exec(
                 InternalPlanner::collectionScan(txn,
                                                 localSources,
-                                                ctx.db()->getCollection(txn, localSources)));
+                                                ctx.db()->getCollection(localSources)));
             BSONObj obj;
             PlanExecutor::ExecState state;
             while (PlanExecutor::ADVANCED == (state = exec->getNext(&obj, NULL))) {
@@ -299,7 +311,7 @@ namespace repl {
         auto_ptr<PlanExecutor> exec(
             InternalPlanner::collectionScan(txn,
                                             localSources,
-                                            ctx.db()->getCollection(txn, localSources)));
+                                            ctx.db()->getCollection(localSources)));
         BSONObj obj;
         PlanExecutor::ExecState state;
         while (PlanExecutor::ADVANCED == (state = exec->getNext(&obj, NULL))) {
@@ -680,7 +692,7 @@ namespace repl {
         Client::Context ctx(txn, ns, false);
         ctx.getClient()->curop()->reset();
 
-        bool empty = ctx.db()->getDatabaseCatalogEntry()->isEmpty();
+        bool empty = !ctx.db()->getDatabaseCatalogEntry()->hasUserData();
         bool incompleteClone = incompleteCloneDbs.count( clientName ) != 0;
 
         LOG(6) << "ns: " << ns << ", justCreated: " << ctx.justCreated() << ", empty: " << empty << ", incompleteClone: " << incompleteClone << endl;
@@ -1220,31 +1232,28 @@ namespace repl {
         Client::initThread("replmaster");
         int toSleep = 10;
         while( 1 ) {
+            sleepsecs(toSleep);
 
-            sleepsecs( toSleep );
-            /* write a keep-alive like entry to the log.  this will make things like
-               printReplicationStatus() and printSlaveReplicationStatus() stay up-to-date
-               even when things are idle.
-            */
-            {
-                OperationContextImpl txn;
-                writelocktry lk(txn.lockState(), 1);
-                if ( lk.got() ) {
-                    toSleep = 10;
+            // Write a keep-alive like entry to the log. This will make things like
+            // printReplicationStatus() and printSlaveReplicationStatus() stay up-to-date even
+            // when things are idle.
+            OperationContextImpl txn;
+            txn.getClient()->getAuthorizationSession()->grantInternalAuthorization();
 
-                    txn.getClient()->getAuthorizationSession()->grantInternalAuthorization();
+            Lock::GlobalWrite globalWrite(txn.lockState(), 1);
+            if (globalWrite.isLocked()) {
+                toSleep = 10;
 
-                    try {
-                        logKeepalive(&txn);
-                    }
-                    catch(...) {
-                        log() << "caught exception in replMasterThread()" << endl;
-                    }
+                try {
+                    logKeepalive(&txn);
                 }
-                else {
-                    LOG(5) << "couldn't logKeepalive" << endl;
-                    toSleep = 1;
+                catch (...) {
+                    log() << "caught exception in replMasterThread()" << endl;
                 }
+            }
+            else {
+                LOG(5) << "couldn't logKeepalive" << endl;
+                toSleep = 1;
             }
         }
     }
