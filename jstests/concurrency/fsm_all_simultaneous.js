@@ -27,6 +27,6 @@ var blacklist = [
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads
-// runWorkloadsInParallel(ls(dir).filter(function(file) {
-//     return !Array.contains(blacklist, file);
-// }));
+runWorkloadsInParallel(ls(dir).filter(function(file) {
+     return !Array.contains(blacklist, file);
+}));

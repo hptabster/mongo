@@ -27,6 +27,6 @@ var blacklist = [
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads with master-slave replication
-// runWorkloadsSerially(ls(dir).filter(function(file) {
-//     return !Array.contains(blacklist, file);
-// }), { masterSlave: true });
+runWorkloadsSerially(ls(dir).filter(function(file) {
+    return !Array.contains(blacklist, file);
+}), { masterSlave: true });
