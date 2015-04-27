@@ -26,8 +26,8 @@ var blacklist = [
 
     // These workloads are disabled because of recent changes in capped
     // collection behavior with wiredTiger (see: SERVER-16235)
-    'create_capped_collection.js',
-    'create_capped_collection_maxdocs.js',
+    //'create_capped_collection.js',
+    //'create_capped_collection_maxdocs.js',
 
     'agg_group_external.js', // uses >100MB of data, and is flaky
     'agg_sort_external.js', // uses >100MB of data, and is flaky
@@ -56,6 +56,6 @@ var blacklist = [
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads against sharded clusters
-// runWorkloadsSerially(ls(dir).filter(function(file) {
-//     return !Array.contains(blacklist, file);
-// }), { sharded: true });
+runWorkloadsSerially(ls(dir).filter(function(file) {
+     return !Array.contains(blacklist, file);
+}), { sharded: true });
