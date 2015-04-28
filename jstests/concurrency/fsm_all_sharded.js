@@ -62,6 +62,7 @@ var blacklist = [
     'rename_capped_collection_dbname_droptarget.js',
     'update_upsert_multi_noindex.js',
     'plan_cache_drop_database.js',
+    'upsert_where.js',
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads against sharded clusters
