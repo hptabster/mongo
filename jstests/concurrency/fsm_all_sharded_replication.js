@@ -22,7 +22,7 @@ var blacklist = [
     'auth_create_role.js',
     'auth_create_user.js',
     'auth_drop_role.js',
-    //'auth_drop_user.js', // SERVER-16739 OpenSSL libcrypto crash
+    'auth_drop_user.js', // SERVER-16739 OpenSSL libcrypto crash
 
     'agg_group_external.js', // uses >100MB of data, and is flaky
     'agg_sort_external.js', // uses >100MB of data, and is flaky
