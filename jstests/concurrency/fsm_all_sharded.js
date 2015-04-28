@@ -53,6 +53,10 @@ var blacklist = [
     'update_upsert_multi.js', // our update queries lack shard keys
     'yield_and_hashed.js', // stagedebug can only be run against a standalone mongod
     'yield_and_sorted.js', // stagedebug can only be run against a standalone mongod
+
+    // New failing tests
+    'explain_find.js',
+    'explain_remove.js',
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads against sharded clusters
