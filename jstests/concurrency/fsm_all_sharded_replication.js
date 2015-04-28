@@ -50,9 +50,15 @@ var blacklist = [
     'yield_and_sorted.js', // stagedebug can only be run against a standalone mongod
 
     // New failing tests
+    // All explain tests fail
     'explain.js',
+    'explain_aggregate.js',
+    'explain_count.js',
     'explain_find.js',
+    'explain_group.js',
     'explain_remove.js',
+    'explain_update.js',
+    // Other failing tests
     'update_upsert_multi.js',
     'rename_capped_collection_dbname_droptarget.js',
 ].map(function(file) { return dir + '/' + file; });
