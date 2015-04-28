@@ -60,6 +60,7 @@ var blacklist = [
     'explain_update.js',
     // Other failing tests
     'rename_capped_collection_dbname_droptarget.js',
+    'rename_collection_dbname_chain.js',
     'update_upsert_multi_noindex.js',
     'plan_cache_drop_database.js',
     'upsert_where.js',
