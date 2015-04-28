@@ -62,6 +62,7 @@ var blacklist = [
     'rename_capped_collection_dbname_droptarget.js',
     'rename_capped_collection_dbname_chain.js',
     'rename_collection_dbname_chain.js',
+    'rename_collection_dbname_droptarget.js',
     'update_upsert_multi_noindex.js',
     'plan_cache_drop_database.js',
     'upsert_where.js',
