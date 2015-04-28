@@ -24,11 +24,6 @@ var blacklist = [
     'auth_drop_role.js',
     'auth_drop_user.js', // SERVER-16739 OpenSSL libcrypto crash
 
-    // These workloads are disabled because of recent changes in capped
-    // collection behavior with wiredTiger (see: SERVER-16235)
-    //'create_capped_collection.js',
-    //'create_capped_collection_maxdocs.js',
-
     'agg_group_external.js', // uses >100MB of data, and is flaky
     'agg_sort_external.js', // uses >100MB of data, and is flaky
     'compact.js', // compact can only be run against a standalone mongod
@@ -58,6 +53,7 @@ var blacklist = [
     'explain.js',
     'explain_find.js',
     'explain_remove.js',
+    'update_upsert_multi.js',
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads against sharded clusters
