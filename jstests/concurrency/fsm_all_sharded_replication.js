@@ -59,8 +59,8 @@ var blacklist = [
     'explain_remove.js',
     'explain_update.js',
     // Other failing tests
-    'update_upsert_multi.js',
     'rename_capped_collection_dbname_droptarget.js',
+    'update_upsert_multi_noindex.js',
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads against sharded replica sets
