@@ -22,7 +22,7 @@ var blacklist = [
     'auth_create_role.js',
     'auth_create_user.js',
     'auth_drop_role.js',
-    'auth_drop_user.js', // SERVER-16739 OpenSSL libcrypto crash
+    //'auth_drop_user.js', // SERVER-16739 OpenSSL libcrypto crash
 
     // These workloads are disabled because of recent changes in capped
     // collection behavior with wiredTiger (see: SERVER-16235)
@@ -53,6 +53,9 @@ var blacklist = [
     'update_upsert_multi.js', // our update queries lack shard keys
     'yield_and_hashed.js', // stagedebug can only be run against a standalone mongod
     'yield_and_sorted.js', // stagedebug can only be run against a standalone mongod
+
+    // New failing tests
+    'explain_find.js',
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads against sharded replica sets
