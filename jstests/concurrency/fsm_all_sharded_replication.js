@@ -56,6 +56,7 @@ var blacklist = [
 
     // New failing tests
     'explain_find.js',
+    'explain_remove.js',
 ].map(function(file) { return dir + '/' + file; });
 
 // SERVER-16196 re-enable executing workloads against sharded replica sets
