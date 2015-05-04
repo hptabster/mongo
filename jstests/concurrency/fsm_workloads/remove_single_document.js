@@ -60,7 +60,8 @@ var $config = (function() {
                 // when running on its own collection,
                 // this iteration should remove exactly one document
                 assertWhenOwnColl.eq(1, res.nRemoved, tojson(res));
-            }
+            },
+            shardKey: { rand: 1 },
         },
         startState: 'remove'
     };

@@ -40,7 +40,6 @@
 
 namespace mongo {
 
-    class OperationContext;
     class Timestamp;
 
 namespace repl {
@@ -360,6 +359,22 @@ namespace repl {
          */
         virtual void prepareCursorResponseInfo(BSONObjBuilder* objBuilder,
                                                const Timestamp& lastCommittedOpTime) const = 0;
+
+        /**
+         * Writes into 'output' all the information needed to generate a summary of the current
+         * replication state for use by the web interface.
+         */
+        virtual void summarizeAsHtml(ReplSetHtmlSummary* output) = 0;
+
+        /**
+         * Determines whether or not the newly elected primary is valid from our perspective.
+         * If it is, sets the _currentPrimaryIndex and term to the received values.
+         * If it is not, return ErrorCode::BadValue and the current term from our perspective.
+         * Populate responseTerm with the current term from our perspective.
+         */
+        virtual Status processReplSetDeclareElectionWinner(
+                const ReplSetDeclareElectionWinnerArgs& args,
+                long long* responseTerm) = 0;
 
     protected:
         TopologyCoordinator() {}

@@ -49,6 +49,7 @@
 #include <mutex>
 
 #include "mongo/config.h"
+#include "mongo/db/client.h"
 #include "mongo/db/db.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/json.h"
@@ -68,7 +69,6 @@
 #include "mongo/util/mmap.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/version.h"
-#include "mongo/util/version_reporting.h"
 #include "mongo/db/concurrency/lock_state.h"
 
 namespace PerfTests {
@@ -91,12 +91,10 @@ namespace PerfTests {
     class ClientBase {
     public:
         ClientBase() : _client(&_txn) {
-            _prevError = mongo::lastError._get( false );
-            mongo::lastError.release();
-            mongo::lastError.reset( new LastError() );
+            mongo::LastError::get(_txn.getClient()).reset();
         }
         virtual ~ClientBase() {
-            mongo::lastError.reset( _prevError );
+            mongo::LastError::get(_txn.getClient()).reset();
         }
 
     protected:
@@ -114,7 +112,6 @@ namespace PerfTests {
         OperationContext* txn() { return &_txn; }
 
     private:
-        LastError* _prevError;
         OperationContextImpl _txn;
         DBDirectClient _client;
     };

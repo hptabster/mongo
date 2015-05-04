@@ -29,7 +29,7 @@ env.Library(
         "$BUILD_DIR/mongo/db/matcher/expressions",
         "$BUILD_DIR/mongo/db/matcher/expressions_text",
         "$BUILD_DIR/mongo/db/index_names",
-        "$BUILD_DIR/mongo/server_parameters",
+        "$BUILD_DIR/mongo/db/server_parameters",
     ],
 )
 
@@ -63,8 +63,8 @@ env.CppUnitTest(
         "$BUILD_DIR/mongo/serveronly",
         "$BUILD_DIR/mongo/coreserver",
         "$BUILD_DIR/mongo/coredb",
-        "$BUILD_DIR/mongo/mocklib",
-        "$BUILD_DIR/mongo/ntservice_mock",
+        "$BUILD_DIR/mongo/dbtests/mocklib",
+        "$BUILD_DIR/mongo/util/ntservice_mock",
     ],
     NO_CRUTCH = True,
 )
@@ -83,7 +83,7 @@ env.Library(
         "$BUILD_DIR/mongo/db/matcher/expressions_geo",
         "$BUILD_DIR/mongo/db/index_names",
         "$BUILD_DIR/mongo/db/mongohasher",
-        "$BUILD_DIR/mongo/server_parameters",
+        "$BUILD_DIR/mongo/db/server_parameters",
     ],
 )
 
@@ -299,8 +299,8 @@ env.CppUnitTest(
         "$BUILD_DIR/mongo/serveronly",
         "$BUILD_DIR/mongo/coreserver",
         "$BUILD_DIR/mongo/coredb",
-        "$BUILD_DIR/mongo/mocklib",
-        "$BUILD_DIR/mongo/ntservice_mock",
+        "$BUILD_DIR/mongo/dbtests/mocklib",
+        "$BUILD_DIR/mongo/util/ntservice_mock",
     ],
     NO_CRUTCH = True,
 )

@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2012 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,18 +26,45 @@
  *    then also delete it in the license file.
  */
 
-namespace mongo {
+#include "mongo/platform/basic.h"
 
-    /**
-     * Returns true if the config servers have the same contents since the last check
-     * was performed. Currently checks only the config.chunks and config.databases.
-     */
-    bool isConfigServerConsistent();
+#include "mongo/base/status_with.h"
+#include "mongo/db/jsobj.h"
+#include "mongo/s/catalog/type_database.h"
+#include "mongo/unittest/unittest.h"
 
-    /**
-     * Starts the thread that periodically checks data consistency amongst the config servers.
-     * Note: this is not thread safe.
-     */
-    bool startConfigServerChecker();
-}
+namespace {
 
+    using namespace mongo;
+    using std::string;
+
+    TEST(DatabaseType, Empty) {
+        StatusWith<DatabaseType> status = DatabaseType::fromBSON(BSONObj());
+        ASSERT_FALSE(status.isOK());
+    }
+
+    TEST(DatabaseType, Basic) {
+        StatusWith<DatabaseType> status = DatabaseType::fromBSON(
+                                                BSON(DatabaseType::name("mydb") <<
+                                                     DatabaseType::primary("shard") <<
+                                                     DatabaseType::sharded(true)));
+        ASSERT_TRUE(status.isOK());
+
+        DatabaseType db = status.getValue();
+        ASSERT_EQUALS(db.getName(), "mydb");
+        ASSERT_EQUALS(db.getPrimary(), "shard");
+        ASSERT_TRUE(db.getSharded());
+    }
+
+    TEST(DatabaseType, BadType) {
+        StatusWith<DatabaseType> status = DatabaseType::fromBSON(BSON(DatabaseType::name() << 0));
+        ASSERT_FALSE(status.isOK());
+    }
+
+    TEST(DatabaseType, MissingRequired) {
+        StatusWith<DatabaseType> status = DatabaseType::fromBSON(
+                                                BSON(DatabaseType::name("mydb")));
+        ASSERT_FALSE(status.isOK());
+    }
+
+} // unnamed namespace

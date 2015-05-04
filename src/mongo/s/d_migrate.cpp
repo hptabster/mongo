@@ -491,9 +491,9 @@ namespace mongo {
             // Therefore, any multi-key index prefixed by shard key cannot be multikey over
             // the shard key fields.
             IndexDescriptor *idx =
-                collection->getIndexCatalog()->findIndexByPrefix(txn,
-                                                                 _shardKeyPattern ,
-                                                                 false);  /* allow multi key */
+                collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn,
+                                                                         _shardKeyPattern ,
+                                                                         false); // requireSingleKey
 
             if (idx == NULL) {
                 errmsg = str::stream() << "can't find index with prefix " << _shardKeyPattern
@@ -2508,7 +2508,7 @@ namespace mongo {
                                 const WriteConcernOptions& writeConcern) {
             WriteConcernOptions majorityWriteConcern;
             majorityWriteConcern.wTimeout = -1;
-            majorityWriteConcern.wMode = "majority";
+            majorityWriteConcern.wMode = WriteConcernOptions::kMajority;
             Status majorityStatus = repl::getGlobalReplicationCoordinator()->awaitReplication(
                     txn, lastOpApplied, majorityWriteConcern).status;
 

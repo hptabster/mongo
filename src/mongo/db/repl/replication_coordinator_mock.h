@@ -187,7 +187,7 @@ namespace repl {
 
         virtual Status processReplSetDeclareElectionWinner(
                 const ReplSetDeclareElectionWinnerArgs& args,
-                ReplSetDeclareElectionWinnerResponse* response);
+                long long* responseTerm);
 
         virtual void prepareCursorResponseInfo(BSONObjBuilder* objBuilder);
 
@@ -195,6 +195,8 @@ namespace repl {
                                           ReplSetHeartbeatResponseV1* response);
 
         virtual bool isV1ElectionProtocol();
+
+        virtual void summarizeAsHtml(ReplSetHtmlSummary* output);
 
     private:
 

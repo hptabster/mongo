@@ -39,4 +39,40 @@ env.CppUnitTest("replica_set_monitor_test",
 
 env.CppUnitTest("dbclient_rs_test",
                 ["dbclient_rs_test.cpp"],
-                LIBDEPS=['clientdriver', '$BUILD_DIR/mongo/mocklib'])
+                LIBDEPS=['clientdriver', '$BUILD_DIR/mongo/dbtests/mocklib'])
+
+if env['MONGO_BUILD_SASL_CLIENT']:
+    saslLibs = ['sasl2']
+    if env.TargetOSIs('windows'):
+        saslLibs.extend(["secur32"])
+
+    env.Library(
+        target='cyrus_sasl_client_session',
+        source=[
+            'cyrus_sasl_client_session.cpp',
+            'sasl_sspi.cpp',
+        ],
+        LIBDEPS=[
+            'clientdriver',
+            '$BUILD_DIR/mongo/util/foundation',
+            '$BUILD_DIR/mongo/util/signal_handlers_synchronous',
+        ],
+        SYSLIBDEPS=saslLibs,
+    )
+
+env.CppUnitTest(
+    target="scoped_db_conn_test",
+    source=[
+        "scoped_db_conn_test.cpp",
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/coredb",
+        "$BUILD_DIR/mongo/coreserver",
+        "$BUILD_DIR/mongo/util/net/message_server_port",
+        "$BUILD_DIR/mongo/mongocommon",
+        "$BUILD_DIR/mongo/s/coreshard",
+        "$BUILD_DIR/mongo/s/mongoscore",
+        "$BUILD_DIR/mongo/util/ntservice_mock",
+    ],
+    NO_CRUTCH=True,
+)

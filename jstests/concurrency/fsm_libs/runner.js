@@ -154,8 +154,12 @@ var runner = (function() {
                 myDB[collName].drop();
 
                 if (cluster.isSharded()) {
-                    // TODO: allow 'clusterOptions' to specify the shard key and split
-                    cluster.shardCollection(myDB[collName], { _id: 'hashed' }, false);
+                    var shardKey = { _id: 'hashed' };
+                    // TODO: allow workload config data to specify split
+                    if (context[workload].config.data.shardKey) {
+                        shardKey = context[workload].config.data.shardKey;
+                    }
+                    cluster.shardCollection(myDB[collName], shardKey, false);
                 }
             }
 

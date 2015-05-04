@@ -34,6 +34,7 @@
 
 #include <iomanip>
 #include <map>
+#include <memory>
 #include <pcrecpp.h>
 #include <set>
 #include <vector>
@@ -45,11 +46,13 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/server_options.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/s/catalog/legacy/cluster_client_internal.h"
 #include "mongo/s/catalog/legacy/config_coordinator.h"
 #include "mongo/s/catalog/type_actionlog.h"
 #include "mongo/s/catalog/type_changelog.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
+#include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog/type_settings.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/chunk_manager.h"
@@ -60,10 +63,10 @@
 #include "mongo/s/dist_lock_manager.h"
 #include "mongo/s/legacy_dist_lock_manager.h"
 #include "mongo/s/shard_key_pattern.h"
-#include "mongo/s/type_database.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/exit.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/log.h"
@@ -71,7 +74,6 @@
 
 namespace mongo {
 
-    using std::auto_ptr;
     using std::map;
     using std::pair;
     using std::set;
@@ -269,6 +271,10 @@ namespace {
 } // namespace
 
 
+    CatalogManagerLegacy::CatalogManagerLegacy() = default;
+
+    CatalogManagerLegacy::~CatalogManagerLegacy() = default;
+
     Status CatalogManagerLegacy::init(const ConnectionString& configDBCS) {
         // Initialization should not happen more than once
         invariant(!_configServerConnectionString.isValid());
@@ -363,6 +369,20 @@ namespace {
         _distLockManager = stdx::make_unique<LegacyDistLockManager>(_configServerConnectionString);
         _distLockManager->startUp();
 
+        _consistentFromLastCheck.store(true);
+
+        return Status::OK();
+    }
+
+    Status CatalogManagerLegacy::startConfigServerChecker() {
+        if (!_checkConfigServersConsistent()) {
+            return Status(ErrorCodes::IncompatibleShardingMetadata,
+                          "Data inconsistency detected amongst config servers");
+        }
+
+        boost::thread t(stdx::bind(&CatalogManagerLegacy::_consistencyChecker, this));
+        _consistencyCheckerThread.swap(t);
+
         return Status::OK();
     }
 
@@ -422,8 +442,26 @@ namespace {
         if (!status.isOK()) {
             return status.getStatus();
         }
+
         DatabaseType dbt = status.getValue();
         Shard dbPrimary = Shard::make(dbt.getPrimary());
+
+        // This is an extra safety check that the collection is not getting sharded concurrently by
+        // two different mongos instances. It is not 100%-proof, but it reduces the chance that two
+        // invocations of shard collection will step on each other's toes.
+        {
+            ScopedDbConnection conn(_configServerConnectionString, 30);
+            unsigned long long existingChunks = conn->count(ChunkType::ConfigNS,
+                                                            BSON(ChunkType::ns(ns)));
+            if (existingChunks > 0) {
+                conn.done();
+                return Status(ErrorCodes::AlreadyInitialized,
+                    str::stream() << "collection " << ns << " already sharded with "
+                                  << existingChunks << " chunks.");
+            }
+
+            conn.done();
+        }
 
         log() << "enable sharding on: " << ns << " with shard key: " << fieldsAndOrder;
 
@@ -471,8 +509,9 @@ namespace {
                           << ", other mongoses may not see the collection as sharded immediately";
                 break;
             }
+
             try {
-                ShardConnection conn(dbPrimary, ns);
+                ShardConnection conn(dbPrimary.getConnString(), ns);
                 bool isVersionSet = conn.setVersion();
                 conn.done();
                 if (!isVersionSet) {
@@ -487,6 +526,7 @@ namespace {
                           << " on shard primary " << dbPrimary
                           << causedBy(e);
             }
+
             sleepsecs(i);
         }
 
@@ -840,7 +880,7 @@ namespace {
 
     Status CatalogManagerLegacy::getCollections(const std::string* dbName,
                                                 std::vector<CollectionType>* collections) {
-        collections->empty();
+        collections->clear();
 
         BSONObjBuilder b;
         if (dbName) {
@@ -851,7 +891,9 @@ namespace {
 
         ScopedDbConnection conn(_configServerConnectionString, 30.0);
 
-        auto_ptr<DBClientCursor> cursor = conn->query(CollectionType::ConfigNS, b.obj());
+        std::unique_ptr<DBClientCursor> cursor(_safeCursor(conn->query(CollectionType::ConfigNS,
+                                                                       b.obj())));
+
         while (cursor->more()) {
             const BSONObj collObj = cursor->next();
 
@@ -1056,36 +1098,37 @@ namespace {
     }
 
     StatusWith<SettingsType> CatalogManagerLegacy::getGlobalSettings(const string& key) {
-        SettingsType settingsType;
-
         try {
             ScopedDbConnection conn(_configServerConnectionString, 30);
             BSONObj settingsDoc = conn->findOne(SettingsType::ConfigNS,
                                                 BSON(SettingsType::key(key)));
-
-            string errMsg;
-            if (!settingsType.parseBSON(settingsDoc, &errMsg)) {
-                conn.done();
-                return Status(ErrorCodes::UnsupportedFormat,
-                              str::stream() << "error parsing config.settings document: "
-                                            << errMsg);
-            }
+            StatusWith<SettingsType> settingsResult = SettingsType::fromBSON(settingsDoc);
             conn.done();
+
+            if (!settingsResult.isOK()) {
+                return settingsResult.getStatus();
+            }
+            const SettingsType& settings = settingsResult.getValue();
+            Status validationStatus = settings.validate();
+            if (!validationStatus.isOK()) {
+                return validationStatus;
+            }
+
+            return settingsResult;
         }
         catch (const DBException& ex) {
             return Status(ErrorCodes::OperationFailed,
-                          str::stream() << "unable to successfully obtain config.settings document: "
-                                        << causedBy(ex));
+                          str::stream() << "unable to successfully obtain "
+                                        << "config.settings document: " << causedBy(ex));
         }
-
-        return settingsType;
     }
 
     void CatalogManagerLegacy::getDatabasesForShard(const string& shardName,
                                                     vector<string>* dbs) {
         ScopedDbConnection conn(_configServerConnectionString, 30.0);
         BSONObj prim = BSON(DatabaseType::primary(shardName));
-        boost::scoped_ptr<DBClientCursor> cursor(conn->query(DatabaseType::ConfigNS, prim));
+        std::unique_ptr<DBClientCursor> cursor(_safeCursor(conn->query(DatabaseType::ConfigNS,
+                                                                       prim)));
 
         while (cursor->more()) {
             BSONObj shard = cursor->nextSafe();
@@ -1098,8 +1141,9 @@ namespace {
     Status CatalogManagerLegacy::getChunksForShard(const string& shardName,
                                                    vector<ChunkType>* chunks) {
         ScopedDbConnection conn(_configServerConnectionString, 30.0);
-        boost::scoped_ptr<DBClientCursor> cursor(conn->query(ChunkType::ConfigNS,
-                                                             BSON(ChunkType::shard(shardName))));
+        std::unique_ptr<DBClientCursor> cursor(
+            _safeCursor(conn->query(ChunkType::ConfigNS, BSON(ChunkType::shard(shardName)))));
+
         while (cursor->more()) {
             BSONObj chunkObj = cursor->nextSafe();
 
@@ -1119,7 +1163,8 @@ namespace {
 
     Status CatalogManagerLegacy::getAllShards(vector<ShardType>* shards) {
         ScopedDbConnection conn(_configServerConnectionString, 30.0);
-        boost::scoped_ptr<DBClientCursor> cursor(conn->query(ShardType::ConfigNS, BSONObj()));
+        std::unique_ptr<DBClientCursor> cursor(_safeCursor(conn->query(ShardType::ConfigNS,
+                                                                       BSONObj())));
         while (cursor->more()) {
             BSONObj shardObj = cursor->nextSafe();
 
@@ -1173,6 +1218,15 @@ namespace {
 
     void CatalogManagerLegacy::writeConfigServerDirect(const BatchedCommandRequest& request,
                                                        BatchedCommandResponse* response) {
+
+        // check if config servers are consistent
+        if (!_isConsistentFromLastCheck()) {
+            toBatchError(
+                Status(ErrorCodes::IncompatibleShardingMetadata,
+                       "Data inconsistency detected amongst config servers"),
+                response);
+            return;
+        }
 
         // We only support batch sizes of one for config writes
         if (request.sizeWriteOps() != 1) {
@@ -1279,6 +1333,131 @@ namespace {
     DistLockManager* CatalogManagerLegacy::getDistLockManager() {
         invariant(_distLockManager);
         return _distLockManager.get();
+    }
+
+    bool CatalogManagerLegacy::_checkConfigServersConsistent(const unsigned tries) const {
+        if (tries <= 0)
+            return false;
+
+        unsigned firstGood = 0;
+        int up = 0;
+        vector<BSONObj> res;
+
+        // The last error we saw on a config server
+        string errMsg;
+
+        for (unsigned i = 0; i < _configServers.size(); i++) {
+            BSONObj result;
+            std::unique_ptr<ScopedDbConnection> conn;
+
+            try {
+                conn.reset(new ScopedDbConnection(_configServers[i], 30.0));
+
+                if (!conn->get()->runCommand("config",
+                                             BSON("dbhash" << 1 <<
+                                                  "collections" << BSON_ARRAY("chunks" <<
+                                                                              "databases" <<
+                                                                              "collections" <<
+                                                                              "shards" <<
+                                                                              "version")),
+                                              result)) {
+
+                    errMsg = result["errmsg"].eoo() ? "" : result["errmsg"].String();
+                    if (!result["assertion"].eoo()) errMsg = result["assertion"].String();
+
+                    warning() << "couldn't check dbhash on config server " << _configServers[i]
+                              << causedBy(result.toString());
+
+                    result = BSONObj();
+                }
+                else {
+                    result = result.getOwned();
+                    if (up == 0)
+                        firstGood = i;
+                    up++;
+                }
+                conn->done();
+            }
+            catch (const DBException& e) {
+                if (conn) {
+                    conn->kill();
+                }
+
+                // We need to catch DBExceptions b/c sometimes we throw them
+                // instead of socket exceptions when findN fails
+
+                errMsg = e.toString();
+                warning() << " couldn't check dbhash on config server "
+                          << _configServers[i] << causedBy(e);
+            }
+            res.push_back(result);
+        }
+
+        if (_configServers.size() == 1)
+            return true;
+
+        if (up == 0) {
+            // Use a ptr to error so if empty we won't add causedby
+            error() << "no config servers successfully contacted" << causedBy(&errMsg);
+            return false;
+        }
+        else if (up == 1) {
+            warning() << "only 1 config server reachable, continuing";
+            return true;
+        }
+
+        BSONObj base = res[firstGood];
+        for (unsigned i = firstGood+1; i < res.size(); i++) {
+            if (res[i].isEmpty())
+                continue;
+
+            string chunksHash1 = base.getFieldDotted("collections.chunks");
+            string chunksHash2 = res[i].getFieldDotted("collections.chunks");
+
+            string databaseHash1 = base.getFieldDotted("collections.databases");
+            string databaseHash2 = res[i].getFieldDotted("collections.databases");
+
+            string collectionsHash1 = base.getFieldDotted("collections.collections");
+            string collectionsHash2 = res[i].getFieldDotted("collections.collections");
+
+            string shardHash1 = base.getFieldDotted("collections.shards");
+            string shardHash2 = res[i].getFieldDotted("collections.shards");
+
+            string versionHash1 = base.getFieldDotted("collections.version") ;
+            string versionHash2 = res[i].getFieldDotted("collections.version");
+
+            if (chunksHash1 == chunksHash2 &&
+                databaseHash1 == databaseHash2 &&
+                collectionsHash1 == collectionsHash2 &&
+                shardHash1 == shardHash2 &&
+                versionHash1 == versionHash2) {
+                continue;
+            }
+
+            warning() << "config servers " << _configServers[firstGood].toString()
+                      << " and " << _configServers[i].toString() << " differ";
+            if (tries <= 1) {
+                error() << ": " << base["collections"].Obj()
+                        << " vs " << res[i]["collections"].Obj();
+                return false;
+            }
+
+            return _checkConfigServersConsistent(tries - 1);
+        }
+
+        return true;
+    }
+
+    void CatalogManagerLegacy::_consistencyChecker() {
+        while (!inShutdown()) {
+            _consistentFromLastCheck.store(_checkConfigServersConsistent());
+
+            sleepsecs(60);
+        }
+    }
+
+    bool CatalogManagerLegacy::_isConsistentFromLastCheck() {
+        return _consistentFromLastCheck.loadRelaxed();
     }
 
 } // namespace mongo

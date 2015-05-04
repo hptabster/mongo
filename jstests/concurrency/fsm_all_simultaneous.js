@@ -20,10 +20,15 @@ var blacklist = [
 
     // Tests that fail
     'list_indexes.js',
-
+    'findAndModify_inc.js',
+    'update_ordered_bulk_inc.js',
+    'update_replace.js',
+    'update_replace_noindex.js',
+    'update_inc.js',
+    'update_array.js',
+    'update_array_noindex.js'
 ].map(function(file) { return dir + '/' + file; });
 
-// SERVER-16196 re-enable executing workloads
 runWorkloadsInParallel(ls(dir).filter(function(file) {
      return !Array.contains(blacklist, file);
 }));

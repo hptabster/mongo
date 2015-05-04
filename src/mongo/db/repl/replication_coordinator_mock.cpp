@@ -307,7 +307,7 @@ namespace repl {
 
     Status ReplicationCoordinatorMock::processReplSetDeclareElectionWinner(
             const ReplSetDeclareElectionWinnerArgs& args,
-            ReplSetDeclareElectionWinnerResponse* response) {
+            long long* responseTerm) {
         return Status::OK();
     }
 
@@ -321,6 +321,8 @@ namespace repl {
     bool ReplicationCoordinatorMock::isV1ElectionProtocol() {
         return true;
     }
+
+    void ReplicationCoordinatorMock::summarizeAsHtml(ReplSetHtmlSummary* output) {}
 
 } // namespace repl
 } // namespace mongo

@@ -2,6 +2,27 @@
 
 Import("env")
 
+env.SConscript(
+    dirs=[
+        'auth',
+        'catalog',
+        'commands',
+        'concurrency',
+        'exec',
+        'fts',
+        'geo',
+        'index',
+        'matcher',
+        'ops',
+        'pipeline',
+        'query',
+        'repl',
+        'sorter',
+        'stats',
+        'storage',
+    ],
+)
+
 #
 # The db/'common' lib has the abstractions that are shared by components of the
 # server. Ideally, many of the object in 'coredb' should be moved here when their dependencies
@@ -95,7 +116,7 @@ env.Library(
     ],
     LIBDEPS=[
         'startup_warnings_common',
-        '$BUILD_DIR/mongo/processinfo',
+        '$BUILD_DIR/mongo/util/processinfo',
     ]
 )
 
@@ -118,9 +139,9 @@ env.Library(
         '$BUILD_DIR/mongo/db/commands/server_status_core',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
         '$BUILD_DIR/mongo/db/stats/top',
-        '$BUILD_DIR/mongo/fail_point',
+        '$BUILD_DIR/mongo/util/fail_point',
         '$BUILD_DIR/mongo/util/net/network',
-        '$BUILD_DIR/mongo/service_context',
+        '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/util/progress_meter',
     ],
 )
@@ -175,5 +196,209 @@ env.Library(
     target='global_timestamp',
     source=[
         'global_timestamp.cpp',
+    ],
+)
+
+env.Library(
+    target='namespace_string',
+    source=[
+        'namespace_string.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/util/foundation',
+    ],
+)
+
+env.CppUnitTest(
+    target='namespace_string_test',
+    source=[
+        'namespace_string_test.cpp',
+    ],
+    LIBDEPS=[
+        'namespace_string',
+    ],
+)
+
+env.Library(
+    target="server_parameters",
+    source=[
+        "server_parameters.cpp",
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/bson",
+        "$BUILD_DIR/mongo/util/foundation",
+    ],
+)
+
+env.CppUnitTest(
+    target="server_parameters_test",
+    source=[
+        "server_parameters_test.cpp",
+    ],
+    LIBDEPS=[
+        "server_parameters",
+    ],
+)
+
+env.Library(
+    target='update_index_data',
+    source=[
+        'update_index_data.cpp'
+    ],
+    LIBDEPS=[
+        'common',
+    ],
+)
+
+env.CppUnitTest(
+    target='update_index_data_test',
+    source=[
+        'update_index_data_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/bson',
+        'common',
+        'update_index_data',
+    ],
+)
+
+# This library exists because some libraries, such as our networking library, need access to server
+# options, but not to the helpers to set them from the command line.  libserver_options_core.a just
+# has the structure for storing the server options, while libserver_options.a has the code to set
+# them via the command line.
+env.Library(
+    target="server_options_core",
+    source=[
+        "server_options.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/bson',
+    ],
+)
+
+env.Library(
+    target="server_options",
+    source=[
+        "server_options_helpers.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/util/cmdline_utils/cmdline_utils',
+        # The dependency on network is a temporary crutch that should go away once the
+        # networking library has separate options
+        '$BUILD_DIR/mongo/util/net/network',
+        '$BUILD_DIR/mongo/util/options_parser/options_parser',
+        'server_options_core',
+        'server_parameters',
+    ],
+)
+
+env.CppUnitTest(
+    target='server_options_test',
+    source=[
+        'server_options_test.cpp',
+    ],
+    LIBDEPS=[
+        'server_options',
+    ],
+)
+
+env.Library(
+    target='range_deleter',
+    source=[
+        'range_deleter.cpp',
+        'range_deleter_mock_env.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base/base',
+        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
+        '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/util/concurrency/synchronization',
+        'range_arithmetic',
+    ],
+)
+
+env.CppUnitTest(
+    target='range_deleter_test',
+    source=[
+        'range_deleter_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/repl/replmocks',
+        'common',
+        'range_deleter',
+    ],
+)
+
+
+# This library is linked into mongos and mongod only, not into the shell or any tools.
+env.Library(
+    target="mongodandmongos",
+    source=[
+        "dbwebserver.cpp",
+        "initialize_server_global_state.cpp",
+        "server_extra_log_context.cpp",
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/util/net/message_server_port",
+        "$BUILD_DIR/mongo/util/signal_handlers",
+    ],
+)
+
+env.Library(
+    target="mongodwebserver",
+    source=[
+        "clientlistplugin.cpp",
+        "restapi.cpp",
+        "stats/snapshots_webplugins.cpp",
+        "repl/replset_web_handler.cpp",
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/coredb",
+        "mongodandmongos",
+        'repl/repl_coordinator_global',
+    ],
+)
+
+# mongod options
+env.Library(
+    target="mongod_options",
+    source=[
+        "mongod_options.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/coredb',
+        '$BUILD_DIR/mongo/coreserver',
+        '$BUILD_DIR/mongo/mongocommon',
+        '$BUILD_DIR/mongo/serveronly',
+        '$BUILD_DIR/mongo/util/options_parser/options_parser_init',
+        'server_options',
+    ],
+)
+
+env.Library(
+    target='service_context',
+    source=[
+        'client.cpp',
+        'client_basic.cpp',
+        'service_context.cpp',
+        'service_context_noop.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/util/concurrency/spin_lock',
+        '$BUILD_DIR/mongo/util/decorable',
+        '$BUILD_DIR/mongo/util/net/hostandport',
+    ],
+)
+
+env.Library(
+    tagret='lasterror',
+    source=[
+        "lasterror.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/util/foundation',
+        'service_context',
     ],
 )

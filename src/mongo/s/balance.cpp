@@ -37,6 +37,7 @@
 #include "mongo/base/owned_pointer_map.h"
 #include "mongo/client/connpool.h"
 #include "mongo/client/dbclientcursor.h"
+#include "mongo/db/client.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/server_options.h"
@@ -50,7 +51,6 @@
 #include "mongo/s/catalog/type_settings.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/config.h"
-#include "mongo/s/config_server_checker_service.h"
 #include "mongo/s/dist_lock_manager.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/server.h"
@@ -100,15 +100,15 @@ namespace mongo {
             // chunks moves.
             auto balSettingsResult =
                 grid.catalogManager()->getGlobalSettings(SettingsType::BalancerDocKey);
-            if (!balSettingsResult.isOK()) {
+            const bool isBalSettingsAbsent = balSettingsResult.getStatus() == ErrorCodes::NoSuchKey;
+            if (!balSettingsResult.isOK() && !isBalSettingsAbsent) {
                 warning() << balSettingsResult.getStatus();
                 return movedCount;
             }
             const SettingsType& balancerConfig = balSettingsResult.getValue();
 
-            if ((balancerConfig.isKeySet() && // balancer config doc exists
-                    !grid.shouldBalance(balancerConfig)) ||
-                    MONGO_FAIL_POINT(skipBalanceRound)) {
+            if ((!isBalSettingsAbsent && !grid.shouldBalance(balancerConfig)) ||
+                 MONGO_FAIL_POINT(skipBalanceRound)) {
                 LOG(1) << "Stopping balancing round early as balancing was disabled";
                 return movedCount;
             }
@@ -354,8 +354,7 @@ namespace mongo {
                     return;
                 }
 
-                auto_ptr<ChunkType> chunk(new ChunkType());
-                chunkRes.getValue().cloneTo(chunk.get());
+                auto_ptr<ChunkType> chunk(new ChunkType(chunkRes.getValue()));
 
                 allChunkMinimums.insert(chunk->getMin().getOwned());
                 OwnedPointerVector<ChunkType>*& chunkList =
@@ -497,6 +496,7 @@ namespace mongo {
 
     void Balancer::run() {
 
+        Client::initThread("Balancer");
         // this is the body of a BackgroundJob so if we throw here we're basically ending the balancer thread prematurely
         while ( ! inShutdown() ) {
 
@@ -540,16 +540,17 @@ namespace mongo {
 
                 auto balSettingsResult =
                     grid.catalogManager()->getGlobalSettings(SettingsType::BalancerDocKey);
-                if (!balSettingsResult.isOK()) {
+                const bool isBalSettingsAbsent =
+                    balSettingsResult.getStatus() == ErrorCodes::NoSuchKey;
+                if (!balSettingsResult.isOK() && !isBalSettingsAbsent) {
                     warning() << balSettingsResult.getStatus();
                     return;
                 }
                 const SettingsType& balancerConfig = balSettingsResult.getValue();
 
                 // now make sure we should even be running
-                if ((balancerConfig.isKeySet() && // balancer config doc exists
-                        !grid.shouldBalance(balancerConfig)) ||
-                        MONGO_FAIL_POINT(skipBalanceRound)) {
+                if ((!isBalSettingsAbsent && !grid.shouldBalance(balancerConfig)) ||
+                    MONGO_FAIL_POINT(skipBalanceRound)) {
 
                     LOG(1) << "skipping balancing round because balancing is disabled" << endl;
 
@@ -581,27 +582,12 @@ namespace mongo {
                         continue;
                     }
 
-                    if ( !isConfigServerConsistent() ) {
-                        conn.done();
-                        warning() << "Skipping balancing round because data inconsistency"
-                                  << " was detected amongst the config servers." << endl;
-                        sleepsecs( sleepTime );
-                        continue;
-                    }
-
                     const bool waitForDelete = (balancerConfig.isWaitForDeleteSet() ?
                             balancerConfig.getWaitForDelete() : false);
 
-                    scoped_ptr<WriteConcernOptions> writeConcern;
+                    std::unique_ptr<WriteConcernOptions> writeConcern;
                     if (balancerConfig.isKeySet()) { // if balancer doc exists.
-                        StatusWith<WriteConcernOptions*> extractStatus =
-                                balancerConfig.extractWriteConcern();
-                        if (extractStatus.isOK()) {
-                            writeConcern.reset(extractStatus.getValue());
-                        }
-                        else {
-                            warning() << extractStatus.getStatus().toString();
-                        }
+                        writeConcern = std::move(balancerConfig.getWriteConcern());
                     }
 
                     LOG(1) << "*** start balancing round. "

@@ -70,7 +70,6 @@
 #include "mongo/db/instance.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/json.h"
-#include "mongo/db/lasterror.h"
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/mongod_options.h"
 #include "mongo/db/op_observer.h"
@@ -116,7 +115,7 @@
 #include "mongo/util/startup_test.h"
 #include "mongo/util/text.h"
 #include "mongo/util/time_support.h"
-#include "mongo/util/version_reporting.h"
+#include "mongo/util/version.h"
 
 #if !defined(_WIN32)
 # include <sys/file.h>
@@ -157,15 +156,13 @@ namespace mongo {
             Client::initThread("conn", p);
         }
 
-        virtual void process( Message& m , AbstractMessagingPort* port , LastError * le) {
+        virtual void process(Message& m , AbstractMessagingPort* port) {
             OperationContextImpl txn;
             while ( true ) {
                 if ( inShutdown() ) {
                     log() << "got request after shutdown()" << endl;
                     break;
                 }
-
-                lastError.startRequest( m , le );
 
                 DbResponse dbresponse;
                 assembleResponse(&txn, m, dbresponse, port->remote());
@@ -217,6 +214,7 @@ namespace mongo {
 
         BSONObjBuilder buildinfo( toLog.subobjStart("buildinfo"));
         appendBuildInfo(buildinfo);
+        appendStorageEngineList(&buildinfo);
         buildinfo.doneFast();
 
         BSONObj o = toLog.obj();

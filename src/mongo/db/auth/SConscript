@@ -34,8 +34,8 @@ env.Library('authcore', ['action_set.cpp',
                      '$BUILD_DIR/mongo/crypto/scramauth',
                      '$BUILD_DIR/mongo/db/common',
                      '$BUILD_DIR/mongo/db/ops/update_driver',
-                     '$BUILD_DIR/mongo/namespace_string',
-                     '$BUILD_DIR/mongo/signal_handlers_synchronous',
+                     '$BUILD_DIR/mongo/db/namespace_string',
+                     '$BUILD_DIR/mongo/util/signal_handlers_synchronous',
                      '$BUILD_DIR/mongo/util/stringutils',
                      '$BUILD_DIR/mongo/util/md5'])
 
@@ -50,7 +50,7 @@ env.Library('authorization_manager_global',
             ],
             LIBDEPS=[
                 'authcore',
-                '$BUILD_DIR/mongo/service_context',
+                '$BUILD_DIR/mongo/db/service_context',
             ])
 
 env.Library('authservercommon',
@@ -86,7 +86,12 @@ env.Library('authmongod',
             ['authz_manager_external_state_d.cpp',
              'authz_session_external_state_d.cpp',
              'auth_index_d.cpp'],
-            LIBDEPS=['authservercommon', '$BUILD_DIR/mongo/server_parameters'])
+
+            LIBDEPS=[
+                'authservercommon',
+                '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
+                '$BUILD_DIR/mongo/db/server_parameters',
+            ])
 
 env.Library('authmongos',
             ['authz_manager_external_state_s.cpp',

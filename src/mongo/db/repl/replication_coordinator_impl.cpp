@@ -46,8 +46,10 @@
 #include "mongo/db/repl/handshake_args.h"
 #include "mongo/db/repl/is_master_response.h"
 #include "mongo/db/repl/repl_client_info.h"
+#include "mongo/db/repl/repl_set_declare_election_winner_args.h"
 #include "mongo/db/repl/repl_set_heartbeat_args.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"
+#include "mongo/db/repl/repl_set_html_summary.h"
 #include "mongo/db/repl/repl_set_request_votes_args.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replica_set_config_checks.h"
@@ -857,7 +859,7 @@ namespace {
 
         if (!writeConcern.wMode.empty()) {
             StringData patternName;
-            if (writeConcern.wMode == "majority") {
+            if (writeConcern.wMode == WriteConcernOptions::kMajority) {
                 patternName = ReplicaSetConfig::kMajorityWriteConcernModeName;
             }
             else {
@@ -958,7 +960,7 @@ namespace {
             return StatusAndDuration(Status::OK(), Milliseconds(timer->millis()));
         }
 
-        if (replMode == modeMasterSlave && writeConcern.wMode == "majority") {
+        if (replMode == modeMasterSlave && writeConcern.wMode == WriteConcernOptions::kMajority) {
             // with master/slave, majority is equivalent to w=1
             return StatusAndDuration(Status::OK(), Milliseconds(timer->millis()));
         }
@@ -2418,11 +2420,36 @@ namespace {
 
     Status ReplicationCoordinatorImpl::processReplSetDeclareElectionWinner(
             const ReplSetDeclareElectionWinnerArgs& args,
-            ReplSetDeclareElectionWinnerResponse* response) {
+            long long* responseTerm) {
         if (!isV1ElectionProtocol()) {
             return {ErrorCodes::BadValue, "not using election protocol v1"};
         }
-        return {ErrorCodes::CommandNotFound, "not implemented"};
+        Status result{ErrorCodes::InternalError,
+                      "didn't set status in processReplSetDeclareElectionWinner"};
+        CBHStatus cbh = _replExecutor.scheduleWork(
+            stdx::bind(&ReplicationCoordinatorImpl::_processReplSetDeclareElectionWinner_finish,
+                       this,
+                       stdx::placeholders::_1,
+                       args,
+                       responseTerm,
+                       &result));
+        if (cbh.getStatus() == ErrorCodes::ShutdownInProgress) {
+            return cbh.getStatus();
+        }
+        _replExecutor.wait(cbh.getValue());
+        return result;
+    }
+
+    void ReplicationCoordinatorImpl::_processReplSetDeclareElectionWinner_finish(
+            const ReplicationExecutor::CallbackData& cbData,
+            const ReplSetDeclareElectionWinnerArgs& args,
+            long long* responseTerm,
+            Status* result) {
+        if (cbData.status == ErrorCodes::CallbackCanceled) {
+            *result = Status(ErrorCodes::ShutdownInProgress, "replication system is shutting down");
+            return;
+        }
+        *result = _topCoord->processReplSetDeclareElectionWinner(args, responseTerm);
     }
 
     void ReplicationCoordinatorImpl::prepareCursorResponseInfo(BSONObjBuilder* objBuilder) {
@@ -2440,6 +2467,32 @@ namespace {
     Status ReplicationCoordinatorImpl::processHeartbeatV1(const ReplSetHeartbeatArgsV1& args,
                                                           ReplSetHeartbeatResponseV1* response) {
         return {ErrorCodes::CommandNotFound, "not implemented"};
+    }
+
+    void ReplicationCoordinatorImpl::summarizeAsHtml(ReplSetHtmlSummary* output) {
+        CBHStatus cbh = _replExecutor.scheduleWork(
+            stdx::bind(&ReplicationCoordinatorImpl::_summarizeAsHtml_finish,
+                       this,
+                       stdx::placeholders::_1,
+                       output));
+        if (cbh.getStatus() == ErrorCodes::ShutdownInProgress) {
+            return;
+        }
+        fassert(28638, cbh.getStatus());
+        _replExecutor.wait(cbh.getValue());
+    }
+
+    void ReplicationCoordinatorImpl::_summarizeAsHtml_finish(const CallbackData& cbData,
+                                                             ReplSetHtmlSummary* output) {
+        if (cbData.status == ErrorCodes::CallbackCanceled) {
+            return;
+        }
+
+        output->setSelfOptime(getMyLastOptime());
+        output->setSelfUptime(time(0) - serverGlobalParams.started);
+        output->setNow(_replExecutor.now());
+
+        _topCoord->summarizeAsHtml(output);
     }
 
 } // namespace repl

@@ -4,16 +4,17 @@
 
 import os
 import itertools
+import subprocess
 import sys
 from buildscripts import utils
+
+import SCons.Action
 
 Import("env")
 Import("has_option")
 Import("get_option")
-Import("serverJs")
 Import("usev8")
 Import("use_system_version_of_library")
-Import("v8suffix")
 Import("wiredtiger")
 
 # Boost we need everywhere. 's2' is spammed in all over the place by
@@ -26,51 +27,20 @@ env.SConscript(
         'base',
         'client',
         'crypto',
-        'crypto/tom',
         'db',
-        'db/auth',
-        'db/catalog',
-        'db/commands',
-        'db/concurrency',
-        'db/exec',
-        'db/fts',
-        'db/geo',
-        'db/index',
-        'db/matcher',
-        'db/ops',
-        'db/pipeline',
-        'db/query',
-        'db/repl',
-        'db/sorter',
-        'db/stats',
-        'db/storage',
-        'db/storage/devnull',
-        'db/storage/in_memory',
-        'db/storage/kv',
-        'db/storage/mmap_v1',
-        'db/storage/wiredtiger',
-        'installer/msi',
+        'dbtests',
+        'installer',
         'logger',
         'platform',
         'rpc',
         's',
-        's/catalog',
-        's/catalog/legacy',
-        's/client',
-        's/commands',
+        'scripting',
+        'shell',
+        'tools',
         'unittest',
         'util',
-        'util/cmdline_utils',
-        'util/concurrency',
-        'util/mongoutils',
-        'util/net',
-        'util/options_parser',
     ],
 )
-
-
-def add_exe( v ):
-    return "${PROGPREFIX}%s${PROGSUFFIX}" % v
 
 # ------    SOURCE FILE SETUP -----------
 
@@ -130,53 +100,74 @@ env.CppUnitTest('bson_validate_test', ['bson/bson_validate_test.cpp'],
 env.CppUnitTest('bsonobjbuilder_test', ['bson/bsonobjbuilder_test.cpp'],
                 LIBDEPS=['bson'])
 
-env.CppUnitTest('namespace_string_test', ['db/namespace_string_test.cpp'],
-                LIBDEPS=['namespace_string'])
-
-env.CppUnitTest('update_index_data_test', ['db/update_index_data_test.cpp'],
-                LIBDEPS=['bson','update_index_data','db/common'])
-
 env.CppUnitTest('oid_test', ['bson/oid_test.cpp'],
                 LIBDEPS=['bson'])
 
 env.CppUnitTest('bson_extract_test', ['bson/util/bson_extract_test.cpp'], LIBDEPS=['bson'])
 env.CppUnitTest('bson_check_test', ['bson/util/bson_check_test.cpp'], LIBDEPS=['bson'])
 
-env.Library(
-    target='index_key_validate',
-    source=[
-        "db/catalog/index_key_validate.cpp",
-    ],
-    LIBDEPS=[
-        'bson',
-        'db/common',
-        'db/index_names',
-    ])
+def get_toolchain_ver(tool):
+    # By default we don't know the version of each tool, and only report what
+    # command gets executed (gcc vs /opt/mongodbtoolchain/bin/gcc).
+    verstr = "version unknown"
+    proc = None
+    if env.ToolchainIs('clang', 'gcc'):
+        proc = SCons.Action._subproc(env,
+            env.subst("${%s} --version" % tool),
+            stdout=subprocess.PIPE,
+            stderr='devnull',
+            stdin='devnull',
+            universal_newlines=True,
+            error='raise',
+            shell=True)
+        verstr = proc.stdout.readline()
 
-env.Library('lasterror', [
-            "db/lasterror.cpp",
-            ],
-            LIBDEPS=['util/net/network',
-                     'util/foundation',
-            ])
+    elif env.ToolchainIs('msvc') and env.TargetOSIs('windows'):
+        proc = SCons.Action._subproc(env,
+            env.subst("${%s}" % tool),
+            stdout='devnull',
+            stderr=subprocess.PIPE,
+            stdin='devnull',
+            universal_newlines=True,
+            error='raise',
+            shell=True)
+        verstr = proc.stderr.readline()
 
-def getSysInfo():
-    if env.TargetOSIs("windows"):
-        return "windows " + str( sys.getwindowsversion() )
-    else:
-        return " ".join( os.uname() )
+    # If we started a process, we should drain its stdout/stderr and wait for
+    # it to end.
+    if proc:
+        proc.communicate()
 
-buildInfo = env.Substfile(
-    'buildinfo.cpp.in',
+    return env.subst('${%s}: %s' % (tool, verstr))
+
+js_engine_ver = get_option("js-engine") if get_option("server-js") == "on" else "none"
+
+# On windows, we need to escape the backslashes in the command-line
+# so that windows paths look okay.
+cmd_line = " ".join(sys.argv).encode('string-escape')
+if env.TargetOSIs('windows'):
+    cmd_line = cmd_line.replace('\\', r'\\')
+
+module_list = '{ %s }' % ', '.join([ '"{0}"'.format(x) for x in env['MONGO_MODULES'] ])
+
+versionInfo = env.Substfile(
+    'util/version.cpp.in',
     SUBST_DICT=[
+        ('@mongo_code_version@', env['MONGO_CODE_VERSION']),
         ('@buildinfo_git_version@', env['MONGO_GIT_VERSION']),
-        ('@buildinfo_js_engine@', "V8" if usev8 else "Unknown"),
+        ('@buildinfo_js_engine@', js_engine_ver),
         ('@buildinfo_allocator@', GetOption('allocator')),
-        ('@buildinfo_loader_flags@', env.subst('$LINKFLAGS $LDFLAGS')),
-        ('@buildinfo_compiler_flags@', env.subst('$CXXFLAGS $CCFLAGS $CFLAGS')),
-        ('@buildinfo_sysinfo@', getSysInfo()),
+        ('@buildinfo_ccflags@', env['CCFLAGS']),
+        ('@buildinfo_cflags@', env['CFLAGS']),
+        ('@buildinfo_cxxflags@', env['CXXFLAGS']),
+        ('@buildinfo_linkflags@', env['LINKFLAGS']),
+        ('@buildinfo_cmdline@', cmd_line),
+        ('@buildinfo_modules@', module_list),
+        ('@buildinfo_target_arch@', env['TARGET_ARCH']),
+        ('@buildinfo_target_os@', env.GetTargetOSName()),
+        ('@buildinfo_cc_version@', get_toolchain_ver('CC')),
+        ('@buildinfo_cxx_version@', get_toolchain_ver('CXX')),
     ])
-env.NoCache(buildInfo)
 
 config_header_substs = (
     ('@mongo_config_byte_order@', 'MONGO_CONFIG_BYTE_ORDER'),
@@ -206,23 +197,14 @@ configHeaderFile = env.Substfile(
     SUBST_DICT=[(k, env.makeConfigHeaderDefine(v)) for (k, v) in config_header_substs]
 )
 
-versionFile = env.Substfile(
-    'util/version.cpp.in',
-    SUBST_DICT=[
-        ('@mongo_code_version@', env['MONGO_CODE_VERSION'])
-    ])
-
 env.Library('version',
             [
-                'buildinfo.cpp',
                 'util/version.cpp'
             ],
             LIBDEPS=[
                 'bson',
                 '$BUILD_DIR/mongo/base/base'
             ])
-
-env.Library('namespace_string', ['db/namespace_string.cpp'], LIBDEPS=['util/foundation'])
 
 commonFiles = [ "shell/mongo.cpp",
                 "util/file_allocator.cpp",
@@ -232,65 +214,27 @@ commonFiles = [ "shell/mongo.cpp",
                 "util/concurrency/rwlockimpl.cpp",
                 "util/text_startuptest.cpp",
                 'util/signal_win32.cpp',
-                "util/version_reporting.cpp",
                 ]
 
 extraCommonLibdeps = []
 
 if env['MONGO_BUILD_SASL_CLIENT']:
-    saslLibs = ['sasl2']
-    if env.TargetOSIs('windows'):
-        saslLibs.extend(["secur32"])
-
-    env.Library('cyrus_sasl_client_session',
-                ['client/cyrus_sasl_client_session.cpp',
-                 'client/sasl_sspi.cpp'],
-                LIBDEPS = [
-                    '$BUILD_DIR/mongo/client/clientdriver',
-                    'util/foundation',
-                    'signal_handlers_synchronous',
-                ],
-                SYSLIBDEPS=saslLibs)
-    extraCommonLibdeps.append('cyrus_sasl_client_session')
-
-# handle processinfo*
-env.Library("processinfo",
-            [ "util/processinfo.cpp", "util/processinfo_${TARGET_OS}.cpp" ],
-            LIBDEPS=["util/foundation", "bson"])
-
-env.CppUnitTest("processinfo_test",
-                ["util/processinfo_test.cpp"],
-                LIBDEPS=["processinfo"])
-
-env.Library("server_parameters",
-            ["db/server_parameters.cpp"],
-            LIBDEPS=["util/foundation","bson"])
-
-env.CppUnitTest("server_parameters_test",
-                [ "db/server_parameters_test.cpp" ],
-                LIBDEPS=["server_parameters"] )
-
-
-env.Library("fail_point",
-            ["util/fail_point.cpp",
-             "util/fail_point_registry.cpp",
-             "util/fail_point_service.cpp"],
-            LIBDEPS=["util/foundation", "bson"])
+    extraCommonLibdeps.append('client/cyrus_sasl_client_session')
 
 env.Library('mongocommon', commonFiles,
             LIBDEPS=['bson',
-                     'background_job',
+                     'util/background_job',
                      '$BUILD_DIR/mongo/client/clientdriver',
-                     'fail_point',
+                     'util/fail_point',
                      'util/foundation',
-                     'service_context',
-                     'lasterror',
+                     'db/service_context',
+                     'db/lasterror',
                      'db/mongohasher',
-                     'namespace_string',
+                     'db/namespace_string',
                      'util/net/network',
-                     'processinfo',
+                     'util/processinfo',
                      'util/concurrency/spin_lock',
-                     'stacktrace',
+                     'util/stacktrace',
                      'util/stringutils',
                      'util/concurrency/synchronization',
                      'util/concurrency/thread_name',
@@ -309,43 +253,6 @@ env.CppUnitTest(
     source=["util/version_test.cpp"],
     LIBDEPS=["mongocommon"]
 )
-
-env.Library('background_job', ["util/background.cpp"],
-            LIBDEPS=['util/concurrency/spin_lock'])
-
-env.CppUnitTest(
-    target="background_job_test",
-    source=[
-        "util/background_job_test.cpp",
-    ],
-    LIBDEPS=[
-        "background_job",
-        "util/net/network", # Temporary crutch since the ssl cleanup is hard coded in background.cpp
-        "util/concurrency/synchronization",
-    ]
-)
-
-if get_option('allocator') == 'tcmalloc':
-    tcmspEnv = env.Clone()
-
-    if not use_system_version_of_library('tcmalloc'):
-
-        # Add in the include path for our vendored tcmalloc.
-        tcmspEnv.InjectThirdPartyIncludePaths('gperftools')
-
-        # If our changes to tcmalloc are ever upstreamed, this should become set based on a top
-        # level configure check, though its effects should still be scoped just to these files.
-        tcmspEnv.Append(
-            CPPDEFINES=['MONGO_HAVE_GPERFTOOLS_GET_THREAD_CACHE_SIZE']
-        )
-
-    tcmspEnv.Library('tcmalloc_set_parameter',
-                [
-                    'util/tcmalloc_server_status_section.cpp',
-                    'util/tcmalloc_set_parameter.cpp',
-                ],
-                LIBDEPS=['server_parameters'],
-                LIBDEPS_DEPENDENTS=['mongod', 'mongos'])
 
 coredbEnv = env.Clone()
 coredbEnv.InjectThirdPartyIncludePaths(libraries=['snappy'])
@@ -399,8 +306,8 @@ coredbEnv.Library("coredb", [
                            'db/commands/server_status_core',
                            'db/common',
                            'db/pipeline/document_value',
-                           'scripting_common',
-                           'server_parameters',
+                           'scripting/scripting_common',
+                           'db/server_parameters',
                            'db/matcher/expressions',
                            'db/matcher/expressions_geo',
                            'db/matcher/expressions_text',
@@ -410,116 +317,11 @@ coredbEnv.Library("coredb", [
                            'db/startup_warnings_common',
                            '$BUILD_DIR/mongo/util/foundation',
                            '$BUILD_DIR/third_party/shim_snappy',
-                           'server_options',
+                           'db/server_options',
                            '$BUILD_DIR/mongo/util/cmdline_utils/cmdline_utils',
                            '$BUILD_DIR/mongo/logger/parse_log_component_settings',
                            '$BUILD_DIR/mongo/client/clientdriver',
                            ])
-
-env.Library('ntservice', ['util/ntservice.cpp'],
-            LIBDEPS=['util/foundation',
-                     '$BUILD_DIR/mongo/util/options_parser/options_parser'])
-if env.TargetOSIs('windows'):
-    env.CppUnitTest('ntservice_test', 'util/ntservice_test.cpp',
-                    LIBDEPS=['ntservice'],
-                    LIBS=['shell32', env['LIBS']],
-                    NO_CRUTCH=True)
-
-env.Library('ntservice_mock', ['util/ntservice_mock.cpp'])
-
-env.Library(
-    target='scripting_common',
-    source=[
-        'scripting/engine.cpp',
-        'scripting/utils.cpp',
-    ],
-)
-
-env.Library(
-    target='scripting_none',
-    source=[
-        'scripting/engine_none.cpp',
-    ],
-    LIBDEPS=[
-        'bson_template_evaluator',
-        'scripting_common',
-    ],
-)
-
-env.Library('bson_template_evaluator', ["scripting/bson_template_evaluator.cpp"],
-            LIBDEPS=['bson'])
-env.CppUnitTest('bson_template_evaluator_test', ['scripting/bson_template_evaluator_test.cpp'],
-                LIBDEPS=['bson_template_evaluator'])
-
-if usev8:
-    scriptingEnv = env.Clone()
-    scriptingEnv.InjectThirdPartyIncludePaths(libraries=['v8'])
-    scriptingEnv.Library(
-        target='scripting',
-        source=[
-            'scripting/engine_v8' + v8suffix + '.cpp',
-            'scripting/v8' + v8suffix + '_db.cpp',
-            'scripting/v8' + v8suffix + '_utils.cpp',
-            'scripting/v8' + v8suffix + '_profiler.cpp',
-        ],
-        LIBDEPS=[
-            'bson_template_evaluator',
-            'scripting_common',
-            '$BUILD_DIR/third_party/shim_v8',
-        ],
-    )
-else:
-    env.Library(
-        target='scripting',
-        source=[
-        ],
-        LIBDEPS=[
-            'scripting_none',
-        ],
-    )
-
-if serverJs:
-    env.Library(
-        target='scripting_server',
-        source=[
-        ],
-        LIBDEPS=[
-            'scripting',
-        ],
-    )
-else:
-    env.Library(
-        target='scripting_server',
-        source=[
-        ],
-        LIBDEPS=[
-            'scripting_none',
-        ],
-    )
-
-env.Library('update_index_data', [ 'db/update_index_data.cpp' ], LIBDEPS=[ 'db/common' ])
-
-env.Library(
-    target='service_context',
-    source=[
-        'db/client.cpp',
-        'db/client_basic.cpp',
-        'db/service_context.cpp',
-        'db/service_context_noop.cpp',
-    ],
-    LIBDEPS=[
-        'lasterror',  # TODO(schwerin): REMOVE!
-        'util/decorable',
-         ])
-
-# Memory-mapped files support.  Used by mongod and some tools.
-env.Library('mmap', ['util/mmap.cpp', 'util/mmap_${TARGET_OS_FAMILY}.cpp'], LIBDEPS=['util/foundation'])
-
-env.Library('elapsed_tracker',
-            ['util/elapsed_tracker.cpp'],
-            LIBDEPS=['util/foundation',
-                     'util/net/network'] # this is for using listener to check elapsed time
-            )
 
 # mongod files - also files used in tools. present in dbtests, but not in mongos and not in client
 # libs.
@@ -654,133 +456,6 @@ serverOnlyFiles = [ "db/background.cpp",
                     "util/logfile.cpp",
                 ]
 
-# This library exists because some libraries, such as our networking library, need access to server
-# options, but not to the helpers to set them from the command line.  libserver_options_core.a just
-# has the structure for storing the server options, while libserver_options.a has the code to set
-# them via the command line.
-env.Library("server_options_core", ["db/server_options.cpp"],
-            LIBDEPS=['bson'])
-
-env.Library("server_options", [
-                    "db/server_options_helpers.cpp"
-                    ],
-            LIBDEPS=['bson',
-                     'util/net/network', # temporary crutch that should go away once the networking
-                                # library has separate options
-                     'server_options_core',
-                     'server_parameters',
-                     '$BUILD_DIR/mongo/util/cmdline_utils/cmdline_utils',
-                     '$BUILD_DIR/mongo/util/options_parser/options_parser',
-                    ])
-
-env.CppUnitTest('server_options_test', 'db/server_options_test.cpp',
-                LIBDEPS=['server_options'])
-
-env.CppUnitTest('v8_deadline_monitor_test', 'scripting/v8_deadline_monitor_test.cpp', LIBDEPS=[])
-
-env.Library('stacktrace',
-            'util/stacktrace_${TARGET_OS_FAMILY}.cpp',
-            LIBDEPS=['bson',
-                     'util/stringutils',
-                     'version',
-                     '$BUILD_DIR/mongo/base/base'])
-
-quick_exit_env = env.Clone()
-if has_option('gcov'):
-    quick_exit_env.Append(CPPDEFINES=['MONGO_GCOV'])
-quick_exit_env.Library(target='quick_exit',
-            source=[
-                'util/quick_exit.cpp',
-            ])
-
-# This library contains sharding functionality used by both mongod and mongos. Certain tests,
-# which exercise this functionality also link against it.
-env.Library(
-    target='coreshard',
-    source=[
-        # This is only here temporarily for auto-split logic in chunk.cpp.
-        's/balancer_policy.cpp',
-        's/distlock.cpp',
-        's/config.cpp',
-        's/grid.cpp',
-        's/chunk.cpp',
-        's/chunk_manager.cpp',
-        's/config_server_checker_service.cpp',
-        's/shard_key_pattern.cpp',
-        's/version_manager.cpp',
-    ],
-    LIBDEPS=[
-        's/base',
-        's/client/sharding_client',
-        's/cluster_ops_impl',
-        's/dist_lock',
-    ]
-)
-
-# This library is only used by the mongos execuable and any tests which require mongos runtime
-# objects, such as the request processing pipeline or the balancer.
-env.Library(
-    target='mongoscore',
-    source=[
-        's/balance.cpp',
-        's/cluster_last_error_info.cpp',
-        's/cursors.cpp',
-        's/request.cpp',
-        's/s_only.cpp',
-        's/strategy.cpp',
-        's/version_mongos.cpp',
-    ],
-    LIBDEPS=[
-        'db/auth/authmongos',
-        'db/fts/ftsmongos',
-        'db/query/explain_common',
-        'db/query/lite_parsed_query',
-        's/cluster_ops',
-        's/cluster_write_op_conversion',
-    ]
-)
-
-env.CppUnitTest(
-    target='mongoscore_test',
-    source=[
-        's/shard_key_pattern_test.cpp',
-        's/balancing_window_test.cpp',
-        's/balancer_policy_tests.cpp',
-    ],
-    LIBDEPS=[
-        'mongoscore',
-        'coreshard',
-        'mongocommon',
-        'coreserver',
-        'coredb',
-    ]
-)
-
-env.CppUnitTest("scoped_db_conn_test", [ "client/scoped_db_conn_test.cpp" ],
-                 LIBDEPS=[
-                    "coredb",
-                    "coreserver",
-                    "coreshard",
-                    "mongocommon",
-                    "message_server_port",
-                    "mongoscore",
-                    "ntservice_mock"],
-                 NO_CRUTCH=True)
-
-env.CppUnitTest('config_server_tests', [ 's/config_server_tests.cpp' ],
-                LIBDEPS=[ "mongoscore",
-                          "coreshard",
-                          "mongocommon",
-                          "coreserver",
-                          "coredb",
-                          "message_server_port",
-                          "mocklib"])
-
-
-# Should only need stuff from util, unittest and platform
-env.CppUnitTest("fail_point_test", [ "util/fail_point_test.cpp" ],
-                LIBDEPS=["fail_point"])
-
 if has_option( 'use-cpu-profiler' ):
     serverOnlyFiles.append( 'db/commands/cpuprofile.cpp' )
     env.Append(LIBS=['unwind'])
@@ -793,72 +468,9 @@ if has_option( 'use-cpu-profiler' ):
     # just to this file.
     env.InjectThirdPartyIncludePaths('tcmalloc')
 
-env.CppUnitTest(
-    target="index_filter_commands_test",
-    source=[
-        "db/commands/index_filter_commands_test.cpp",
-    ],
-    LIBDEPS=[
-        "$BUILD_DIR/mongo/serveronly",
-        "$BUILD_DIR/mongo/coreserver",
-        "$BUILD_DIR/mongo/coredb",
-        "$BUILD_DIR/mongo/ntservice_mock",
-    ],
-    NO_CRUTCH = True,
-)
-
-env.CppUnitTest(
-    target="mr_test",
-    source=[
-        "db/commands/mr_test.cpp",
-    ],
-    LIBDEPS=[
-        "$BUILD_DIR/mongo/serveronly",
-        "$BUILD_DIR/mongo/coreserver",
-        "$BUILD_DIR/mongo/coredb",
-        "$BUILD_DIR/mongo/ntservice_mock",
-    ],
-    NO_CRUTCH = True,
-)
-
-env.CppUnitTest(
-    target="plan_cache_commands_test",
-    source=[
-        "db/commands/plan_cache_commands_test.cpp",
-    ],
-    LIBDEPS=[
-        "$BUILD_DIR/mongo/serveronly",
-        "$BUILD_DIR/mongo/coreserver",
-        "$BUILD_DIR/mongo/coredb",
-        "$BUILD_DIR/mongo/ntservice_mock",
-    ],
-    NO_CRUTCH = True,
-)
-
-env.Library('range_deleter',
-            [ 'db/range_deleter.cpp',
-              'db/range_deleter_mock_env.cpp',
-            ],
-            LIBDEPS = [
-                '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
-                'base/base',
-                'bson',
-                'service_context',
-                'db/range_arithmetic',
-                'util/concurrency/synchronization'
-            ])
-
-env.CppUnitTest('range_deleter_test',
-                [ 'db/range_deleter_test.cpp' ],
-                LIBDEPS = [
-                    '$BUILD_DIR/mongo/db/repl/replmocks',
-                    'db/common',
-                    'range_deleter',
-                ])
-
 serveronlyEnv = env.Clone()
 serveronlyEnv.InjectThirdPartyIncludePaths(libraries=['snappy'])
-serveronlyLibdeps = ["coreshard",
+serveronlyLibdeps = ["s/coreshard",
                      'db/curop',
                      "db/auth/authmongod",
                      "db/fts/ftsmongod",
@@ -867,10 +479,10 @@ serveronlyLibdeps = ["coreshard",
                      "db/concurrency/write_conflict_exception",
                      "db/ops/update_driver",
                      "db/global_timestamp",
-                     "index_key_validate",
-                     'range_deleter',
-                     'scripting_server',
-                     "update_index_data",
+                     "db/catalog/index_key_validate",
+                     'db/range_deleter',
+                     'scripting/scripting_server',
+                     "db/update_index_data",
                      's/metadata',
                      's/batch_write_types',
                      's/catalog/legacy/catalog_manager_legacy',
@@ -896,8 +508,8 @@ serveronlyLibdeps = ["coreshard",
                      'db/storage/mmap_v1/storage_mmapv1',
                      'db/storage/storage_engine_lock_file',
                      'db/storage/storage_engine_metadata',
-                     'mmap',
-                     'elapsed_tracker',
+                     'util/mmap',
+                     'util/elapsed_tracker',
                      '$BUILD_DIR/third_party/shim_snappy']
 
 if wiredtiger:
@@ -906,40 +518,6 @@ if wiredtiger:
 
 serveronlyEnv.Library("serveronly", serverOnlyFiles,
                       LIBDEPS=serveronlyLibdeps )
-
-env.Library("message_server_port", "util/net/message_server_port.cpp")
-
-env.Library("signal_handlers_synchronous",
-            ['util/signal_handlers_synchronous.cpp',
-             'util/allocator.cpp',],
-            LIBDEPS=["stacktrace", "util/foundation"]
-            )
-
-env.Library("signal_handlers",
-            ["util/signal_handlers.cpp",],
-            LIBDEPS=["util/foundation", "signal_handlers_synchronous"]
-            )
-
-# These files go into mongos and mongod only, not into the shell or any tools.
-mongodAndMongosFiles = [
-    "db/initialize_server_global_state.cpp",
-    "db/server_extra_log_context.cpp",
-    "db/dbwebserver.cpp",
-    ]
-env.Library("mongodandmongos", mongodAndMongosFiles,
-            LIBDEPS=["message_server_port", "signal_handlers"])
-
-env.Library("mongodwebserver",
-            [
-             "db/clientlistplugin.cpp",
-             "db/restapi.cpp",
-             "db/stats/snapshots_webplugins.cpp",
-             ],
-            LIBDEPS=["coredb", "mongodandmongos"])
-
-mongodOnlyFiles = [ "db/db.cpp", "db/mongod_options_init.cpp" ]
-
-# ----- TARGETS ------
 
 env.Library(
     target='coreserver',
@@ -955,31 +533,24 @@ env.Library(
     ],
 )
 
-# mongod options
-env.Library("mongod_options", ["db/mongod_options.cpp"],
-            LIBDEPS=['server_options',
-                     'mongocommon',
-                     'serveronly',
-                     'coreserver',
-                     'coredb',
-                     '$BUILD_DIR/mongo/util/options_parser/options_parser_init'])
+mongod = env.Program(
+    target="mongod",
+    source=[
+        "db/db.cpp",
+        "db/mongod_options_init.cpp",
+    ],
+    LIBDEPS=[
+        "coredb",
+        "coreserver",
+        "db/mongod_options",
+        "db/mongodandmongos",
+        "db/mongodwebserver",
+        "serveronly",
+        "util/ntservice",
+    ],
+)
 
-# main db target
-mongod = env.Install(
-    '#/',
-    env.Program(
-        "mongod",
-        mongodOnlyFiles,
-        LIBDEPS=[
-            "coredb",
-            "coreserver",
-            "mongodandmongos",
-            "mongodwebserver",
-            "ntservice",
-            "serveronly",
-            "mongod_options",
-        ]))
-Default( mongod )
+env.Default(env.Install('#/', mongod))
 
 # tools
 rewrittenTools = [ "mongodump", "mongorestore", "mongoexport", "mongoimport", "mongostat", "mongotop", "bsondump", "mongofiles", "mongooplog" ]
@@ -988,30 +559,16 @@ rewrittenTools = [ "mongodump", "mongorestore", "mongoexport", "mongoimport", "m
 env.Install(
     '#/',
     [
-        env.Program("mongobridge",
-                    [
-                        "tools/bridge.cpp",
-                        "tools/mongobridge_options.cpp",
-                        "tools/mongobridge_options_init.cpp"
-                    ],
-                    LIBDEPS=[
-                        "ntservice_mock",
-                        "serveronly",
-                        "coreserver",
-                        "coredb",
-                        "signal_handlers_synchronous",
-                        "$BUILD_DIR/mongo/util/options_parser/options_parser_init",
-                    ]),
         env.Program("mongoperf",
                     [
                         "client/examples/mongoperf.cpp",
                     ],
                     LIBDEPS=[
-                        "ntservice_mock",
+                        "util/ntservice_mock",
                         "serveronly",
                         "coreserver",
                         "coredb",
-                        "signal_handlers_synchronous",
+                        "util/signal_handlers_synchronous",
                     ]),
     ])
 
@@ -1029,61 +586,15 @@ env.Install(
             's/catalog/legacy/catalog_manager_legacy',
             's/client/sharding_connection_hook',
             's/commands/cluster_commands',
-            "mongoscore",
+            "s/mongoscore",
             "coreserver",
             "coredb",
             "mongocommon",
-            "coreshard",
-            "ntservice",
-            "mongodandmongos",
+            "s/coreshard",
+            "util/ntservice",
+            "db/mongodandmongos",
             '$BUILD_DIR/mongo/util/options_parser/options_parser_init',
         ]))
-
-# dbtests test binary options
-env.Library("framework_options", ["dbtests/framework_options.cpp"],
-            LIBDEPS=['$BUILD_DIR/mongo/util/options_parser/options_parser_init'])
-
-# dbtests test binary
-env.Library('testframework', ['dbtests/framework.cpp', 'dbtests/framework_options_init.cpp'],
-            LIBDEPS=['unittest/unittest',
-            'framework_options',
-            ])
-
-env.Library('mocklib', [
-        'dbtests/mock/mock_conn_registry.cpp',
-        'dbtests/mock/mock_dbclient_connection.cpp',
-        'dbtests/mock/mock_dbclient_cursor.cpp',
-        'dbtests/mock/mock_remote_db_server.cpp',
-        'dbtests/mock/mock_replica_set.cpp'
-    ],
-    LIBDEPS=['$BUILD_DIR/mongo/client/clientdriver',
-             '$BUILD_DIR/mongo/db/repl/replica_set_messages'])
-
-test = env.Install(
-    '#/',
-    env.Program("dbtest",
-                    [ f for f in Glob("dbtests/*.cpp")
-                      if not str(f).endswith('framework.cpp') and
-                         not str(f).endswith('framework_options.cpp') and
-                         not str(f).endswith('framework_options_init.cpp') ],
-                    LIBDEPS = [
-                       "mutable_bson_test_utils",
-                       "mongocommon",
-                       "serveronly",
-                       "coreserver",
-                       "coredb",
-                       "testframework",
-                       "signal_handlers_synchronous",
-                       "s/cluster_ops",
-                       "s/cluster_ops_impl",
-                       "mocklib",
-                       "$BUILD_DIR/mongo/db/auth/authmocks",
-                       "$BUILD_DIR/mongo/db/query/query",
-                       "$BUILD_DIR/mongo/db/repl/repl_coordinator_global",
-                       "$BUILD_DIR/mongo/db/repl/replmocks"]))
-
-if len(env.subst('$PROGSUFFIX')):
-    env.Alias( "dbtest", "#/${PROGPREFIX}dbtest${PROGSUFFIX}" )
 
 # --- sniffer ---
 mongosniff_built = False
@@ -1102,41 +613,10 @@ if env.TargetOSIs('osx') or env["_HAVEPCAP"]:
                                                  "serveronly",
                                                  "coreserver",
                                                  "coredb",
-                                                 "signal_handlers_synchronous",
+                                                 "util/signal_handlers_synchronous",
                                               ] ) )
 
 # --- shell ---
-
-# if you add a file here, you need to add it in scripting/engine.cpp and shell/createCPPfromJavaScriptFiles.js as well
-env.JSHeader(
-            target="shell/mongo.cpp",
-            source=[
-                "shell/assert.js",
-                "shell/bulk_api.js",
-                "shell/collection.js",
-                "shell/db.js",
-                "shell/explain_query.js",
-                "shell/explainable.js",
-                "shell/mongo.js",
-                "shell/mr.js",
-                "shell/query.js",
-                "shell/types.js",
-                "shell/upgrade_check.js",
-                "shell/utils.js",
-                "shell/utils_sh.js",
-                "shell/utils_auth.js",
-            ])
-
-# if you add a file here, you need to add it in shell/shell_utils.cpp and shell/createCPPfromJavaScriptFiles.js as well
-env.JSHeader(
-            target="shell/mongo-server.cpp",
-            source=[
-                "shell/servers.js",
-                "shell/shardingtest.js",
-                "shell/servers_misc.js",
-                "shell/replsettest.js",
-                "shell/replsetbridge.js"
-             ])
 
 if not has_option('noshell') and usev8:
     shell_core_env = env.Clone()
@@ -1157,9 +637,9 @@ if not has_option('noshell') and usev8:
                 ],
                 LIBDEPS=[
                     'db/index/external_key_generator',
-                    'index_key_validate',
-                    'scripting',
-                    'signal_handlers',
+                    'db/catalog/index_key_validate',
+                    'scripting/scripting',
+                    'util/signal_handlers',
                     'mongocommon'
                 ])
 
@@ -1191,6 +671,9 @@ distBinaries = []
 
 if env.TargetOSIs('windows'):
     distBinaries.extend(['mongod.pdb', 'mongos.pdb'])
+
+def add_exe( v ):
+    return "${PROGPREFIX}%s${PROGSUFFIX}" % v
 
 def installBinary( e, name ):
     name = add_exe( name )

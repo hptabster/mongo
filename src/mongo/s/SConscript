@@ -2,12 +2,19 @@
 
 Import("env")
 
+env.SConscript(
+    dirs=[
+        'catalog',
+        'client',
+        'commands',
+    ],
+)
+
 #
 # Schema and backward compatibility code for "config" collections.
 #
 
 env.Library('base', ['mongo_version_range.cpp',
-                     'type_database.cpp',
                      'type_locks.cpp',
                      'type_lockpings.cpp',
                      'type_config_version.cpp',
@@ -26,10 +33,6 @@ env.CppUnitTest('mongo_version_range_test', 'mongo_version_range_test.cpp',
                          '$BUILD_DIR/mongo/db/common'])
 
 env.CppUnitTest('type_config_version_test', 'type_config_version_test.cpp',
-                LIBDEPS=['base',
-                         '$BUILD_DIR/mongo/db/common'])
-
-env.CppUnitTest('type_database_test', 'type_database_test.cpp',
                 LIBDEPS=['base',
                          '$BUILD_DIR/mongo/db/common'])
 
@@ -81,10 +84,10 @@ env.CppUnitTest(
         'metadata',
         '$BUILD_DIR/mongo/coredb',
         '$BUILD_DIR/mongo/coreserver',
-        '$BUILD_DIR/mongo/coreshard',
-        '$BUILD_DIR/mongo/mocklib',
+        '$BUILD_DIR/mongo/s/coreshard',
+        '$BUILD_DIR/mongo/dbtests/mocklib',
         '$BUILD_DIR/mongo/mongocommon',
-        '$BUILD_DIR/mongo/mongoscore',
+        '$BUILD_DIR/mongo/s/mongoscore',
         '$BUILD_DIR/mongo/db/common',
     ])
 
@@ -174,8 +177,9 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/bson',
-        'cluster_ops',
         '$BUILD_DIR/mongo/db/common', # for Message
+        '$BUILD_DIR/mongo/db/lasterror',
+        'cluster_ops',
     ],
 )
 
@@ -223,9 +227,9 @@ env.CppUnitTest(
     LIBDEPS=[
         '$BUILD_DIR/mongo/coredb',
         '$BUILD_DIR/mongo/coreserver',
-        '$BUILD_DIR/mongo/coreshard',
+        '$BUILD_DIR/mongo/s/coreshard',
         '$BUILD_DIR/mongo/mongocommon',
-        '$BUILD_DIR/mongo/mongoscore',
+        '$BUILD_DIR/mongo/s/mongoscore',
     ]
 )
 
@@ -241,3 +245,79 @@ env.Library(
     ],
 )
 
+# This library contains sharding functionality used by both mongod and mongos. Certain tests,
+# which exercise this functionality also link against it.
+env.Library(
+    target='coreshard',
+    source=[
+        # This is only here temporarily for auto-split logic in chunk.cpp.
+        'balancer_policy.cpp',
+        'chunk.cpp',
+        'chunk_manager.cpp',
+        'config.cpp',
+        'distlock.cpp',
+        'grid.cpp',
+        'shard_key_pattern.cpp',
+        'version_manager.cpp',
+    ],
+    LIBDEPS=[
+        'base',
+        'client/sharding_client',
+        'cluster_ops_impl',
+        'dist_lock',
+    ]
+)
+
+# This library is only used by the mongos execuable and any tests which require mongos runtime
+# objects, such as the request processing pipeline or the balancer.
+env.Library(
+    target='mongoscore',
+    source=[
+        'balance.cpp',
+        'cluster_last_error_info.cpp',
+        'cursors.cpp',
+        'request.cpp',
+        's_only.cpp',
+        'strategy.cpp',
+        'version_mongos.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmongos',
+        '$BUILD_DIR/mongo/db/fts/ftsmongos',
+        '$BUILD_DIR/mongo/db/query/explain_common',
+        '$BUILD_DIR/mongo/db/query/lite_parsed_query',
+        'cluster_ops',
+        'cluster_write_op_conversion',
+    ]
+)
+
+env.CppUnitTest(
+    target='mongoscore_test',
+    source=[
+        'balancer_policy_tests.cpp',
+        'shard_key_pattern_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/coredb',
+        '$BUILD_DIR/mongo/coreserver',
+        '$BUILD_DIR/mongo/mongocommon',
+        'coreshard',
+        'mongoscore',
+    ]
+)
+
+env.CppUnitTest(
+    target='config_server_tests',
+    source=[
+        'config_server_tests.cpp',
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/coredb",
+        "$BUILD_DIR/mongo/coreserver",
+        "$BUILD_DIR/mongo/util/net/message_server_port",
+        "$BUILD_DIR/mongo/dbtests/mocklib",
+        "$BUILD_DIR/mongo/mongocommon",
+        "coreshard",
+        "mongoscore",
+    ],
+)

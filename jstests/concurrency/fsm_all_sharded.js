@@ -68,7 +68,6 @@ var blacklist = [
     'upsert_where.js',
 ].map(function(file) { return dir + '/' + file; });
 
-// SERVER-16196 re-enable executing workloads against sharded clusters
 runWorkloadsSerially(ls(dir).filter(function(file) {
      return !Array.contains(blacklist, file);
 }), { sharded: true });
