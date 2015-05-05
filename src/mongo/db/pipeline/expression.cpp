@@ -185,7 +185,7 @@ namespace mongo {
         uassert(16419, str::stream()<<"field path must not contain embedded null characters" << prefixedField.find("\0") << "," ,
                 prefixedField.find('\0') == string::npos);
 
-        const char *pPrefixedField = prefixedField.c_str();
+        const char* pPrefixedField = prefixedField.c_str();
         uassert(15982, str::stream() <<
                 "field path references must be prefixed with a '$' ('" <<
                 prefixedField << "'", pPrefixedField[0] == '$');
@@ -214,7 +214,7 @@ namespace mongo {
 
         for(size_t fieldCount = 0; iter.more(); ++fieldCount) {
             BSONElement fieldElement(iter.next());
-            const char *pFieldName = fieldElement.fieldName();
+            const char* pFieldName = fieldElement.fieldName();
 
             if (pFieldName[0] == '$') {
                 uassert(15983, str::stream() <<
@@ -439,7 +439,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$add", ExpressionAdd::parse);
-    const char *ExpressionAdd::getOpName() const {
+    const char* ExpressionAdd::getOpName() const {
         return "$add";
     }
 
@@ -460,7 +460,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$allElementsTrue", ExpressionAllElementsTrue::parse);
-    const char *ExpressionAllElementsTrue::getOpName() const {
+    const char* ExpressionAllElementsTrue::getOpName() const {
         return "$allElementsTrue";
     }
 
@@ -535,7 +535,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$and", ExpressionAnd::parse);
-    const char *ExpressionAnd::getOpName() const {
+    const char* ExpressionAnd::getOpName() const {
         return "$and";
     }
 
@@ -556,7 +556,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$anyElementTrue", ExpressionAnyElementTrue::parse);
-    const char *ExpressionAnyElementTrue::getOpName() const {
+    const char* ExpressionAnyElementTrue::getOpName() const {
         return "$anyElementTrue";
     }
 
@@ -685,7 +685,7 @@ namespace {
         return Value(returnValue);
     }
 
-    const char *ExpressionCompare::getOpName() const {
+    const char* ExpressionCompare::getOpName() const {
         return cmpLookup[cmpOp].name;
     }
 
@@ -711,7 +711,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$concat", ExpressionConcat::parse);
-    const char *ExpressionConcat::getOpName() const {
+    const char* ExpressionConcat::getOpName() const {
         return "$concat";
     }
 
@@ -760,7 +760,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$cond", ExpressionCond::parse);
-    const char *ExpressionCond::getOpName() const {
+    const char* ExpressionCond::getOpName() const {
         return "$cond";
     }
 
@@ -800,7 +800,7 @@ namespace {
 
     REGISTER_EXPRESSION("$const", ExpressionConstant::parse);
     REGISTER_EXPRESSION("$literal", ExpressionConstant::parse); // alias
-    const char *ExpressionConstant::getOpName() const {
+    const char* ExpressionConstant::getOpName() const {
         return "$const";
     }
 
@@ -999,7 +999,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$dayOfMonth", ExpressionDayOfMonth::parse);
-    const char *ExpressionDayOfMonth::getOpName() const {
+    const char* ExpressionDayOfMonth::getOpName() const {
         return "$dayOfMonth";
     }
 
@@ -1011,7 +1011,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$dayOfWeek", ExpressionDayOfWeek::parse);
-    const char *ExpressionDayOfWeek::getOpName() const {
+    const char* ExpressionDayOfWeek::getOpName() const {
         return "$dayOfWeek";
     }
 
@@ -1023,7 +1023,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$dayOfYear", ExpressionDayOfYear::parse);
-    const char *ExpressionDayOfYear::getOpName() const {
+    const char* ExpressionDayOfYear::getOpName() const {
         return "$dayOfYear";
     }
 
@@ -1053,7 +1053,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$divide", ExpressionDivide::parse);
-    const char *ExpressionDivide::getOpName() const {
+    const char* ExpressionDivide::getOpName() const {
         return "$divide";
     }
 
@@ -1213,7 +1213,7 @@ namespace {
                     result.push_back(doc.freezeToValue());
                 }
 
-                out.addField(field.first, Value::consume(result));
+                out.addField(field.first, Value(std::move(result)));
             }
             else {
                 verify( false );
@@ -1421,7 +1421,7 @@ namespace {
                 result.push_back(nested);
         }
 
-        return Value::consume(result);
+        return Value(std::move(result));
     }
     Value ExpressionFieldPath::evaluatePath(size_t index, const Document& input) const {
         // Note this function is very hot so it is important that is is well optimized.
@@ -1681,7 +1681,7 @@ namespace {
             output.push_back(toInsert);
         }
 
-        return Value::consume(output);
+        return Value(std::move(output));
     }
 
     void ExpressionMap::addDependencies(DepsTracker* deps, vector<string>* path) const {
@@ -1733,7 +1733,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$millisecond", ExpressionMillisecond::parse);
-    const char *ExpressionMillisecond::getOpName() const {
+    const char* ExpressionMillisecond::getOpName() const {
         return "$millisecond";
     }
 
@@ -1745,7 +1745,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$minute", ExpressionMinute::parse);
-    const char *ExpressionMinute::getOpName() const {
+    const char* ExpressionMinute::getOpName() const {
         return "$minute";
     }
 
@@ -1798,7 +1798,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$mod", ExpressionMod::parse);
-    const char *ExpressionMod::getOpName() const {
+    const char* ExpressionMod::getOpName() const {
         return "$mod";
     }
 
@@ -1810,7 +1810,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$month", ExpressionMonth::parse);
-    const char *ExpressionMonth::getOpName() const {
+    const char* ExpressionMonth::getOpName() const {
         return "$month";
     }
 
@@ -1857,7 +1857,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$multiply", ExpressionMultiply::parse);
-    const char *ExpressionMultiply::getOpName() const {
+    const char* ExpressionMultiply::getOpName() const {
         return "$multiply";
     }
 
@@ -1869,7 +1869,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$hour", ExpressionHour::parse);
-    const char *ExpressionHour::getOpName() const {
+    const char* ExpressionHour::getOpName() const {
         return "$hour";
     }
 
@@ -1885,7 +1885,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$ifNull", ExpressionIfNull::parse);
-    const char *ExpressionIfNull::getOpName() const {
+    const char* ExpressionIfNull::getOpName() const {
         return "$ifNull";
     }
 
@@ -1998,7 +1998,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$not", ExpressionNot::parse);
-    const char *ExpressionNot::getOpName() const {
+    const char* ExpressionNot::getOpName() const {
         return "$not";
     }
 
@@ -2069,7 +2069,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$or", ExpressionOr::parse);
-    const char *ExpressionOr::getOpName() const {
+    const char* ExpressionOr::getOpName() const {
         return "$or";
     }
 
@@ -2081,7 +2081,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$second", ExpressionSecond::parse);
-    const char *ExpressionSecond::getOpName() const {
+    const char* ExpressionSecond::getOpName() const {
         return "$second";
     }
 
@@ -2120,11 +2120,11 @@ namespace {
                 returnVec.push_back(*it);
             }
         }
-        return Value::consume(returnVec);
+        return Value(std::move(returnVec));
     }
 
     REGISTER_EXPRESSION("$setDifference", ExpressionSetDifference::parse);
-    const char *ExpressionSetDifference::getOpName() const {
+    const char* ExpressionSetDifference::getOpName() const {
         return "$setDifference";
     }
 
@@ -2161,7 +2161,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$setEquals", ExpressionSetEquals::parse);
-    const char *ExpressionSetEquals::getOpName() const {
+    const char* ExpressionSetEquals::getOpName() const {
         return "$setEquals";
     }
 
@@ -2206,13 +2206,12 @@ namespace {
                 break;
             }
         }
-        vector<Value> result = vector<Value>(currentIntersection.begin(),
-                                             currentIntersection.end());
-        return Value::consume(result);
+        return Value(vector<Value>(currentIntersection.begin(),
+                                   currentIntersection.end()));
     }
 
     REGISTER_EXPRESSION("$setIntersection", ExpressionSetIntersection::parse);
-    const char *ExpressionSetIntersection::getOpName() const {
+    const char* ExpressionSetIntersection::getOpName() const {
         return "$setIntersection";
     }
 
@@ -2295,7 +2294,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$setIsSubset", ExpressionSetIsSubset::parse);
-    const char *ExpressionSetIsSubset::getOpName() const {
+    const char* ExpressionSetIsSubset::getOpName() const {
         return "$setIsSubset";
     }
 
@@ -2315,13 +2314,24 @@ namespace {
 
             unionedSet.insert(newEntries.getArray().begin(), newEntries.getArray().end());
         }
-        vector<Value> result = vector<Value>(unionedSet.begin(), unionedSet.end());
-        return Value::consume(result);
+        return Value(vector<Value>(unionedSet.begin(), unionedSet.end()));
     }
 
     REGISTER_EXPRESSION("$setUnion", ExpressionSetUnion::parse);
-    const char *ExpressionSetUnion::getOpName() const {
+    const char* ExpressionSetUnion::getOpName() const {
         return "$setUnion";
+    }
+
+    /* ----------------------- ExpressionIsArray ---------------------------- */
+
+    Value ExpressionIsArray::evaluateInternal(Variables* vars) const {
+        Value argument = vpOperand[0]->evaluateInternal(vars);
+        return Value(argument.getType() == Array);
+    }
+
+    REGISTER_EXPRESSION("$isArray", ExpressionIsArray::parse);
+    const char* ExpressionIsArray::getOpName() const {
+        return "$isArray";
     }
 
     /* ----------------------- ExpressionSize ---------------------------- */
@@ -2336,7 +2346,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$size", ExpressionSize::parse);
-    const char *ExpressionSize::getOpName() const {
+    const char* ExpressionSize::getOpName() const {
         return "$size";
     }
 
@@ -2360,7 +2370,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$strcasecmp", ExpressionStrcasecmp::parse);
-    const char *ExpressionStrcasecmp::getOpName() const {
+    const char* ExpressionStrcasecmp::getOpName() const {
         return "$strcasecmp";
     }
 
@@ -2395,7 +2405,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$substr", ExpressionSubstr::parse);
-    const char *ExpressionSubstr::getOpName() const {
+    const char* ExpressionSubstr::getOpName() const {
         return "$substr";
     }
 
@@ -2449,7 +2459,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$subtract", ExpressionSubtract::parse);
-    const char *ExpressionSubtract::getOpName() const {
+    const char* ExpressionSubtract::getOpName() const {
         return "$subtract";
     }
 
@@ -2463,7 +2473,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$toLower", ExpressionToLower::parse);
-    const char *ExpressionToLower::getOpName() const {
+    const char* ExpressionToLower::getOpName() const {
         return "$toLower";
     }
 
@@ -2477,7 +2487,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$toUpper", ExpressionToUpper::parse);
-    const char *ExpressionToUpper::getOpName() const {
+    const char* ExpressionToUpper::getOpName() const {
         return "$toUpper";
     }
 
@@ -2509,7 +2519,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$week", ExpressionWeek::parse);
-    const char *ExpressionWeek::getOpName() const {
+    const char* ExpressionWeek::getOpName() const {
         return "$week";
     }
 
@@ -2521,7 +2531,7 @@ namespace {
     }
 
     REGISTER_EXPRESSION("$year", ExpressionYear::parse);
-    const char *ExpressionYear::getOpName() const {
+    const char* ExpressionYear::getOpName() const {
         return "$year";
     }
 }
