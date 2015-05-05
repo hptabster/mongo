@@ -30,42 +30,25 @@ var blacklist = [
     'compact_simultaneous_padding_bytes.js', // compact can only be run against a mongod
     'convert_to_capped_collection.js', // convertToCapped can't be run on mongos processes
     'convert_to_capped_collection_index.js', // convertToCapped can't be run on mongos processes
-    'findAndModify_remove.js', // our findAndModify queries lack shard keys
-    'findAndModify_update.js', // our findAndModify queries lack shard keys
-    'findAndModify_update_collscan.js', // our findAndModify queries lack shard keys
-    'findAndModify_update_grow.js', // our findAndModify queries lack shard keys
-    'findAndModify_upsert.js', // our findAndModify queries lack shard keys
-    'findAndModify_upsert_collscan.js', // our findAndModify queries lack shard keys
     'group.js', // the group command cannot be issued against a sharded cluster
     'group_cond.js', // the group command cannot be issued against a sharded cluster
     'indexed_insert_eval.js', // eval doesn't work with sharded collections
     'indexed_insert_eval_nolock.js', // eval doesn't work with sharded collections
-    'remove_single_document.js', // our .remove(query, {justOne: true}) calls lack shard keys
+    'plan_cache_drop_database.js', // doesn't work with sharded collections
+    'remove_single_document.js', // remove justOne doesn't work with sharded collections
     'remove_single_document_eval.js', // eval doesn't work with sharded collections
     'remove_single_document_eval_nolock.js', // eval doesn't work with sharded collections
+    'rename_capped_collection_dbname_droptarget.js', // renameCollection cannot be used if sharded
+    'rename_capped_collection_dbname_chain.js', // renameCollection cannot be used if sharded
+    'rename_collection_dbname_chain.js', // renameCollection cannot be used if sharded
+    'rename_collection_dbname_droptarget.js', // renameCollection cannot be used if sharded
     'update_simple_eval.js', // eval doesn't work with sharded collections
     'update_simple_eval_nolock.js', // eval doesn't work with sharded collections
     'update_upsert_multi.js', // our update queries lack shard keys
+    'upsert_where.js', // upsert command specified doesn't work with sharded collections
     'yield_and_hashed.js', // stagedebug can only be run against a standalone mongod
     'yield_and_sorted.js', // stagedebug can only be run against a standalone mongod
 
-    // New failing tests
-    // All explain tests fail
-    'explain.js',
-    'explain_aggregate.js',
-    'explain_count.js',
-    'explain_find.js',
-    'explain_group.js',
-    'explain_remove.js',
-    'explain_update.js',
-    // Other failing tests
-    'rename_capped_collection_dbname_droptarget.js',
-    'rename_capped_collection_dbname_chain.js',
-    'rename_collection_dbname_chain.js',
-    'rename_collection_dbname_droptarget.js',
-    'update_upsert_multi_noindex.js',
-    'plan_cache_drop_database.js',
-    'upsert_where.js',
 ].map(function(file) { return dir + '/' + file; });
 
 runWorkloadsSerially(ls(dir).filter(function(file) {
