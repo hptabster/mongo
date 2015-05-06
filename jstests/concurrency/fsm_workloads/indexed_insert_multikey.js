@@ -13,8 +13,7 @@ load('jstests/concurrency/fsm_workloads/indexed_insert_base.js'); // for $config
 var $config = extendWorkload($config, function($config, $super) {
 
     $config.data.indexedField = 'indexed_insert_multikey';
-    $config.data.shardKey = {};
-    $config.data.shardKey[$config.data.indexedField] = [0,1,2,3,4,5,6,7,8,9];
+    delete $config.data.shardKey;
 
     $config.states.init = function init(db, collName) {
         $super.states.init.apply(this, arguments);
