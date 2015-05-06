@@ -27,6 +27,8 @@ var $config = extendWorkload($config, function($config, $super) {
         return { counter: 1, rand: 1 };
     };
 
+    $config.data.shardKey = $config.data.getIndexSpec();
+
     $config.data.opName = 'updated';
 
     var states = (function() {
