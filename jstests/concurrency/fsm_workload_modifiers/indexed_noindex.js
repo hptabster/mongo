@@ -16,5 +16,7 @@ function indexedNoindex($config, $super) {
         this.indexExists = false;
     };
 
+    delete $config.data.shardKey;
+
     return $config;
 }

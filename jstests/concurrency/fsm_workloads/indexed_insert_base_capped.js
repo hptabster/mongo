@@ -10,3 +10,6 @@ load('jstests/concurrency/fsm_workloads/indexed_insert_base.js'); // for $config
 load('jstests/concurrency/fsm_workload_modifiers/make_capped.js'); // for makeCapped
 
 var $config = extendWorkload($config, makeCapped);
+
+delete $config.data.shardKey;
+

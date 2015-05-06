@@ -10,3 +10,5 @@ load('jstests/concurrency/fsm_workloads/indexed_insert_large.js'); // for $confi
 load('jstests/concurrency/fsm_workload_modifiers/indexed_noindex.js'); // for indexedNoindex
 
 var $config = extendWorkload($config, indexedNoindex);
+
+delete $config.data.shardKey;
