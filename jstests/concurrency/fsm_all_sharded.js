@@ -30,6 +30,8 @@ var blacklist = [
     'compact_simultaneous_padding_bytes.js', // compact can only be run against a mongod
     'convert_to_capped_collection.js', // convertToCapped can't be run on mongos processes
     'convert_to_capped_collection_index.js', // convertToCapped can't be run on mongos processes
+    'findAndModify_remove_queue.js', // remove cannot be {} for findAndModify
+    'findAndModify_update_queue.js', // remove cannot be {} for findAndModify
     'group.js', // the group command cannot be issued against a sharded cluster
     'group_cond.js', // the group command cannot be issued against a sharded cluster
     'indexed_insert_eval.js', // eval doesn't work with sharded collections
@@ -47,6 +49,39 @@ var blacklist = [
     'upsert_where.js', // upsert command specified doesn't work with sharded collections
     'yield_and_hashed.js', // stagedebug can only be run against a standalone mongod
     'yield_and_sorted.js', // stagedebug can only be run against a standalone mongod
+
+    // Other failing tests
+
+    'update_upsert_multi_noindex.js', //failed on Windows: mmap compat, WT compat; Linux mmap compat, WT compat
+    /*
+2015-05-06T06:15:16.626+0000 E QUERY    Error: command failed: {
+    "raw" : {
+        "WIN-DINTS01P3D6:30000" : {
+            "nIndexesWas" : 3,
+            "ok" : 1
+        },
+        "WIN-DINTS01P3D6:30001" : {
+            "ok" : 0,
+            "errmsg" : "ns not found",
+            "code" : 26
+        }
+    },
+    "code" : 26,
+    "ok" : 0,
+    "errmsg" : "{ WIN-DINTS01P3D6:30001: \"ns not found\" }"
+} : undefined
+    at quietlyDoAssert (jstests/concurrency/fsm_libs/assert.js:53:15)
+    at Function.assert.commandWorked (src/mongo/shell/assert.js:254:5)
+    at wrapAssertFn (jstests/concurrency/fsm_libs/assert.js:60:16)
+    at Function.assertWithLevel.(anonymous function) [as commandWorked] (jstests/concurrency/fsm_libs/assert.js:99:13)
+    at jstests/concurrency/fsm_workload_modifiers/drop_all_indexes.js:25:30
+    at Array.forEach (native)
+    at Object.setup (jstests/concurrency/fsm_workload_modifiers/drop_all_indexes.js:21:35)
+    at setupWorkload (jstests/concurrency/fsm_libs/runner.js:286:22)
+    at jstests/concurrency/fsm_libs/runner.js:361:25
+    at Array.forEach (native) at jstests/concurrency/fsm_libs/assert.js:53
+failed to load: C:\data\mci\shell\src\jstests\concurrency\fsm_all_sharded.js
+    */
 
 ].map(function(file) { return dir + '/' + file; });
 

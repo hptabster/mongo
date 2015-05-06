@@ -117,7 +117,8 @@ var $config = (function() {
         states: states,
         transitions: transitions,
         data: {
-            numDocs: 10
+            numDocs: 10,
+            shardKey: { arr: 1 }
         },
         setup: setup
     };
