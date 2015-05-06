@@ -14,7 +14,7 @@ var $config = extendWorkload($config, function($config, $super) {
 
     $config.data.indexedField = 'indexed_insert_multikey';
     $config.data.shardKey = {};
-    $config.data.shardKey[$config.data.indexedField] = 1;
+    $config.data.shardKey[$config.data.indexedField] = [0,1,2,3,4,5,6,7,8,9];
 
     $config.states.init = function init(db, collName) {
         $super.states.init.apply(this, arguments);
