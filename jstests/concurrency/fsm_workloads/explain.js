@@ -56,7 +56,7 @@ var $config = (function() {
             assertAlways.commandWorked(res);
             assertAlways(res.queryPlanner, tojson(res));
             assertAlways(res.queryPlanner.winningPlan, tojson(res));
-            // In sharding case this will not return EOF 
+            // In sharding case this will not return EOF
             if (!isMongos(db)) {
                 assertAlways.eq(res.queryPlanner.winningPlan.stage, 'EOF',
                             tojson(res));
