@@ -66,11 +66,11 @@
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/util/exit.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/log.h"
 #include "mongo/util/stringutils.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -369,7 +369,11 @@ namespace {
         _distLockManager = stdx::make_unique<LegacyDistLockManager>(_configServerConnectionString);
         _distLockManager->startUp();
 
-        _consistentFromLastCheck.store(true);
+        {
+            boost::lock_guard<boost::mutex> lk(_mutex);
+            _inShutdown = false;
+            _consistentFromLastCheck = true;
+        }
 
         return Status::OK();
     }
@@ -387,6 +391,14 @@ namespace {
     }
 
     void CatalogManagerLegacy::shutDown() {
+        LOG(1) << "CatalogManagerLegacy::shutDown() called.";
+        {
+            boost::lock_guard<boost::mutex> lk(_mutex);
+            _inShutdown = true;
+            _consistencyCheckerCV.notify_one();
+        }
+        _consistencyCheckerThread.join();
+
         invariant(_distLockManager);
         _distLockManager->shutDown();
     }
@@ -488,11 +500,10 @@ namespace {
         logChange(NULL, "shardCollection.start", ns, collectionDetail.obj());
 
         ChunkManagerPtr manager(new ChunkManager(ns, fieldsAndOrder, unique));
-        manager->createFirstChunks(_configServerConnectionString.toString(),
-                                   dbPrimary,
+        manager->createFirstChunks(dbPrimary,
                                    initPoints,
                                    initShards);
-        manager->loadExistingRanges(_configServerConnectionString.toString(), NULL);
+        manager->loadExistingRanges(nullptr);
 
         CollectionInfo collInfo;
         collInfo.useChunkManager(manager);
@@ -1140,15 +1151,26 @@ namespace {
 
     Status CatalogManagerLegacy::getChunksForShard(const string& shardName,
                                                    vector<ChunkType>* chunks) {
+        return getChunks(BSON(ChunkType::shard(shardName)), chunks);
+    }
+
+    Status CatalogManagerLegacy::getChunks(const Query& query,
+                                           vector<ChunkType>* chunks) {
         ScopedDbConnection conn(_configServerConnectionString, 30.0);
-        std::unique_ptr<DBClientCursor> cursor(
-            _safeCursor(conn->query(ChunkType::ConfigNS, BSON(ChunkType::shard(shardName)))));
+        std::unique_ptr<DBClientCursor> cursor(conn->query(ChunkType::ConfigNS,
+                                                           query));
+
+        if (!cursor.get()) {
+            conn.done();
+            return Status(ErrorCodes::HostUnreachable, "unable to open chunk cursor");
+        }
 
         while (cursor->more()) {
             BSONObj chunkObj = cursor->nextSafe();
 
             StatusWith<ChunkType> chunkRes = ChunkType::fromBSON(chunkObj);
             if (!chunkRes.isOK()) {
+                conn.done();
                 return Status(ErrorCodes::FailedToParse,
                               str::stream() << "Failed to parse chunk BSONObj: "
                                             << chunkRes.getStatus().reason());
@@ -1449,15 +1471,22 @@ namespace {
     }
 
     void CatalogManagerLegacy::_consistencyChecker() {
-        while (!inShutdown()) {
-            _consistentFromLastCheck.store(_checkConfigServersConsistent());
+        boost::unique_lock<boost::mutex> lk(_mutex);
+        while (!_inShutdown) {
+            lk.unlock();
+            const bool isConsistent = _checkConfigServersConsistent();
 
-            sleepsecs(60);
+            lk.lock();
+            _consistentFromLastCheck = isConsistent;
+            if (_inShutdown) break;
+            _consistencyCheckerCV.timed_wait(lk, Seconds(60));
         }
+        LOG(1) << "Consistency checker thread shutting down";
     }
 
     bool CatalogManagerLegacy::_isConsistentFromLastCheck() {
-        return _consistentFromLastCheck.loadRelaxed();
+        boost::unique_lock<boost::mutex> lk(_mutex);
+        return _consistentFromLastCheck;
     }
 
 } // namespace mongo

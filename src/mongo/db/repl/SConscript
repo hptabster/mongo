@@ -23,22 +23,28 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base/base',
-        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/bson/bson',
         '$BUILD_DIR/mongo/client/clientdriver',
-        '$BUILD_DIR/mongo/coredb',
+        '$BUILD_DIR/mongo/db/coredb',
         '$BUILD_DIR/mongo/db/common',
         '$BUILD_DIR/mongo/db/query/getmore_request',
         '$BUILD_DIR/mongo/db/query/lite_parsed_query',
         ])
 
-env.Library('replication_executor',
-            [
-                'replication_executor.cpp',
-                'scatter_gather_algorithm.cpp',
-                'scatter_gather_runner.cpp',
-            ],
-            LIBDEPS=['$BUILD_DIR/mongo/util/foundation',
-                     '$BUILD_DIR/mongo/util/net/hostandport'])
+env.Library(
+    target='replication_executor',
+    source=[
+        'replication_executor.cpp',
+        'scatter_gather_algorithm.cpp',
+        'scatter_gather_runner.cpp',
+    ],
+    LIBDEPS=[
+        'database_task',
+        'task_runner',
+        '$BUILD_DIR/mongo/util/foundation',
+        '$BUILD_DIR/mongo/util/net/hostandport',
+    ],
+)
 
 env.Library(
     target='replication_executor_test_fixture',
@@ -261,7 +267,8 @@ env.Library('replica_set_messages',
                 'last_vote.cpp',
             ],
             LIBDEPS=[
-                '$BUILD_DIR/mongo/bson',
+                '$BUILD_DIR/mongo/bson/bson',
+                '$BUILD_DIR/mongo/bson/util/bson_extract',
                 '$BUILD_DIR/mongo/util/net/hostandport',
                 '$BUILD_DIR/mongo/db/common',
             ])
@@ -272,16 +279,19 @@ env.CppUnitTest('replica_set_config_test',
                     'replica_set_config_test.cpp',
                     'replica_set_tag_test.cpp',
                 ],
-                LIBDEPS=['replica_set_messages'])
+                LIBDEPS=[
+                    '$BUILD_DIR/mongo/bson/mutable/mutable_bson',
+                    'replica_set_messages',
+                ])
 
 env.CppUnitTest('isself_test',
                 [
                     'isself_test.cpp',
                 ],
                 LIBDEPS=[
-                    '$BUILD_DIR/mongo/serveronly',
+                    '$BUILD_DIR/mongo/db/serveronly',
                     '$BUILD_DIR/mongo/coreserver',
-                    '$BUILD_DIR/mongo/coredb',
+                    '$BUILD_DIR/mongo/db/coredb',
                     "$BUILD_DIR/mongo/util/ntservice_mock",
                 ],
                 NO_CRUTCH = True)
@@ -391,5 +401,55 @@ env.CppUnitTest(
     LIBDEPS=[
         'database_cloner',
         'base_cloner_test_fixture',
+    ],
+)
+
+env.Library(
+    target='task_runner',
+    source=[
+        'task_runner.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/util/concurrency/thread_pool',
+    ],
+)
+
+env.Library(
+    target='task_runner_test_fixture',
+    source=[
+        'task_runner_test_fixture.cpp',
+    ],
+    LIBDEPS=[
+        'task_runner',
+        '$BUILD_DIR/mongo/util/decorable',
+    ],
+)
+
+env.CppUnitTest(
+    target='task_runner_test',
+    source='task_runner_test.cpp',
+    LIBDEPS=[
+        'task_runner_test_fixture',
+    ],
+)
+
+env.Library(
+    target='database_task',
+    source=[
+        'database_task.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
+        '$BUILD_DIR/mongo/db/concurrency/write_conflict_exception',
+    ],
+)
+
+env.CppUnitTest(
+    target='database_task_test',
+    source='database_task_test.cpp',
+    LIBDEPS=[
+        'database_task',
+        'replmocks',
+        'task_runner_test_fixture',
     ],
 )

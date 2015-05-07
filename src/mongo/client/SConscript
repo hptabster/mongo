@@ -27,6 +27,7 @@ env.Library('clientdriver', [
             "$BUILD_DIR/mongo/db/dbmessage.cpp"
             ],
             LIBDEPS=['connectionstring',
+                     '$BUILD_DIR/mongo/bson/util/bson_extract',
                      '$BUILD_DIR/mongo/db/auth/authcommon',
                      '$BUILD_DIR/mongo/crypto/scramauth',
                      '$BUILD_DIR/mongo/rpc/command_status',
@@ -66,8 +67,9 @@ env.CppUnitTest(
         "scoped_db_conn_test.cpp",
     ],
     LIBDEPS=[
-        "$BUILD_DIR/mongo/coredb",
+        "$BUILD_DIR/mongo/db/coredb",
         "$BUILD_DIR/mongo/coreserver",
+        "$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init",
         "$BUILD_DIR/mongo/util/net/message_server_port",
         "$BUILD_DIR/mongo/mongocommon",
         "$BUILD_DIR/mongo/s/coreshard",
@@ -75,4 +77,13 @@ env.CppUnitTest(
         "$BUILD_DIR/mongo/util/ntservice_mock",
     ],
     NO_CRUTCH=True,
+)
+
+env.Library(
+    target="parallel",
+    source=[
+        'parallel.cpp',
+    ],
+    LIBDEPS=[
+    ],
 )

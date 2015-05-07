@@ -102,7 +102,6 @@ env.Library(
         "touch_pages.cpp",
         'assert_util.cpp',
         'concurrency/mutex.cpp',
-        'concurrency/thread_pool.cpp',
         'exception_filter_win32.cpp',
         'file.cpp',
         'log.cpp',
@@ -119,6 +118,7 @@ env.Library(
         '$BUILD_DIR/mongo/util/stacktrace',
         '$BUILD_DIR/mongo/util/concurrency/synchronization',
         '$BUILD_DIR/mongo/util/concurrency/thread_name',
+        '$BUILD_DIR/mongo/util/concurrency/thread_pool',
         '$BUILD_DIR/mongo/util/debugger',
         '$BUILD_DIR/third_party/shim_allocator',
         '$BUILD_DIR/third_party/shim_boost',
@@ -172,7 +172,7 @@ env.Library(
         "processinfo_${TARGET_OS}.cpp",
     ],
     LIBDEPS=[
-        "$BUILD_DIR/mongo/bson",
+        "$BUILD_DIR/mongo/bson/bson",
         "foundation",
     ],
 )
@@ -195,7 +195,7 @@ env.Library(
         "fail_point_service.cpp",
     ],
     LIBDEPS=[
-        "$BUILD_DIR/mongo/bson",
+        "$BUILD_DIR/mongo/bson/bson",
         "foundation",
     ],
 )
@@ -306,6 +306,7 @@ env.Library(
     ],
     LIBDEPS=[
         'foundation',
+        'file_allocator',
     ],
 )
 
@@ -327,7 +328,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base/base',
-        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/bson/bson',
         '$BUILD_DIR/mongo/version',
         'stringutils',
     ],
@@ -363,6 +364,7 @@ env.Library(
     target="signal_handlers",
     source=[
         "signal_handlers.cpp",
+        "signal_win32.cpp",
     ],
     LIBDEPS=[
         "foundation",
@@ -377,5 +379,88 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         # None since unowned_ptr is header-only.
+    ],
+)
+
+env.Library(
+    target='safe_num',
+    source=[
+        'safe_num.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/bson/bson',
+    ],
+)
+
+env.CppUnitTest(
+    target='safe_num_test',
+    source=[
+        'safe_num_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/bson/bson',
+        'safe_num',
+    ],
+)
+
+env.CppUnitTest(
+    target='string_map_test',
+    source=[
+        'string_map_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/bson/bson',
+        'foundation',
+    ],
+)
+
+compressEnv = env.Clone()
+compressEnv.InjectThirdPartyIncludePaths(libraries=['snappy'])
+compressEnv
+compressEnv.Library(
+    target='compress',
+    source=[
+        'compress.cpp',
+    ],
+    LIBDEPS=[
+        'paths',
+    ],
+)
+
+env.Library(
+    target='logfile',
+    source=[
+        'logfile.cpp',
+    ],
+    LIBDEPS=[
+        'paths',
+    ],
+)
+
+env.Library(
+    target='file_allocator',
+    source=[
+        'file_allocator.cpp',
+    ],
+    LIBDEPS=[
+        'paths',
+    ],
+)
+
+env.Library(
+    target='paths',
+    source=[
+        'paths.cpp',
+    ],
+    LIBDEPS=[
+    ],
+)
+
+env.Library(
+    target='password',
+    source=[
+        'password.cpp',
+    ],
+    LIBDEPS=[
     ],
 )

@@ -28,13 +28,13 @@
 
 #pragma once
 
+#include <boost/thread/condition.hpp>
 #include <boost/thread/thread.hpp>
 #include <string>
 #include <vector>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/client/dbclientinterface.h"
-#include "mongo/platform/atomic_word.h"
 #include "mongo/s/catalog/catalog_manager.h"
 
 namespace mongo {
@@ -99,6 +99,8 @@ namespace mongo {
 
         virtual Status getChunksForShard(const std::string& shardName,
                                          std::vector<ChunkType>* chunks);
+
+        virtual Status getChunks(const Query& query, std::vector<ChunkType>* chunks);
 
         virtual Status getAllShards(std::vector<ShardType>* shards);
 
@@ -167,13 +169,22 @@ namespace mongo {
         // Distribted lock manager singleton.
         std::unique_ptr<DistLockManager> _distLockManager;
 
+        // protects _inShutdown, _consistentFromLastCheck; used by _consistencyCheckerCV
+        boost::mutex _mutex;
+
+        // True if CatalogManagerLegacy::shutDown has been called. False, otherwise.
+        bool _inShutdown = false;
+
         // used by consistency checker thread to check if config
         // servers are consistent
-        AtomicWord<bool> _consistentFromLastCheck;
+        bool _consistentFromLastCheck = false;
 
         // Thread that runs dbHash on config servers for checking data consistency.
         boost::thread _consistencyCheckerThread;
 
+        // condition variable used by the consistency checker thread to wait
+        // for <= 60s, on every iteration, until shutDown is called
+        boost::condition _consistencyCheckerCV;
     };
 
 } // namespace mongo

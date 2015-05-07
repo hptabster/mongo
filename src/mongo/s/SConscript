@@ -21,7 +21,7 @@ env.Library('base', ['mongo_version_range.cpp',
                      'type_mongos.cpp',
                      'type_tags.cpp'],
             LIBDEPS=['$BUILD_DIR/mongo/base/base',
-                     '$BUILD_DIR/mongo/bson'])
+                     '$BUILD_DIR/mongo/bson/bson'])
 
 env.CppUnitTest('chunk_version_test', 'chunk_version_test.cpp',
                 LIBDEPS=['base',
@@ -29,7 +29,7 @@ env.CppUnitTest('chunk_version_test', 'chunk_version_test.cpp',
 
 env.CppUnitTest('mongo_version_range_test', 'mongo_version_range_test.cpp', 
                 LIBDEPS=['base',
-                         '$BUILD_DIR/mongo/bson',
+                         '$BUILD_DIR/mongo/bson/bson',
                          '$BUILD_DIR/mongo/db/common'])
 
 env.CppUnitTest('type_config_version_test', 'type_config_version_test.cpp',
@@ -65,7 +65,7 @@ env.Library(
     LIBDEPS=[
         'base',
         'catalog/catalog_types',
-        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/bson/bson',
         '$BUILD_DIR/mongo/base/base',
         '$BUILD_DIR/mongo/client/clientdriver',
         '$BUILD_DIR/mongo/db/range_arithmetic',
@@ -82,9 +82,10 @@ env.CppUnitTest(
     LIBDEPS=[
         'catalog/legacy/catalog_manager_legacy',
         'metadata',
-        '$BUILD_DIR/mongo/coredb',
+        '$BUILD_DIR/mongo/db/coredb',
         '$BUILD_DIR/mongo/coreserver',
         '$BUILD_DIR/mongo/s/coreshard',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/dbtests/mocklib',
         '$BUILD_DIR/mongo/mongocommon',
         '$BUILD_DIR/mongo/s/mongoscore',
@@ -114,7 +115,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base/base',
-        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/bson/bson',
     ],
 )
 
@@ -147,7 +148,7 @@ env.Library(
         'write_ops/batch_write_exec.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/bson/bson',
         '$BUILD_DIR/mongo/client/clientdriver',
         'batch_write_types',
         '$BUILD_DIR/mongo/util/concurrency/synchronization'
@@ -176,7 +177,7 @@ env.Library(
         'write_ops/batch_downconvert.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/bson/bson',
         '$BUILD_DIR/mongo/db/common', # for Message
         '$BUILD_DIR/mongo/db/lasterror',
         'cluster_ops',
@@ -212,7 +213,7 @@ env.Library(
         'dbclient_shard_resolver.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/bson',
+        '$BUILD_DIR/mongo/bson/bson',
         '$BUILD_DIR/mongo/s/client/sharding_client',
         'cluster_ops',
         'cluster_write_op_conversion',
@@ -225,9 +226,10 @@ env.CppUnitTest(
         'chunk_manager_targeter_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/coredb',
+        '$BUILD_DIR/mongo/db/coredb',
         '$BUILD_DIR/mongo/coreserver',
         '$BUILD_DIR/mongo/s/coreshard',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/mongocommon',
         '$BUILD_DIR/mongo/s/mongoscore',
     ]
@@ -269,9 +271,12 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/authmongos',
+        '$BUILD_DIR/mongo/client/parallel',
         '$BUILD_DIR/mongo/db/fts/ftsmongos',
+        '$BUILD_DIR/mongo/db/stats/counters',
         '$BUILD_DIR/mongo/db/query/explain_common',
         '$BUILD_DIR/mongo/db/query/lite_parsed_query',
+        '$BUILD_DIR/mongo/util/concurrency/task',
         'cluster_ops',
         'cluster_write_op_conversion',
     ]
@@ -284,8 +289,9 @@ env.CppUnitTest(
         'shard_key_pattern_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/coredb',
+        '$BUILD_DIR/mongo/db/coredb',
         '$BUILD_DIR/mongo/coreserver',
+        "$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init",
         '$BUILD_DIR/mongo/mongocommon',
         'coreshard',
         'mongoscore',
@@ -298,12 +304,26 @@ env.CppUnitTest(
         'config_server_tests.cpp',
     ],
     LIBDEPS=[
-        "$BUILD_DIR/mongo/coredb",
+        "$BUILD_DIR/mongo/db/coredb",
         "$BUILD_DIR/mongo/coreserver",
+        "$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init",
         "$BUILD_DIR/mongo/util/net/message_server_port",
         "$BUILD_DIR/mongo/dbtests/mocklib",
         "$BUILD_DIR/mongo/mongocommon",
         "coreshard",
         "mongoscore",
+    ],
+)
+
+env.Library(
+    target='serveronly',
+    source=[
+        "d_merge.cpp",
+        "d_migrate.cpp",
+        "d_split.cpp",
+        "d_state.cpp",
+        "distlock_test.cpp",
+    ],
+    LIBDEPS=[
     ],
 )
