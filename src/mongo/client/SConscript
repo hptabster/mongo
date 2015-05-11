@@ -27,12 +27,37 @@ env.Library('clientdriver', [
             "$BUILD_DIR/mongo/db/dbmessage.cpp"
             ],
             LIBDEPS=['connectionstring',
+                     'cyrus_sasl_client_session',
                      '$BUILD_DIR/mongo/bson/util/bson_extract',
                      '$BUILD_DIR/mongo/db/auth/authcommon',
                      '$BUILD_DIR/mongo/crypto/scramauth',
                      '$BUILD_DIR/mongo/rpc/command_status',
-                     '$BUILD_DIR/mongo/util/net/network'
+                     '$BUILD_DIR/mongo/util/net/network',
             ])
+            
+env.Library(
+    target='connection_pool',
+    source=[
+        'connection_pool.cpp',
+    ],
+    LIBDEPS=[
+        'clientdriver',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
+    ]
+)
+
+env.Library(
+    target='remote_command_executor',
+    source=[
+        'remote_command_executor.cpp',
+        'remote_command_executor_impl.cpp',
+    ],
+    LIBDEPS=[
+        'connection_pool',
+        '$BUILD_DIR/mongo/db/query/getmore_request',
+        '$BUILD_DIR/mongo/db/query/lite_parsed_query',
+    ]
+)
 
 env.CppUnitTest("replica_set_monitor_test",
                 ["replica_set_monitor_test.cpp"],
@@ -54,11 +79,18 @@ if env['MONGO_BUILD_SASL_CLIENT']:
             'sasl_sspi.cpp',
         ],
         LIBDEPS=[
-            'clientdriver',
             '$BUILD_DIR/mongo/util/foundation',
             '$BUILD_DIR/mongo/util/signal_handlers_synchronous',
         ],
         SYSLIBDEPS=saslLibs,
+    )
+else:
+    # Create a dummy sasl client library so that other targets can unconditionally
+    # link to it, without needing to first test MONGO_BUILD_SASL_CLIENT.
+    env.Library(
+        target='cyrus_sasl_client_session',
+        source=[],
+        LIBDEPS=[]
     )
 
 env.CppUnitTest(
@@ -68,10 +100,8 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/db/coredb",
-        "$BUILD_DIR/mongo/coreserver",
         "$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init",
         "$BUILD_DIR/mongo/util/net/message_server_port",
-        "$BUILD_DIR/mongo/mongocommon",
         "$BUILD_DIR/mongo/s/coreshard",
         "$BUILD_DIR/mongo/s/mongoscore",
         "$BUILD_DIR/mongo/util/ntservice_mock",

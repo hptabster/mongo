@@ -29,13 +29,13 @@
 
 #pragma once
 
-#include <boost/scoped_ptr.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/thread.hpp>
 #include <boost/thread/condition_variable.hpp>
 #include <boost/thread/mutex.hpp>
 #include <vector>
 
+#include "mongo/client/remote_command_executor_impl.h"
 #include "mongo/db/repl/replication_executor.h"
 #include "mongo/stdx/list.h"
 
@@ -79,7 +79,7 @@ namespace repl {
         virtual Date_t now();
         virtual void startCommand(
                 const ReplicationExecutor::CallbackHandle& cbHandle,
-                const ReplicationExecutor::RemoteCommandRequest& request,
+                const RemoteCommandRequest& request,
                 const RemoteCommandCompletionFn& onFinish);
         virtual void cancelCommand(const ReplicationExecutor::CallbackHandle& cbHandle);
         OperationContext* createOperationContext() override;
@@ -87,14 +87,12 @@ namespace repl {
         std::string getNextCallbackWithGlobalLockThreadName();
 
     private:
-        class ConnectionPool;
-
         /**
          * Information describing an in-flight command.
          */
         struct CommandData {
             ReplicationExecutor::CallbackHandle cbHandle;
-            ReplicationExecutor::RemoteCommandRequest request;
+            RemoteCommandRequest request;
             RemoteCommandCompletionFn onFinish;
         };
         typedef stdx::list<CommandData> CommandDataList;
@@ -113,11 +111,6 @@ namespace repl {
         void _consumeNetworkRequests();
 
         /**
-         * Synchronously invokes the command described by "request".
-         */
-        ResponseStatus _runCommand(const ReplicationExecutor::RemoteCommandRequest& request);
-
-        /**
          * Notifies the network threads that there is work available.
          */
         void _signalWorkAvailable_inlock();
@@ -127,8 +120,8 @@ namespace repl {
          */
         void _startNewNetworkThread_inlock();
 
-        // Mutex guarding the state of the network interface, except for the pool pointed to by
-        // _connPool.
+        // Mutex guarding the state of this network interface, except for the remote command
+        // executor, which has its own concurrency control.
         boost::mutex _mutex;
 
         // Condition signaled to indicate that there is work in the _pending queue.
@@ -160,9 +153,8 @@ namespace repl {
         // Flag indicating when this interface is being shut down (because shutdown() has executed).
         bool _inShutdown;
 
-        // Pool of connections to remote nodes, used by the worker threads to execute network
-        // requests.
-        boost::scoped_ptr<ConnectionPool> _connPool;  // (R)
+        // Interface for executing remote commands
+        RemoteCommandExecutorImpl _commandExec;
 
         // Number of active network requests
         size_t _numActiveNetworkRequests;

@@ -41,6 +41,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/commands/fsync.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -211,6 +212,7 @@ namespace repl {
                 // For non-initial-sync, we convert updates to upserts
                 // to suppress errors when replaying oplog entries.
                 txn->setReplicatedWrites(false);
+                DisableDocumentValidation validationDisabler(txn);
 
                 Status status = applyOperation_inlock(txn, ctx.db(), op, convertUpdateToUpsert);
                 opsAppliedStats.increment();
@@ -295,7 +297,7 @@ namespace repl {
         SimpleMutex::scoped_lock fsynclk(filesLockedFsync);
 
         // stop all readers until we're done
-        Lock::ParallelBatchWriterMode pbwm;
+        Lock::ParallelBatchWriterMode pbwm(txn->lockState());
 
         ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
         if (replCoord->getMemberState().primary() &&
@@ -667,6 +669,7 @@ namespace {
 
         OperationContextImpl txn;
         txn.setReplicatedWrites(false);
+        DisableDocumentValidation validationDisabler(&txn);
 
         // allow us to get through the magic barrier
         txn.lockState()->setIsBatchWriter(true);
@@ -700,6 +703,7 @@ namespace {
 
         OperationContextImpl txn;
         txn.setReplicatedWrites(false);
+        DisableDocumentValidation validationDisabler(&txn);
 
         // allow us to get through the magic barrier
         txn.lockState()->setIsBatchWriter(true);

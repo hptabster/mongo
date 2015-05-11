@@ -142,53 +142,10 @@ env.Library('version',
                 '$BUILD_DIR/mongo/base/base'
             ])
 
-commonFiles = []
-
-extraCommonLibdeps = []
-
-if env['MONGO_BUILD_SASL_CLIENT']:
-    extraCommonLibdeps.append('client/cyrus_sasl_client_session')
-
-env.Library('mongocommon', commonFiles,
-            LIBDEPS=['bson/bson',
-                     'util/background_job',
-                     '$BUILD_DIR/mongo/client/clientdriver',
-                     'util/fail_point',
-                     'util/foundation',
-                     'db/service_context',
-                     'db/lasterror',
-                     'db/mongohasher',
-                     'db/namespace_string',
-                     'util/net/network',
-                     'util/processinfo',
-                     'util/concurrency/spin_lock',
-                     'util/stacktrace',
-                     'util/stringutils',
-                     'util/concurrency/synchronization',
-                     'util/concurrency/thread_name',
-                     'util/md5',
-                     'version',
-                     '$BUILD_DIR/third_party/shim_pcrecpp',
-                     '$BUILD_DIR/third_party/murmurhash3/murmurhash3',
-                     '$BUILD_DIR/third_party/shim_boost',
-                     '$BUILD_DIR/mongo/util/options_parser/options_parser',
-                     '$BUILD_DIR/mongo/util/progress_meter',
-                     ] +
-                     extraCommonLibdeps)
-
 env.CppUnitTest(
     target="util/version_test",
     source=["util/version_test.cpp"],
-    LIBDEPS=["mongocommon"]
-)
-
-env.Library(
-    target='coreserver',
-    source=[],
-    LIBDEPS=[
-        'mongocommon',
-        'util/decorable',
-    ],
+    LIBDEPS=[]
 )
 
 mongod = env.Program(
@@ -199,7 +156,6 @@ mongod = env.Program(
     ],
     LIBDEPS=[
         "db/coredb",
-        "coreserver",
         "db/conn_pool_options",
         "db/mongod_options",
         "db/mongodandmongos",
@@ -225,7 +181,6 @@ env.Install(
                     LIBDEPS=[
                         "util/ntservice_mock",
                         "db/serveronly",
-                        "coreserver",
                         "db/coredb",
                         "util/signal_handlers_synchronous",
                     ]),
@@ -246,9 +201,7 @@ env.Install(
             's/client/sharding_connection_hook',
             's/commands/cluster_commands',
             "s/mongoscore",
-            "coreserver",
             "db/coredb",
-            "mongocommon",
             "s/coreshard",
             "util/ntservice",
             "db/mongodandmongos",
@@ -271,7 +224,6 @@ if env.TargetOSIs('osx') or env["_HAVEPCAP"]:
     sniffEnv.Install( '#/', sniffEnv.Program( "mongosniff", "tools/sniffer.cpp",
                                               LIBDEPS = [
                                                  "db/serveronly",
-                                                 "coreserver",
                                                  "db/coredb",
                                                  "util/signal_handlers_synchronous",
                                               ] ) )
@@ -299,8 +251,8 @@ if not has_option('noshell') and usev8:
                     'db/index/external_key_generator',
                     'db/catalog/index_key_validate',
                     'scripting/scripting',
+                    'util/processinfo',
                     'util/signal_handlers',
-                    'mongocommon',
                     'shell/mongojs',
                 ])
 
@@ -318,6 +270,8 @@ if not has_option('noshell') and usev8:
         LIBDEPS=["$BUILD_DIR/third_party/shim_pcrecpp",
                  "shell_options",
                  "shell_core",
+                 "db/server_options_core",
+                 "client/clientdriver",
                  "$BUILD_DIR/mongo/util/password",
                  ])
 
@@ -353,8 +307,7 @@ def installBinary( e, name ):
 def installExternalBinary( e, name_str ):
     name = env.File("#/%s" % add_exe(name_str))
     if not name.isfile():
-        print("ERROR: external binary not found: %s" % name)
-        Exit(1)
+        env.FatalError("ERROR: external binary not found: {0}", name)
 
     distBinaries.append(name)
     inst = e.Install( "$INSTALL_DIR/bin", name )
@@ -402,8 +355,7 @@ if sum(itertools.imap(lambda x: x.name == "LICENSE.txt", env['MODULE_BANNERS']))
 module_banner_filenames = set([f.name for f in env['MODULE_BANNERS']])
 if not len(module_banner_filenames) == len(env['MODULE_BANNERS']):
     # TODO: Be nice and identify conflicts in error.
-    print "ERROR: Filename conflicts exist in module banners."
-    Exit(-1)
+    env.FatalError("ERROR: Filename conflicts exist in module banners.")
 
 # Build a set of directories containing module banners, and use that
 # to build a --transform option for each directory so that the files
@@ -435,8 +387,7 @@ if has_option("use-new-tools"):
     env.Alias("dist", source='#/${SERVER_ARCHIVE}')
 else:
     def failDist(env, target, source):
-        print("ERROR: 'dist' target only valid with --use-new-tools.")
-        Exit(1)
+        env.FatalError("ERROR: 'dist' target only valid with --use-new-tools.")
     env.Alias("dist", [], [ failDist ] )
     env.AlwaysBuild("dist")
 
