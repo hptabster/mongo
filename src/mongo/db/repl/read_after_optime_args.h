@@ -26,35 +26,53 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#pragma once
 
-#include "mongo/client/remote_command_executor.h"
+#include <string>
 
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/base/status.h"
+#include "mongo/db/repl/optime.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
-    const Milliseconds RemoteCommandRequest::kNoTimeout(-1);
-    const Date_t RemoteCommandRequest::kNoExpirationDate(-1);
+    class BSONObj;
 
+namespace repl {
 
-    std::string RemoteCommandRequest::toString() const {
-        str::stream out;
-        out << "RemoteCommand -- target:" << target.toString() << " db:" << dbname;
+    class ReadAfterOpTimeArgs {
+    public:
 
-        if (expirationDate != kNoExpirationDate) {
-            out << " expDate:" << expirationDate.toString();
-        }
+        static const std::string kRootFieldName;
+        static const std::string kOpTimeFieldName;
+        static const std::string kOpTimestampFieldName;
+        static const std::string kOpTermFieldName;
+        static const std::string kTimeoutFieldName;
 
-        out << " cmd:" << cmdObj.toString();
-        return out;
-    }
+        ReadAfterOpTimeArgs();
+        ReadAfterOpTimeArgs(OpTime opTime, Milliseconds timeout);
 
-    std::string RemoteCommandResponse::toString() const {
-        str::stream out;
-        out << "RemoteResponse -- " << " cmd:" << data.toString();
+        /**
+         * Format:
+         * {
+         *    find: “coll”,
+         *    filter: <Query Object>,
+         *    after: { // optional
+         *      opTime: { ts: <timestamp>, term: <NumberLong> },
+         *      timeoutMS: <NumberLong> //optional
+         *    }
+         * }
+         */
+        Status initialize(const BSONObj& cmdObj);
 
-        return out;
-    }
+        const OpTime& getOpTime() const;
+        const Milliseconds& getTimeout() const;
 
+    private:
+
+        OpTime _opTime;
+        Milliseconds _timeout;
+    };
+
+} // namespace repl
 } // namespace mongo
