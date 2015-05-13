@@ -29,6 +29,7 @@ var blacklist = [
     'update_array_noindex.js'
 ].map(function(file) { return dir + '/' + file; });
 
-runWorkloadsInParallel(ls(dir).filter(function(file) {
-     return !Array.contains(blacklist, file);
-}));
+// SERVER-16196 re-enable executing workloads
+//runWorkloadsInParallel(ls(dir).filter(function(file) {
+//     return !Array.contains(blacklist, file);
+//}));

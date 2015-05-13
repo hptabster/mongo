@@ -63,6 +63,7 @@ var Cluster = function(options) {
         mongos: [],
         mongod: []
     };
+    var nextConn = 0;
 
     validateClusterOptions(options);
     Object.freeze(options);
@@ -75,10 +76,10 @@ var Cluster = function(options) {
         }
 
         if (options.sharded) {
-            // TODO: allow 'options' to specify the number of shards
+            // TODO: allow 'options' to specify the number of shards & mongos
             var shardConfig = {
                 shards: 2,
-                mongos: 1,
+                mongos: 2,
                 verbose: verbosityLevel
             };
 
@@ -221,6 +222,10 @@ var Cluster = function(options) {
             throw new Error('cluster has not been initialized yet');
         }
 
+        // Alternate mongos connections for sharded clusters
+        if (options.sharded) {
+            return _conns.mongos[nextConn++ % _conns.mongos.length].getDB(dbName);
+        }
         return conn.getDB(dbName);
     };
 

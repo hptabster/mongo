@@ -18,26 +18,12 @@ var blacklist = [
     'auth_drop_role.js',
     'auth_drop_user.js', // SERVER-16739 OpenSSL libcrypto crash
 
+    // Other failing tests
+
+    'yield_fetch.js', // Failed on Windows: WT compat
 ].map(function(file) { return dir + '/' + file; });
 
+// SERVER-16196 re-enable executing workloads
 //runWorkloadsSerially(ls(dir).filter(function(file) {
 //    return !Array.contains(blacklist, file);
 //}), { masterSlave: true });
-
-// Failed on Windows: WT compat
-/*
-Workload teardown function threw an exception:
-Error: socket exception [SEND_ERROR] for 127.0.0.1:31001
-    at DB.runCommand (src/mongo/shell/db.js:112:29)
-    at DB.adminCommand (src/mongo/shell/db.js:121:21)
-    at disableFailPoint (jstests/concurrency/fsm_workloads/yield.js:164:20)
-    at jstests/concurrency/fsm_libs/cluster.js:200:13
-    at Array.forEach (native)
-    at executeOnMongodNodes (jstests/concurrency/fsm_libs/cluster.js:199:23)
-    at Object.teardown (jstests/concurrency/fsm_workloads/yield.js:162:17)
-    at teardownWorkload (jstests/concurrency/fsm_libs/runner.js:294:25)
-    at jstests/concurrency/fsm_libs/runner.js:375:29
-    at Array.forEach (native)
-----
-jstests/concurrency/fsm_workloads/yield_fetch.js: Workload completed in 17012 ms
-*/
