@@ -147,12 +147,19 @@ namespace {
         ASSERT(getReplCoord()->getMemberState().secondary()) <<
                                                       getReplCoord()->getMemberState().toString();
 
-        getReplCoord()->setMyLastOptime(Timestamp(10,0));
+        getReplCoord()->setMyLastOptime(OpTime(Timestamp(10,0), 0));
 
         NetworkInterfaceMock* net = getNet();
         net->enterNetwork();
         const NetworkInterfaceMock::NetworkOperationIterator noi = net->getNextReadyRequest();
+        // blackhole heartbeat
         net->scheduleResponse(noi,
+                              net->now(),
+                              ResponseStatus(ErrorCodes::OperationFailed, "timeout"));
+        net->runReadyNetworkOperations();
+        // blackhole freshness
+        const NetworkInterfaceMock::NetworkOperationIterator noi2 = net->getNextReadyRequest();
+        net->scheduleResponse(noi2,
                               net->now(),
                               ResponseStatus(ErrorCodes::OperationFailed, "timeout"));
         net->runReadyNetworkOperations();
@@ -208,7 +215,7 @@ namespace {
                                 ));
         assertStartSuccess(configObj, HostAndPort("node1", 12345));
         OperationContextNoop txn;
-        getReplCoord()->setMyLastOptime(Timestamp (100, 1));
+        getReplCoord()->setMyLastOptime(OpTime(Timestamp (100, 1), 0));
         ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
         startCapturingLogMessages();
         simulateSuccessfulElection();
@@ -229,7 +236,7 @@ namespace {
         ReplicaSetConfig config = assertMakeRSConfig(configObj);
 
         OperationContextNoop txn;
-        Timestamp time1(100, 1);
+        OpTime time1(Timestamp(100, 1), 0);
         getReplCoord()->setMyLastOptime(time1);
         ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
@@ -276,7 +283,7 @@ namespace {
         ReplicaSetConfig config = assertMakeRSConfig(configObj);
 
         OperationContextNoop txn;
-        Timestamp time1(100, 1);
+        OpTime time1(Timestamp(100, 1), 0);
         getReplCoord()->setMyLastOptime(time1);
         ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
@@ -324,7 +331,7 @@ namespace {
                                          BSON("_id" << 5 << "host" << "node5:12345") )),
             HostAndPort("node1", 12345));
         ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
-        getReplCoord()->setMyLastOptime(Timestamp(100,0));
+        getReplCoord()->setMyLastOptime(OpTime(Timestamp(100,0), 0));
 
         // set hbreconfig to hang while in progress
         getExternalState()->setStoreLocalConfigDocumentToHang(true);

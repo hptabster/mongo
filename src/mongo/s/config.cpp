@@ -130,7 +130,7 @@ namespace mongo {
 
     void CollectionInfo::save(const string& ns) {
         CollectionType coll;
-        coll.setNs(ns);
+        coll.setNs(NamespaceString{ns});
 
         if (_cm) {
             invariant(!_dropped);
@@ -176,18 +176,6 @@ namespace mongo {
         }
 
         return i->second.isSharded();
-    }
-
-    ShardPtr DBConfig::getShardIfExists( const string& ns ){
-        try{
-            // TODO: this function assumes the _primary will not change under-the-covers, but so does
-            // getShard() in general
-            return ShardPtr( new Shard( getShard( ns ) ) );
-        }
-        catch( AssertionException& e ){
-            warning() << "primary not found for " << ns << causedBy( e ) << endl;
-            return ShardPtr();
-        }
     }
 
     const Shard& DBConfig::getShard( const string& ns ) {
@@ -238,7 +226,9 @@ namespace mongo {
     }
 
     // Handles weird logic related to getting *either* a chunk manager *or* the collection primary shard
-    void DBConfig::getChunkManagerOrPrimary( const string& ns, ChunkManagerPtr& manager, ShardPtr& primary ){
+    void DBConfig::getChunkManagerOrPrimary(const string& ns,
+                                            boost::shared_ptr<ChunkManager>& manager,
+                                            boost::shared_ptr<Shard>& primary) {
 
         // The logic here is basically that at any time, our collection can become sharded or unsharded
         // via a command.  If we're not sharded, we want to send data to the primary, if sharded, we want

@@ -125,6 +125,7 @@ namespace {
 
     TopologyCoordinatorImpl::TopologyCoordinatorImpl(Seconds maxSyncSourceLagSecs) :
         _role(Role::follower),
+        _term(0),
         _currentPrimaryIndex(-1),
         _forceSyncSourceIndex(-1),
         _maxSyncSourceLagSecs(maxSyncSourceLagSecs),
@@ -828,16 +829,11 @@ namespace {
 
         Milliseconds alreadyElapsed(now.asInt64() - hbStats.getLastHeartbeatStartDate().asInt64());
         Date_t nextHeartbeatStartDate;
+        // determine next start time
         if (_rsConfig.isInitialized() &&
             (hbStats.getNumFailuresSinceLastStart() <= kMaxHeartbeatRetries) &&
             (alreadyElapsed < _rsConfig.getHeartbeatTimeoutPeriodMillis())) {
 
-            if (!hbResponse.isOK() && !isUnauthorized) {
-                LOG(1) << "Bad heartbeat response from " << target <<
-                    "; trying again; Retries left: " <<
-                    (kMaxHeartbeatRetries - hbStats.getNumFailuresSinceLastStart()) <<
-                    "; " << alreadyElapsed.total_milliseconds() << "ms have already elapsed";
-            }
             if (isUnauthorized) {
                 nextHeartbeatStartDate = now + kHeartbeatInterval.total_milliseconds();
             } else {
@@ -899,15 +895,24 @@ namespace {
         const MemberConfig member = _rsConfig.getMemberAt(memberIndex);
         if (!hbResponse.isOK()) {
             if (isUnauthorized) {
-                LOG(3) << "setAuthIssue: heartbeat response failed due to authentication"
+                LOG(1) << "setAuthIssue: heartbeat response failed due to authentication"
                     " issue for member _id:" << member.getId();
                 hbData.setAuthIssue(now);
-            } else {
-                LOG(3) << "setDownValues: heartbeat response failed for member _id:"
+            }
+            else if (hbStats.getNumFailuresSinceLastStart() > kMaxHeartbeatRetries ||
+                    alreadyElapsed >= _rsConfig.getHeartbeatTimeoutPeriodMillis()) {
+
+                LOG(1) << "setDownValues: heartbeat response failed for member _id:"
                        << member.getId() << ", msg:  "
                        << hbResponse.getStatus().reason();
 
                 hbData.setDownValues(now, hbResponse.getStatus().reason());
+            }
+            else {
+                LOG(3) << "Bad heartbeat response from " << target <<
+                    "; trying again; Retries left: " <<
+                    (kMaxHeartbeatRetries - hbStats.getNumFailuresSinceLastStart()) <<
+                    "; " << alreadyElapsed.total_milliseconds() << "ms have already elapsed";
             }
         }
         else {
@@ -2036,6 +2041,10 @@ namespace {
         return _maintenanceModeCalls;
     }
 
+    long long TopologyCoordinatorImpl::getTerm() const {
+        return _term;
+    }
+
     bool TopologyCoordinatorImpl::shouldChangeSyncSource(const HostAndPort& currentSource,
                                                          Date_t now) const {
         // Methodology:
@@ -2087,10 +2096,10 @@ namespace {
 
     void TopologyCoordinatorImpl::prepareCursorResponseInfo(
             BSONObjBuilder* objBuilder,
-            const Timestamp& lastCommittedOpTime) const {
+            const OpTime& lastCommittedOpTime) const {
         objBuilder->append("term", _term);
-        objBuilder->append("lastOpCommittedTimestamp", lastCommittedOpTime.getSecs());
-        objBuilder->append("lastOpCommittedTerm", lastCommittedOpTime.getInc());
+        objBuilder->append("lastOpCommittedTimestamp", lastCommittedOpTime.getTimestamp());
+        objBuilder->append("lastOpCommittedTerm", lastCommittedOpTime.getTerm());
         objBuilder->append("configVersion", _rsConfig.getConfigVersion());
         objBuilder->append("primaryId", _rsConfig.getMemberAt(_currentPrimaryIndex).getId());
     }
