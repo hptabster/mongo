@@ -6,6 +6,8 @@
  * Runs explain() on a collection.
  *
  */
+load('jstests/concurrency/fsm_workload_helpers/server_types.js'); // for isMongos
+
 var $config = (function() {
 
     var data = {
@@ -54,8 +56,11 @@ var $config = (function() {
             assertAlways.commandWorked(res);
             assertAlways(res.queryPlanner, tojson(res));
             assertAlways(res.queryPlanner.winningPlan, tojson(res));
-            assertAlways.eq(res.queryPlanner.winningPlan.stage, 'EOF',
+            // In sharding case this will not return EOF
+            if (!isMongos(db)) {
+                assertAlways.eq(res.queryPlanner.winningPlan.stage, 'EOF',
                             tojson(res));
+            }
         }
 
         return {

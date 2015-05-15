@@ -6,8 +6,6 @@ var dir = 'jstests/concurrency/fsm_workloads';
 
 var blacklist = [
     // Disabled due to known bugs
-    'agg_sort_external.js', // SERVER-16700 Deadlock on WiredTiger LSM
-    'findAndModify_update_grow.js', // SERVER-17021 Perf. Regression for WT overflow items
     'yield_sort.js', // SERVER-17011 Cursor can return objects out of order if updated during query
 
     // Disabled due to MongoDB restrictions and/or workload restrictions
@@ -20,10 +18,6 @@ var blacklist = [
     'auth_drop_role.js',
     'auth_drop_user.js', // SERVER-16739 OpenSSL libcrypto crash
 
-    // These workloads are disabled because of recent changes in capped
-    // collection behavior with wiredTiger (see: SERVER-16235)
-    'create_capped_collection.js',
-    'create_capped_collection_maxdocs.js',
 ].map(function(file) { return dir + '/' + file; });
 
 runWorkloadsSerially(ls(dir).filter(function(file) {

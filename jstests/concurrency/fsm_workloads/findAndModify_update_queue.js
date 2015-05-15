@@ -24,8 +24,10 @@ var $config = extendWorkload($config, function($config, $super) {
     };
 
     $config.data.getIndexSpec = function getIndexSpec() {
-        return { counter: 1, rand: -1 };
+        return { counter: 1, rand: 1 };
     };
+
+    $config.data.shardKey = $config.data.getIndexSpec();
 
     $config.data.opName = 'updated';
 

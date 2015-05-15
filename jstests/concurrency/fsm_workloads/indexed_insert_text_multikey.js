@@ -23,5 +23,7 @@ var $config = extendWorkload($config, function($config, $super) {
         return textArr;
     };
 
+    delete $config.data.shardKey;
+
     return $config;
 });

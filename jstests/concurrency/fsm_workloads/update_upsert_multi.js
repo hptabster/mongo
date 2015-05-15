@@ -76,7 +76,7 @@ var $config = (function() {
         states: states,
         startState: 'insert',
         transitions: transitions,
-        data: { counter: 0 },
+        data: { counter: 0, shardKey: { tid: 1 } },
         setup: setup
     };
 
