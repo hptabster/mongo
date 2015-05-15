@@ -136,8 +136,8 @@ namespace mongo {
             Status status = repl::getGlobalReplicationCoordinator()->stepDown(
                                     txn,
                                     force,
-                                    repl::ReplicationCoordinator::Milliseconds(timeoutSecs * 1000),
-                                    repl::ReplicationCoordinator::Milliseconds(120 * 1000));
+                                    Seconds(timeoutSecs),
+                                    Seconds(120));
             if (!status.isOK() && status.code() != ErrorCodes::NotMaster) { // ignore not master
                 return appendCommandStatus(result, status);
             }
@@ -475,7 +475,6 @@ namespace mongo {
                 return false;
             }
 
-            result.append("ns", nsToDrop);
             return appendCommandStatus(result,
                                        dropCollection(txn, NamespaceString(nsToDrop), result));
         }

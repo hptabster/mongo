@@ -38,7 +38,9 @@
 #include "mongo/client/parallel.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db.h"
@@ -403,13 +405,16 @@ namespace mongo {
                 wuow.commit();
             }
 
+            CollectionOptions finalOptions;
             vector<BSONObj> indexesToInsert;
 
             {
-                // copy indexes into temporary storage
+                // copy indexes and collection options into temporary storage
                 OldClientWriteContext finalCtx(_txn, _config.outputOptions.finalNamespace);
                 Collection* const finalColl = finalCtx.getCollection();
                 if ( finalColl ) {
+                    finalOptions = finalColl->getCatalogEntry()->getCollectionOptions(_txn);
+
                     IndexCatalog::IndexIterator ii =
                         finalColl->getIndexCatalog()->getIndexIterator( _txn, true );
                     // Iterate over finalColl's indexes.
@@ -442,7 +447,7 @@ namespace mongo {
                 Collection* tempColl = tempCtx.getCollection();
                 invariant(!tempColl);
 
-                CollectionOptions options;
+                CollectionOptions options = finalOptions;
                 options.temp = true;
                 tempColl = tempCtx.db()->createCollection(_txn, _config.tempNamespace, options);
 
@@ -1283,6 +1288,10 @@ namespace mongo {
                      BSONObjBuilder& result) {
                 Timer t;
 
+                boost::optional<DisableDocumentValidation> maybeDisableValidation;
+                if (shouldBypassDocumentValidationforCommand(cmd))
+                    maybeDisableValidation.emplace(txn);
+
                 if (txn->getClient()->isInDirectClient()) {
                     return appendCommandStatus(result,
                                                Status(ErrorCodes::IllegalOperation,
@@ -1565,6 +1574,10 @@ namespace mongo {
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
+                boost::optional<DisableDocumentValidation> maybeDisableValidation;
+                if (shouldBypassDocumentValidationforCommand(cmdObj))
+                    maybeDisableValidation.emplace(txn);
+
                 ShardedConnectionInfo::addHook();
                 // legacy name
                 string shardedOutputCollection = cmdObj["shardedOutputCollection"].valuestrsafe();

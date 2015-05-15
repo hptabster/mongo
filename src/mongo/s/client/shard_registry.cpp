@@ -81,6 +81,7 @@ namespace mongo {
         else {
             _lookup.clear();
         }
+
         _rsLookup.clear();
 
         for (const ShardType& shardData : shards) {
@@ -91,7 +92,21 @@ namespace mongo {
                                                                 shardData.getMaxSize(),
                                                                 shardData.getDraining());
             _lookup[shardData.getName()] = shard;
-            _installHost(shardData.getHost(), shard);
+            _lookup[shardData.getHost()] = shard;
+
+            const ConnectionString& cs = shard->getAddress();
+
+            if (cs.type() == ConnectionString::SET) {
+                if (cs.getSetName().size()) {
+                    boost::lock_guard<boost::mutex> lk(_rsMutex);
+                    _rsLookup[cs.getSetName()] = shard;
+                }
+
+                vector<HostAndPort> servers = cs.getServers();
+                for (unsigned i = 0; i < servers.size(); i++) {
+                    _lookup[servers[i].toString()] = shard;
+                }
+            }
         }
     }
 
@@ -111,15 +126,15 @@ namespace mongo {
         string errmsg;
         ConnectionString connStr = ConnectionString::parse(ident, errmsg);
         uassert(18642,
-            str::stream() << "Error parsing connection string: " << ident,
-            errmsg.empty());
+                str::stream() << "Error parsing connection string: " << ident,
+                errmsg.empty());
 
         if (connStr.type() == ConnectionString::SET) {
             boost::lock_guard<boost::mutex> lk(_rsMutex);
             ShardMap::iterator iter = _rsLookup.find(connStr.getSetName());
 
             if (iter == _rsLookup.end()) {
-                return boost::make_shared<Shard>();
+                return nullptr;
             }
 
             return iter->second;
@@ -129,7 +144,7 @@ namespace mongo {
             ShardMap::iterator iter = _lookup.find(ident);
 
             if (iter == _lookup.end()) {
-                return boost::make_shared<Shard>();
+                return nullptr;
             }
 
             return iter->second;
@@ -202,7 +217,6 @@ namespace mongo {
         }
     }
 
-
     bool ShardRegistry::isAShardNode(const string& addr) const {
         boost::lock_guard<boost::mutex> lk(_mutex);
 
@@ -240,7 +254,7 @@ namespace mongo {
 
     shared_ptr<Shard> ShardRegistry::_findWithRetry(const string& ident) {
         shared_ptr<Shard> shard(find(ident));
-        if (shard != NULL) {
+        if (shard != nullptr) {
             return shard;
         }
 
@@ -253,7 +267,6 @@ namespace mongo {
         return shard;
     }
 
-
     shared_ptr<Shard> ShardRegistry::_findUsingLookUp(const string& shardName) {
         boost::lock_guard<boost::mutex> lk(_mutex);
         ShardMap::iterator it = _lookup.find(shardName);
@@ -262,25 +275,7 @@ namespace mongo {
             return it->second;
         }
 
-        return boost::make_shared<Shard>();
-    }
-
-    void ShardRegistry::_installHost(const string& host, const shared_ptr<Shard>& s) {
-        _lookup[host] = s;
-
-        const ConnectionString& cs = s->getAddress();
-
-        if (cs.type() == ConnectionString::SET) {
-            if (cs.getSetName().size()) {
-                boost::lock_guard<boost::mutex> lk(_rsMutex);
-                _rsLookup[cs.getSetName()] = s;
-            }
-
-            vector<HostAndPort> servers = cs.getServers();
-            for (unsigned i = 0; i < servers.size(); i++) {
-                _lookup[servers[i].toString()] = s;
-            }
-        }
+        return nullptr;
     }
 
 } // namespace mongo

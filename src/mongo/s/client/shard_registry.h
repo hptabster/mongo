@@ -84,8 +84,6 @@ namespace mongo {
 
         boost::shared_ptr<Shard> _findUsingLookUp(const std::string& shardName);
 
-        void _installHost(const std::string& host, const boost::shared_ptr<Shard>& s);
-
 
         // Catalog manager from which to load the shard information. Not owned and must outlive
         // the shard registry object.
